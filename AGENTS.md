@@ -207,7 +207,8 @@ touches one of:
     unified attn is blocks-first, `block_dim == 0`); only matters if a
     KV-first backend is ever selected
   - `#48375` MambaManager ignores `drop_eagle_block` (MTP + prefix caching
-    corrupts hybrid recurrent state, #43559/#50188) — **carried as a local patch**
+     corrupts hybrid recurrent state, #43559/#50188) — **carried as a local
+     patch** (upstream PR still open; in merge conflict as of 2026-08-29)
   - `#52872` GDN/hybrid prefill peak under-predicted; `--max-num-batched-tokens`
     also sizes the CUDA-graph pool
   - `#47602` MTP draft acceptance decays with context length (Qwen3.6-27B)
@@ -238,10 +239,11 @@ touches one of:
     merged; interacts with our `--prefix-cache-retention-interval` pin so
     re-validate after any bump that lands it)**, and a 2026-08-27 adaptive
     single-checkpoint prototype (demand-driven, not yet a PR; positioned as an
-    alternative/complement to `#53479`); `#52789` (internal
-    prefill checkpoints) merged 2026-08-22 but postdates the rc2 tag
-    (main-only, Kimi-K3/FlashKDA-specific TTFT win, not a fix for the 0%-hit
-    geometry — not worth cherry-picking). **When a real fix merges**: prefer
+     alternative/complement to `#53479`); `#52789` (internal
+     prefill checkpoints) merged 2026-08-22 — **verified present in
+     v0.28.1rc0** (merge `9eb9d9d` is an ancestor of the tag, checked
+     2026-08-29); Kimi-K3/FlashKDA-specific TTFT win, not a fix for the 0%-hit
+     geometry. **When a real fix merges**: prefer
     the version bump; carry a local patch only if no available release
     contains it. 2026-08-24 data points (independent 27B-scale repro on sm80,
     Qwen3.8-27B):
@@ -320,8 +322,18 @@ touches one of:
     in principle here (hybrid GDN + align + prefix cache), but gated on a
     prefix-cache hit actually landing (`#45238` → ~0% on incremental
     prefixes) and softened by `--max-num-seqs 2` + `--no-async-scheduling`;
-    re-check if `#45238` is fixed (hits become common) or a gfx1201/ROCm
-    repro appears.
+     re-check if `#45238` is fixed (hits become common) or a gfx1201/ROCm
+     repro appears.
+  - `#54360` (2026-08-29, open) on **nightly** (`v0.28.1rc1.dev43`, main past
+     our rc0 pin): any spec decode (MTP or dflash) drives prefix-cache hits to
+     **0** on Qwen3.8-27B hybrid GDN align — same model family and align-mode
+     path as `#45238`/`#53504`. Comment data point: on 0.27.1-era builds spec
+     decode loses exactly one block of reachable prefix (4→3, hit rate
+     69.4%→42.5%), consistent with the EAGLE-boundary/one-block-back-off
+     family, and nightly regresses further to zero. Not in our pin (main was
+     100 commits past v0.28.1rc0, unreleased, checked 2026-08-29). **Monitor**:
+     forward-looking regression signal for the eventual v0.28.1 final —
+     re-run the prefix-cache probe if a bump lands that includes it.
 
 Issues known **not** to apply (checked; re-check only if the stack changes):
 NVIDIA-only (#52475, #52583 VL), non-Qwen models (#52833/#48568 GLM, #51530
@@ -383,9 +395,14 @@ tool-call/needle-recall corruption on the cache-hit path — this stack's exact
 config family): **resolved in our version** — the degradation is reported
 fixed in v0.28.0 by `#51113` (verified `c56f169` is in v0.28.1rc0; an
 independent 3-arm A/B/C on a Qwen3.8-27B hybrid GDN/align/fp8-KV/TP2 setup
-shows no degradation with MTP on). We're on v0.28.1rc0, so no action; the
-residual warm-rollback TTFT tax is the `#53479` performance item, not a
-correctness one.
+ shows no degradation with MTP on). We're on v0.28.1rc0, so no action; the
+ residual warm-rollback TTFT tax is the `#53479` performance item, not a
+ correctness one. #54106 (KV cache group splitting assumes an n:1
+ attention-type ratio — our 48 GDN : 16 full is 3:1, fine). #52682
+ (Qwen3.8-27B-FP8 CUDA-graph capture hang at startup — NVIDIA Ampere
+ A5000-specific). #54080 (TreeWY tree-spec-decode RFC for hybrid GDN) and
+ #53786 (fine-grained prefix hits for sliding-window groups) — RFC/feature in
+ the `#45238` family, monitor-only.
 
 ### 4. Local patches vs upstream
 
