@@ -317,6 +317,8 @@ The Qwen3.6 rows are the latest
 measurements on the v0.28.0 build (2026-08-24); **35B-A3B now ships MTP4** (the #47087 MoE
 token-loop fix was re-validated clean — see below). Full methodology, per-run
 files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) and [`archive/`](archive/).
+Hardware inventory, rated specs, and expected-vs-measured analysis:
+[`SYSTEM.md`](SYSTEM.md).
 
 | model                     | MTP (draft #) | KV   | pp2048 t/s | tg32 t/s | tg128 t/s |
 |:--------------------------|:--------------|:-----|-----------:|---------:|----------:|

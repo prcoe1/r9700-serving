@@ -1,4 +1,5 @@
 .env
+SYSTEM.md
 __pycache__/
 *.pyc
 *.pyo
