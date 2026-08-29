@@ -1,3 +1,9 @@
+# Version-locked to AITER_REF=v0.1.20 (verified `git apply --check` clean on
+# the tag, 2026-08-29). RDNA4-local launch-config tuning, not an upstream
+# cherry-pick. Re-check after any AITER_REF bump: run
+# tools/tune_ua_config.py and re-run the e2e bench (see
+# benchmarks/2026-08-25_gfx1201_ua_tuning.md). Leading comments are ignored
+# by `git apply` (Dockerfile.fullbuild applies these with plain `git apply`).
 diff --git a/aiter/ops/triton/attention/unified_attention.py b/aiter/ops/triton/attention/unified_attention.py
 index 235e9de..e8d0bc5 100644
 --- a/aiter/ops/triton/attention/unified_attention.py

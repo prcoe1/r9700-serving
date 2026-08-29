@@ -1,3 +1,7 @@
+# Version-locked to AITER_REF=v0.1.20 (verified `git apply --check` clean on
+# the tag, 2026-08-29). RDNA-local: accepts the RDNA family in the build-time
+# prebuild arch list; inert here (PREBUILD_KERNELS=0). Leading comments are
+# ignored by `git apply`.
 diff --git a/csrc/cpp_itfs/utils.py b/csrc/cpp_itfs/utils.py
 index 3fa8987..f14205d 100644
 --- a/csrc/cpp_itfs/utils.py

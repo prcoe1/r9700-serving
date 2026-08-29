@@ -1,3 +1,9 @@
+# Version-locked to AITER_REF=v0.1.20 (verified `git apply --check` clean on
+# the tag, 2026-08-29). RDNA-local work fixing ROCm/aiter#4329 /
+# vllm-project/vllm#48723 (still open upstream as of 2026-08-29). Drop this
+# patch when a newer AITER_REF merges #4329 — then re-verify
+# unified-attention-gfx1201-tune.patch still wins (tools/tune_ua_config.py).
+# Leading comments are ignored by `git apply`.
 diff --git a/aiter/ops/triton/attention/unified_attention.py b/aiter/ops/triton/attention/unified_attention.py
 index 235e9de..7dfa7c6 100644
 --- a/aiter/ops/triton/attention/unified_attention.py
