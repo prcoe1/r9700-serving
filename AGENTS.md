@@ -123,6 +123,11 @@ gh release list -R ROCm/aiter --limit 8
 git ls-remote https://github.com/ROCm/flash-attention.git HEAD
 
 # ROCm base image — current ROCM_IMAGE=rocm/dev-ubuntu-24.04:7.14.0-full
+# 7.14.x releases via TheRock (github.com/ROCm/TheRock releases), not the
+# legacy repo. 7.14.1 (2026-08-31) is a 2-commit point release: rocm-systems
+# net-ib fault-injection default-off (ROCm-27881/AIRDEL-40) + an sdist
+# self-dependency packaging fix — N/A for this stack, no bump (checked
+# 2026-08-31).
 curl -s "https://hub.docker.com/v2/repositories/rocm/dev-ubuntu-24.04/tags?page_size=100&name=7.1" | jq -r '.results[].name' | sort -V | tail
 
 # Froggeric chat template — current pin is the first line of chat-templates/qwen.jinja
@@ -145,7 +150,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 54199; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -208,7 +213,7 @@ touches one of:
     KV-first backend is ever selected
   - `#48375` MambaManager ignores `drop_eagle_block` (MTP + prefix caching
      corrupts hybrid recurrent state, #43559/#50188) — **carried as a local
-     patch** (upstream PR still open; in merge conflict as of 2026-08-29)
+     patch** (upstream PR still open; in merge conflict as of 2026-08-31)
   - `#52872` GDN/hybrid prefill peak under-predicted; `--max-num-batched-tokens`
     also sizes the CUDA-graph pool
   - `#47602` MTP draft acceptance decays with context length (Qwen3.6-27B)
@@ -313,17 +318,6 @@ touches one of:
     enables that combination; asks for a default-resolution fix or at least a
     warning. Same combination we now disable via `--no-async-scheduling`;
     monitor for a merged default change.
-  - `#54199` (2026-08-28) IMA in `precopy_mamba_align_fused_kernel`
-    (`run_fused_precopy`) when a prefix-cache-hit request is admitted while
-    the donor that produced those blocks is still in flight / finishes in the
-    same scheduler step (hybrid GDN, align mode, equal attn/mamba block
-    sizes; not the `#53142` divisor mismatch). NVIDIA-only repro so far
-    (GB10 sm_121). **Monitor**: same family as `#45238`/`#53142` and reachable
-    in principle here (hybrid GDN + align + prefix cache), but gated on a
-    prefix-cache hit actually landing (`#45238` → ~0% on incremental
-    prefixes) and softened by `--max-num-seqs 2` + `--no-async-scheduling`;
-     re-check if `#45238` is fixed (hits become common) or a gfx1201/ROCm
-     repro appears.
   - `#54360` (2026-08-29, open) on **nightly** (`v0.28.1rc1.dev43`, main past
      our rc0 pin): any spec decode (MTP or dflash) drives prefix-cache hits to
      **0** on Qwen3.8-27B hybrid GDN align — same model family and align-mode
@@ -376,7 +370,9 @@ GDN — NVIDIA Ada/AWQ, we use fp8 KV; same silent-corruption family, so
 re-check if turboquant KV is ever tried), #52480 (qwen3_5_mtp TP≥2 load
 failure — NVFP4/ModelOpt checkpoints on NVIDIA; our FP8 MTP head loads fine
 at TP=2), #53142 (align pre-copy IMA on prefix-cache resume — requires
-explicit `--block-size`, which we never pass). #53387 (MTP drafter load crash
+explicit `--block-size`, which we never pass; #54199 was retracted 2026-08-29
+as a duplicate of this one — its "equal attn/mamba block sizes" premise was
+wrong). #53387 (MTP drafter load crash
 on compressed-tensors WNA16 checkpoints — unquantized `mtp.fc` vs packed
 layout; we use FP8, not WNA16). #53887 (MTP drafter allocates a second full
 vocab embedding, OOMing a 27B INT4 on a 24GB card — NVIDIA/INT4; our MTP3
