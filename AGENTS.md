@@ -113,21 +113,25 @@ that affect this GPU setup and model combo** before recommending a bump.
 ### 1. Upstream release state
 
 ```sh
-# vLLM — current pin VLLM_REF=v0.28.1rc0
+# vLLM — current pin VLLM_REF=v0.28.1rc0 (still the newest tag as of
+# 2026-09-01; v0.28.1 final unreleased)
 gh release list -R vllm-project/vllm --limit 8
 
-# AITER — current pin AITER_REF=v0.1.20
+# AITER — current pin AITER_REF=v0.1.20 (latest stable; v0.1.21.dev0 is a
+# gfx1250 preview for a different arch, 2026-09-01)
 gh release list -R ROCm/aiter --limit 8
 
 # Flash Attention — pinned to a commit, so compare HEAD to FLASH_ATTN_REF
+# (2026-09-01: HEAD a369df7 is 2 commits past our pin, both flash_attn/cute/
+# SM100-Blackwell CuTe fixes — N/A on ROCm/gfx1201, no bump)
 git ls-remote https://github.com/ROCm/flash-attention.git HEAD
 
 # ROCm base image — current ROCM_IMAGE=rocm/dev-ubuntu-24.04:7.14.0-full
 # 7.14.x releases via TheRock (github.com/ROCm/TheRock releases), not the
 # legacy repo. 7.14.1 (2026-08-31) is a 2-commit point release: rocm-systems
 # net-ib fault-injection default-off (ROCm-27881/AIRDEL-40) + an sdist
-# self-dependency packaging fix — N/A for this stack, no bump (checked
-# 2026-08-31).
+# self-dependency packaging fix — N/A for this stack, no bump (re-checked
+# 2026-09-01, `therock-7.14.1` unchanged).
 curl -s "https://hub.docker.com/v2/repositories/rocm/dev-ubuntu-24.04/tags?page_size=100&name=7.1" | jq -r '.results[].name' | sort -V | tail
 
 # Froggeric chat template — current pin is the first line of chat-templates/qwen.jinja
@@ -150,7 +154,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -198,7 +202,11 @@ touches one of:
   tool-argument formatting for the `qwen3_coder` XML parser, or reasoning/
   tool-error heuristics. Template bumps need no rebuild (see step 1).
 - **Known-bug watchlist** (search/check these before recommending a vLLM bump):
-  - `#35288` MTP concurrency corruption (still mitigated by `max-num-seqs 2`)
+  - `#35288` MTP concurrency corruption (still mitigated by `max-num-seqs 2`).
+    2026-09-01: new cross-reference names `#51571` (async MTP align
+    accepted-count race) as the precise root cause — the corruption requires
+    async scheduling, which we disable, so the mitigation stands; track the
+    fix in `#51599`
   - `#47087` MTP token loops on Qwen3-MoE (resolved by #51113, in v0.27.1 —
     **re-test PASSED 2026-08-24**: MTP4 on 35B-A3B is clean on v0.28.0rc2 —
     coherence PASSED + manual 512-token gen varied, ~2x decode win (tg32
@@ -313,6 +321,10 @@ touches one of:
     "async is auto-disabled on MTP" note was wrong. Mitigation:
     `compose.yaml` now passes `--no-async-scheduling` for all spec-decode
     profiles (tracks `VLLM_SPEC_DECODE`); re-check upstream before removing.
+    **Fix in flight (2026-09-01)**: PR `#51599` (open, decouples the async
+    Mamba-align D2H accepted-count copy from `InputBatch` row shifts, closes
+    #51571; also cited as the root cause of `#35288`) — if it lands in a
+    release we adopt, re-test before dropping `--no-async-scheduling`.
   - `#54039` (2026-08-27, question): vLLM's own ROCm CI disables async+MTP
     (#32275, unroot-caused shm-broadcast hang) while the default still
     enables that combination; asks for a default-resolution fix or at least a
@@ -326,10 +338,59 @@ touches one of:
      69.4%→42.5%), consistent with the EAGLE-boundary/one-block-back-off
      family, and nightly regresses further to zero. Not in our pin (main was
      100 commits past v0.28.1rc0, unreleased, checked 2026-08-29). **Monitor**:
-     forward-looking regression signal for the eventual v0.28.1 final —
-     re-run the prefix-cache probe if a bump lands that includes it.
-
-Issues known **not** to apply (checked; re-check only if the stack changes):
+      forward-looking regression signal for the eventual v0.28.1 final —
+      re-run the prefix-cache probe if a bump lands that includes it.
+  - `#54498` (2026-08-27, open, checked 2026-09-01): V1 EAGLE/MTP drafter
+    feeds the M-RoPE **temporal** dim (`positions[0]`) to the KV-slot
+    computation on `SupportsMRoPE` targets — on any prompt with an image the
+    temporal coord lags the absolute token index, so each draft step writes
+    draft K/V into a **prompt** slot (overwriting real prompt K/V) while
+    attention reads the full span: acceptance drops and the error compounds
+    with K. **Affects this stack**: Qwen3.8-27B is M-RoPE (local config:
+    `mrope_section [11,11,10]`, `mrope_interleaved`), we run MTP3 on the V1
+    runner (hybrid GDN is excluded from `DEFAULT_V2_MODEL_RUNNER_ARCHITECTURES`),
+    and we serve images (capped 1). Buggy line verified in v0.28.1rc0
+    (`llm_base_proposer.py:787`). Text-only prompts are unaffected (dims ==
+    absolute index). Upstream measurements: Qwen3.8-27B K=6 ≈ -5.7% mean
+    acceptance vs the V2 runner; the gap grows with K (K=3 ≈ -0.3%, K=15
+    -24.8% on a VL-derived 27B). The prompt-K/V overwrite implies an
+    unmeasured output-quality risk on image+MTP requests (upstream measured
+    acceptance only). Fix PR `#54519` was **closed unmerged 2026-09-01**
+    (superseded), leaving `#54716` as the sole fix (open, actively updated
+    2026-09-01, scope confirmed M-RoPE-only after review; in no release).
+    **Monitor**; no in-repo mitigation (text-only unaffected) — if
+    image+MTP acceptance matters, backport the merged fix as a local patch
+    or bump when it lands. (Companion `#54555`/`#54621` xDRoPE
+    positions-buffer — N/A, we're M-RoPE.)
+  - `#51599` (2026-09-01, PR, open): the `#51571` fix — see the `#51571`
+    entry above.
+  - `#54076` (2026-09-01, PR, open): `_mamba_block_aligned_split` must chunk
+    on the **Mamba group's** block size, not `cache_config.block_size` (the
+    min over all groups) — otherwise mandatory chunk ends land on a grid the
+    worker can never materialize a Mamba state at. Repro is a Qwen3.8-27B
+    hybrid + spec drafter with mismatched target/drafter attention blocks
+    (1648/816); our MTP drafter group can create the same geometry. Monitor
+    for a merge.
+  - `#53798` (2026-09-01, PR, open): align-mode `add_request` seeds the
+    running-state block column by the scheduler block size instead of the
+    (page-unification-scaled) Mamba block size, so a request admitted with
+    `num_computed_tokens > 0` — explicitly under
+    `--prefix-cache-retention-interval`, which we pin — points its precopy
+    source into a neighbour's row (silent wrong-state read) or past the
+    table (IMA in `precopy_mamba_align_fused_kernel`). Monitor for a merge.
+  - `#50409` (2026-08-31, PR, open): when the prompt length is an exact
+    multiple of the block size, align prefill runs as one chunk and the only
+    cached Mamba state sits at `num_tokens`, which `get_computed_blocks`
+    caps below — the Mamba group then reports a 0-token hit and the
+    reconciled hybrid hit is 0. Adds the replay boundary as a mandatory
+    chunk stop. Monitor for a merge.
+  - `#54163` (2026-09-01, PR, open): removes the one-mamba-block back-off
+    for DFlash/DSpark drafters (they never write target blocks, so the
+    `#53388` `use_eagle_block_drop()` stand-in over-backs them). N/A for
+    MTP (MTP *does* pollute the last target block, so its back-off stays) —
+    monitor as `#52817`-family signal only.
+ 
+ Issues known **not** to apply (checked; re-check only if the stack changes):
 NVIDIA-only (#52475, #52583 VL), non-Qwen models (#52833/#48568 GLM, #51530
 DeepSeek, #53387 Qwen3.5-family compressed-tensors WNA16 MTP drafter load
 crash — we use FP8, not WNA16), or paths not
@@ -381,7 +442,11 @@ allowlist + `_compute_slot_mapping_kernel` OOB — both concern in-flight model
 PRs, Qwen3.8-Flash-Next `QSAForwardMetadata` and GLM-5.3-Flash `KpoolTailSpec`,
 one-block-per-request side caches not on main; our AITER unified-attention
 metadata is already allowlisted and MTP works, so N/A unless a new backend is
-added). #40980 (R9700 TP2 deadlock — stale: v0.19-era, 16GB cards,
+added). #53066 (v1 detokenizer evaluates client `stop` strings against the
+whole output stream, so a stop that a think-in-prompt CoT restates — Qwen3
+family — truncates mid-think and the reasoning parser returns null; only
+triggers when a client
+actually sends `stop`; our clients don't — monitor). #40980 (R9700 TP2 deadlock — stale: v0.19-era, 16GB cards,
 TRITON_ATTN + enforce-eager; AMD confirmed R9700 TP2 working on v0.25.1; our
 TP2 stack is serving). #49851 (multimodal load failure on gfx1201 in the
 `vit_torch_sdpa_wrapper` — v0.25.1/ROCm 7.15-specific, AMD states it loads on
@@ -396,9 +461,19 @@ independent 3-arm A/B/C on a Qwen3.8-27B hybrid GDN/align/fp8-KV/TP2 setup
  correctness one. #54106 (KV cache group splitting assumes an n:1
  attention-type ratio — our 48 GDN : 16 full is 3:1, fine). #52682
  (Qwen3.8-27B-FP8 CUDA-graph capture hang at startup — NVIDIA Ampere
- A5000-specific). #54080 (TreeWY tree-spec-decode RFC for hybrid GDN) and
- #53786 (fine-grained prefix hits for sliding-window groups) — RFC/feature in
- the `#45238` family, monitor-only.
+  A5000-specific). #54080 (TreeWY tree-spec-decode RFC for hybrid GDN) and
+  #53786 (fine-grained prefix hits for sliding-window groups) — RFC/feature in
+  the `#45238` family, monitor-only. Checked 2026-09-01: #54690 (draft-only
+  fp8 KV dtype crashes hybrid GDN startup — NVIDIA/FlashInfer paths, we are
+  all-bf16 KV), #54761 (DCP + non-FP8 KV unreachable on ROCm — no DCP here),
+  #41862 (EP deadlock on hybrid GDN, Qwen3.5 — we run TP2 without expert
+  parallelism), #54504 (nemotron_h prefix-cache no-op / CPU-backend crash),
+  #54392 (PD-admitted Mamba spec-pad truncation — no P/D disaggregation),
+  #54458 (GLM-5.3 page-alignment block inflation) and #54831 (GLM-5.3 DSA-
+  indexer KV offload), #54728 (gfx1030 RDNA2) and #54438 (gfx1100 kernel
+  ranking), #54698 (Qwen3.8-Flash-Next NVIDIA torch.compile RFC), #54547
+  (Quark MXFP4 multimodal naming), #54281 (DeepEP v2 hybrid-mode flag),
+  #53334 (sm121 turboquant KV observations — turboquant N/A per #53180).
 
 ### 4. Local patches vs upstream
 
