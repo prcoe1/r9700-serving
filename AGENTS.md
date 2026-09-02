@@ -113,12 +113,28 @@ that affect this GPU setup and model combo** before recommending a bump.
 ### 1. Upstream release state
 
 ```sh
-# vLLM — current pin VLLM_REF=v0.28.1rc0 (still the newest tag as of
-# 2026-09-01; v0.28.1 final unreleased)
+# vLLM — current pin VLLM_REF=v0.28.1rc0 (v0.28.1 final unreleased).
+# v0.29.0rc1 (lightweight tag, no release notes) cut 2026-09-02, 177
+# commits past v0.28.1rc0: contains #53877 (packed GDN decode beta FP32 —
+# the exact kernel our Qwen3.8 decode path uses on ROCm; error compounds
+# with decode length) + #53821 (AITER unified-attn metadata during graph
+# replay; defect present in our pin, no observed symptoms), but NONE of
+# the watchlist fixes (#54716/#51599/#53479/#48375/#40709 still open).
+# Local #48375 patch needs a rebase on it (single_type_kv_cache_manager.py
+# refactored); aiter v0.1.20 API-compatible (checked 2026-09-02). Not
+# bumped (2026-09-02): ride the release that lands a watchlist fix.
+# #53877 backported as a local patch
+# (patches/vllm/53877-gdn-packed-decode-beta-fp32.patch, 2026-09-02).
 gh release list -R vllm-project/vllm --limit 8
 
-# AITER — current pin AITER_REF=v0.1.20 (latest stable; v0.1.21.dev0 is a
-# gfx1250 preview for a different arch, 2026-09-01)
+# AITER — current pin AITER_REF=v0.1.20. v0.1.21 stable released
+# 2026-09-02 (bi-weekly): gfx1250/gfx950/gfx942-dominated; includes the
+# unified-attention refactor #5088 (merged 2026-09-02: _UAParams, backend
+# param, per-kernel subwrappers, get_unified_attention_config) — touches
+# the code our two local unified-attention patches modify, so a bump means
+# rebase + re-running tools/tune_ua_config.py. #4329 (bf16-KV LDS cap) NOT
+# fixed upstream; no gfx1201/Qwen patches in the release → no bump
+# (checked 2026-09-02).
 gh release list -R ROCm/aiter --limit 8
 
 # Flash Attention — pinned to a commit, so compare HEAD to FLASH_ATTN_REF
@@ -356,12 +372,30 @@ touches one of:
     -24.8% on a VL-derived 27B). The prompt-K/V overwrite implies an
     unmeasured output-quality risk on image+MTP requests (upstream measured
     acceptance only). Fix PR `#54519` was **closed unmerged 2026-09-01**
-    (superseded), leaving `#54716` as the sole fix (open, actively updated
-    2026-09-01, scope confirmed M-RoPE-only after review; in no release).
+    (superseded), leaving `#54716` as the sole fix (open, in no release).
+    Open review defect in `#54716` (flagged 2026-09-01 by the superseded
+    PR's author; no response as of 2026-09-02): its `step3p5.py` re-derives
+    the max-len `exceeds` condition *after* `seq_lens` has advanced in
+    place, so at the boundary the draft token is written to slot 0 of the
+    first block (live prompt KV) — same corruption class, relocated to the
+    overflow path; its tests also skip on CPU CI.
     **Monitor**; no in-repo mitigation (text-only unaffected) — if
     image+MTP acceptance matters, backport the merged fix as a local patch
     or bump when it lands. (Companion `#54555`/`#54621` xDRoPE
     positions-buffer — N/A, we're M-RoPE.)
+  - `#54928` (2026-09-02, open, new): **Qwen3.8-27B** (our exact target)
+    with DFlash2 + thinking is not greedy-equivalent to target-only —
+    diverges at generated token 30, reproduced at K=1 and
+    `--enforce-eager` (rules out draft-depth and CUDA-graph artifacts),
+    text-only (no M-RoPE slot involvement), `enable_thinking:false`
+    control matches; suspected spec-decode verify / hybrid GDN
+    state-update path. No direct impact: we rejected DFlash2 on
+    qwen3.8-27b (see archive/DEADENDS.md) and run MTP3; the DFlash2
+    implementation itself is an in-flight PR (#52816), not in any release.
+    **Monitor**: if the root cause is confirmed in the shared verify/
+    GDN-state path, MTP3 + thinking is implicated too — run an MTP
+    greedy-equivalence probe (target-only vs MTP3, temperature=0,
+    thinking prompt) at that point.
   - `#51599` (2026-09-01, PR, open): the `#51571` fix — see the `#51571`
     entry above.
   - `#54076` (2026-09-01, PR, open): `_mamba_block_aligned_split` must chunk

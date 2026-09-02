@@ -1,0 +1,88 @@
+From 53877backport000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenCode <opencode@localhost>
+Date: Tue, 02 Sep 2026 12:00:00 +0000
+Subject: [PATCH] [Bugfix][Kernel] Keep packed GDN decode beta in FP32 (#53877)
+
+Backport of upstream PR #53877 (merged to main 2026-08-30; present in
+v0.29.0rc1, absent from our v0.28.1rc0 pin as of 2026-09-02).
+
+The packed GDN decode kernel rounds the FP32 sigmoid(beta) to the input
+dtype (bf16) before folding it into the FP32 recurrent state. This is
+the exact decode path our Qwen3.8-27B (qwen3_5, non-interleaved q/k/v/z
+layout) runs on ROCm — the aiter RDNA fast path
+(_forward_core_decode_aiter) only serves Qwen3-Next's interleaved GQA
+layout, so qwen3_5 falls through to _forward_core, which uses
+fused_recurrent_gated_delta_rule_packed_decode for decode. Per the
+upstream PR, the rounding perturbs every recurrent state update and the
+error compounds with decode length, degrading long-context accuracy for
+the Qwen3.5-3.8 families.
+
+Version-locked to VLLM_REF=v0.28.1rc0: neither file changed between
+v0.28.1rc0 and the #53877 merge, so this is exactly the
+v0.28.1rc0...v0.29.0rc1 diff for these two paths; verified
+`git apply --check` clean on the v0.28.1rc0 tree (2026-09-02). Drop
+this patch when VLLM_REF contains #53877 (v0.29.0rc1 or later, or a
+v0.28.1 final that backports it).
+
+diff --git a/tests/kernels/test_fused_recurrent_packed_decode.py b/tests/kernels/test_fused_recurrent_packed_decode.py
+--- a/tests/kernels/test_fused_recurrent_packed_decode.py
++++ b/tests/kernels/test_fused_recurrent_packed_decode.py
+@@ -70,7 +70,7 @@
+         x <= 20.0, torch.log1p(torch.exp(torch.clamp(x, max=20.0))), x
+     )
+     g = (-torch.exp(A_log.float()) * softplus_x).unsqueeze(1)
+-    beta = torch.sigmoid(b.float()).to(dtype).unsqueeze(1)
++    beta = torch.sigmoid(b.float()).unsqueeze(1)
+ 
+     out_ref, state_ref = fused_recurrent_gated_delta_rule(
+         q=q,
+@@ -109,6 +109,37 @@
+     torch.testing.assert_close(state_packed, state_ref, rtol=rtol, atol=atol)
+ 
+ 
++def test_packed_decode_keeps_beta_in_fp32():
++    device = torch.device(DEVICE)
++    dtype = torch.bfloat16
++
++    mixed_qkv = torch.ones((1, 3), device=device, dtype=dtype)
++    a = torch.zeros((1, 1), device=device, dtype=dtype)
++    b = torch.full((1, 1), 0.5, device=device, dtype=dtype)
++    params = torch.zeros((1,), device=device, dtype=dtype)
++    ssm_state_indices = torch.ones((1,), device=device, dtype=torch.int32)
++
++    state_packed = torch.zeros((2, 1, 1, 1), device=device, dtype=torch.float32)
++    out_packed = torch.empty((1, 1, 1, 1), device=device, dtype=dtype)
++
++    fused_recurrent_gated_delta_rule_packed_decode(
++        mixed_qkv=mixed_qkv,
++        a=a,
++        b=b,
++        A_log=params,
++        dt_bias=params,
++        scale=1.0,
++        initial_state=state_packed,
++        out=out_packed,
++        ssm_state_indices=ssm_state_indices,
++    )
++
++    expected_beta = torch.sigmoid(b.float()).squeeze()
++    torch.testing.assert_close(
++        state_packed[1, 0, 0, 0], expected_beta, rtol=1e-6, atol=1e-6
++    )
++
++
+ def test_packed_decode_supports_large_batch_head_grid():
+     B, H, HV, K, V = 1024, 8, 64, 1, 1
+     device = torch.device(DEVICE)
+diff --git a/vllm/third_party/flash_linear_attention/ops/fused_recurrent.py b/vllm/third_party/flash_linear_attention/ops/fused_recurrent.py
+--- a/vllm/third_party/flash_linear_attention/ops/fused_recurrent.py
++++ b/vllm/third_party/flash_linear_attention/ops/fused_recurrent.py
+@@ -326,7 +326,7 @@
+     x = a_val + dt_bias_val
+     softplus_x = tl.where(x <= SOFTPLUS_THRESHOLD, tl.log(1.0 + tl.exp(x)), x)
+     g_val = -tl.exp(A_log_val) * softplus_x
+-    beta_val = tl.sigmoid(b_val).to(b.dtype.element_ty).to(tl.float32)
++    beta_val = tl.sigmoid(b_val)
+ 
+     b_h *= exp(g_val)
+     b_v -= tl.sum(b_h * b_k[None, :], 1)

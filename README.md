@@ -176,11 +176,12 @@ the pinned dependency.
 
 ### Source-build patches (applied at image build time)
 
-Local backport of an upstream fix not in `VLLM_REF` v0.28.1rc0, applied by
+Local backports of upstream fixes not in `VLLM_REF` v0.28.1rc0, applied by
 `Dockerfile.fullbuild` from `patches/vllm/*.patch` (mirrors the aiter patch
 loop). Re-verify each patch applies cleanly on the new ref when bumping
-`VLLM_REF`. (#51812/#51837 were carried as patches on v0.27.1, merged upstream
-2026-08-11, and dropped with the v0.28.0 bump.)
+`VLLM_REF` — and drop any whose fix has since landed (see
+AGENTS.md §4). (#51812/#51837 were carried as patches on v0.27.1, merged
+upstream 2026-08-11, and dropped with the v0.28.0 bump.)
 
 - **Honor `drop_eagle_block` in `MambaManager`**
   (`patches/vllm/48375-mamba-drop-eagle-block.patch`,
@@ -190,6 +191,16 @@ loop). Re-verify each patch applies cleanly on the new ref when bumping
   verification later rejects — silent corruption spread to every later request
   sharing the prefix (#43559, #50188). The fix lowers the cache-hit search
   ceiling by one page.
+
+- **Keep packed GDN decode beta in FP32**
+  (`patches/vllm/53877-gdn-packed-decode-beta-fp32.patch`,
+  [#53877](https://github.com/vllm-project/vllm/pull/53877), merged upstream
+  2026-08-30, first release: v0.29.0rc1): the packed GDN decode kernel
+  rounded the FP32 `sigmoid(beta)` to the input dtype (bf16) before folding it
+  into the FP32 recurrent state. That kernel is the exact decode path
+  Qwen3.8-27B runs on ROCm (the aiter RDNA fast path only serves
+  Qwen3-Next's interleaved GQA layout), and the per-step rounding error
+  compounds with decode length, degrading long-context accuracy.
 
 ### AITER source-build patches (applied at image build time)
 
