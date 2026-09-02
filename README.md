@@ -200,7 +200,13 @@ upstream 2026-08-11, and dropped with the v0.28.0 bump.)
   into the FP32 recurrent state. That kernel is the exact decode path
   Qwen3.8-27B runs on ROCm (the aiter RDNA fast path only serves
   Qwen3-Next's interleaved GQA layout), and the per-step rounding error
-  compounds with decode length, degrading long-context accuracy.
+  compounds with decode length, degrading long-context accuracy. **Impact**:
+  the MTP3 spec-decode path (fused sigmoid-gating kernel) was already FP32 and
+  is unchanged; the fix corrects the packed/non-spec decode path (used at
+  CUDA-graph capture and non-spec decode), with no measured throughput cost —
+  verified 2026-09-02 (8/8 packed-decode tests incl. the upstream regression
+  test, coherence passed, decode at parity), see
+  [`benchmarks/2026-09-02_qwen3.8-27b_53877_backport.md`](benchmarks/2026-09-02_qwen3.8-27b_53877_backport.md).
 
 ### AITER source-build patches (applied at image build time)
 
@@ -324,6 +330,9 @@ also pass `--no-async-scheduling` (vLLM turns async on by default for MTP,
 which is the open `#51571` accepted-count race + the `#54039`/`#32275` ROCm-CI
 hang combination); re-bench shows decode parity — see
 [`benchmarks/2026-08-27_qwen3.8-27b_no_async_scheduling.md`](benchmarks/2026-08-27_qwen3.8-27b_no_async_scheduling.md).
+Since 2026-09-02 the stack also carries the #53877 GDN decode-beta FP32
+backport (build-time patch; correctness fix, no perf change — decode parity
+re-verified, see [`benchmarks/2026-09-02_qwen3.8-27b_53877_backport.md`](benchmarks/2026-09-02_qwen3.8-27b_53877_backport.md)).
 The Qwen3.6 rows are the latest
 measurements on the v0.28.0 build (2026-08-24); **35B-A3B now ships MTP4** (the #47087 MoE
 token-loop fix was re-validated clean — see below). Full methodology, per-run
