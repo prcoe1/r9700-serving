@@ -8,6 +8,15 @@
 
 ## Dead ends
 
+- **V2 model runner as the Qwen3.8-27B default** (tried 2026-09-03, rolled
+  back same day). `VLLM_USE_V2_MODEL_RUNNER=1` on the pinned v0.28.1rc0: fully
+  correct (bench coherence, 54K × 10, image+MTP, c2 condense smoke — all
+  passed) and pp2048 +3.6–4% (consistent, zero overlap), but decode tg32/tg128
+  flat and MTP acceptance unchanged (2.7–3.4 on both runners) — the #54498
+  acceptance hypothesis (V1 M-RoPE draft-slot bug) did not materialize. Not a
+  platform-default path upstream ("slower with MRV2" ROCm TODO). Revisit per
+  the conditions in
+  `benchmarks/2026-09-03_qwen3.8-27b_v1_vs_v2.md`.
 - **DFlash2 speculative decoding as the Qwen3.8-27B default** (tried 2026-08-21,
   reverted 2026-08-22). DFlash2 (`incoai/Qwen3.8-27B-DFlash2`, block 8,
   `num_speculative_tokens 7`) was briefly the 3.8 default after depth-0 decode

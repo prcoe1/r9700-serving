@@ -301,6 +301,14 @@ Key tuning decisions:
   config. Enabled via `VLLM_TUNED_CONFIG_FOLDER=/app/fused_moe_configs`.
 - **`--max-num-batched-tokens 4096`** is required for the MoE model (its
   gated-delta layers force an attention block size of 2112 tokens).
+- **V1 model runner (V2 tested and rolled back, 2026-09-03)**:
+  `VLLM_USE_V2_MODEL_RUNNER=1` on the pinned v0.28.1rc0 is fully correct on
+  this stack (coherence, 54K × 10, image+MTP, c2 condense smoke) and prefill
+  is +3.6–4%, but decode and MTP acceptance are flat — the #54498
+  acceptance-driven decode hypothesis did not materialize, and V2 is not a
+  platform-default path for this model family upstream. The line stays
+  commented out in `env/qwen3.8-27b.env`; revisit conditions are in
+  [`benchmarks/2026-09-03_qwen3.8-27b_v1_vs_v2.md`](benchmarks/2026-09-03_qwen3.8-27b_v1_vs_v2.md).
 
 ### MTP concurrency bug
 

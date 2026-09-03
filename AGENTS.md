@@ -391,6 +391,14 @@ touches one of:
     image+MTP acceptance matters, backport the merged fix as a local patch
     or bump when it lands. (Companion `#54555`/`#54621` xDRoPE
     positions-buffer — N/A, we're M-RoPE.)
+    2026-09-03: forcing the V2 runner (`VLLM_USE_V2_MODEL_RUNNER=1`, exists
+    in v0.28.1rc0; MTP + Mamba align pre-copy are V2-supported) was A/B'd as
+    an alternative to this V1-proposer bug — full correctness battery passed,
+    pp2048 +3.6–4% (consistent), but MTP acceptance parity (2.7–3.4) and
+    decode flat, so the #54498 acceptance hypothesis did not materialize
+    here; **not adopted** (non-platform-default path; V1 is the validated
+    baseline), so the bug remains unmitigated in-repo. Revisit conditions in
+    `benchmarks/2026-09-03_qwen3.8-27b_v1_vs_v2.md`.
   - `#54928` (2026-09-02, open, new): **Qwen3.8-27B** (our exact target)
     with DFlash2 + thinking is not greedy-equivalent to target-only —
     diverges at generated token 30, reproduced at K=1 and
