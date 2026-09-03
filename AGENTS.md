@@ -244,8 +244,15 @@ touches one of:
   - `#48375` MambaManager ignores `drop_eagle_block` (MTP + prefix caching
      corrupts hybrid recurrent state, #43559/#50188) — **carried as a local
      patch** (upstream PR still open; in merge conflict as of 2026-08-31)
-  - `#52872` GDN/hybrid prefill peak under-predicted; `--max-num-batched-tokens`
-    also sizes the CUDA-graph pool
+   - `#52872` GDN/hybrid prefill peak under-predicted; `--max-num-batched-tokens`
+     also sizes the CUDA-graph pool. **2026-09-03**: qwen3.8-27b now pins
+     `VLLM_MAX_BATCHED_TOKENS=2048` (concurrent-ITL A/B — a 100K+ prefill
+     stalled the co-decoder 150–200x at the 8192 default; 2048 → ~1 s ITL,
+     flat big-prompt TTFT, −3.4% pp2048). Smaller pool/peak; re-check the
+     prefill-peak headroom and re-run
+     `benchmarks/conc_itl_probe.py` on any bump that changes chunk/
+     graph-pool sizing. See
+     `benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md`.
   - `#47602` MTP draft acceptance decays with context length (Qwen3.6-27B)
   - `#51250` prefix caching is a silent no-op on GDN hybrid (same family as
     `#45238`)

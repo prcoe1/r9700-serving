@@ -14,7 +14,8 @@ template v22.4, thinking off. `-tp 2`, `--gpu-memory-utilization 0.92`,
 `GPU_MAX_HW_QUEUES=1`. KV cache is **fp8 on qwen3.8-27b** (the live default
 profile) and **bf16 on the 3.6 profiles** (opt-in fp8 via
 `VLLM_KV_CACHE_DTYPE=fp8`); `--max-num-seqs 2` everywhere (the #35288 cap);
-`--max-num-batched-tokens 4096` on 35B-A3B; the `#53504`
+`--max-num-batched-tokens 4096` on 35B-A3B (block-size forced) and **2048 on
+qwen3.8-27b** (concurrent-ITL A/B, 2026-09-03); the `#53504`
 `--prefix-cache-retention-interval` workaround pinned per profile.
 
 Single-request numbers are invariant to `--max-num-seqs`; long-context
@@ -25,6 +26,7 @@ concurrency degrades sharply (see the c1-vs-c2 head-to-head in
 
 | file | contents |
 |:-----|:---------|
+| [`benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md`](benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md) | `--max-num-batched-tokens` 8192/4096/2048 A/B: big-prompt prefill stalled the co-decoder 150–200x (ITL p99 up to 9.8 s) at 8192; 2048 → ~1 s ITL, flat big-prompt TTFT, −3.4% pp2048 → **2048 adopted** on qwen3.8-27b |
 | [`benchmarks/2026-09-03_qwen3.8-27b_v1_vs_v2.md`](benchmarks/2026-09-03_qwen3.8-27b_v1_vs_v2.md) | V1 vs V2 model runner A/B (MTP3, fp8 KV): V2 correct + pp +4% but decode/acceptance flat → rolled back to V1; revisit conditions inside |
 | [`benchmarks/2026-08-27_qwen3.8-27b_depth_no_async.md`](benchmarks/2026-08-27_qwen3.8-27b_depth_no_async.md) | Qwen3.8-27B full depth sweep 0–256K (`--no-async-scheduling`, fp8 KV): decode holds 41–60 t/s all depths, pp256K 1277 t/s / 202 s |
 | [`benchmarks/2026-08-27_qwen3.8-27b_no_async_scheduling.md`](benchmarks/2026-08-27_qwen3.8-27b_no_async_scheduling.md) | `--no-async-scheduling` (MTP profiles; #51571 mitigation): decode parity, pp2048 ~3.28k, c2 coherence smoke clean |

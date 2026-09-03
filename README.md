@@ -301,6 +301,14 @@ Key tuning decisions:
   config. Enabled via `VLLM_TUNED_CONFIG_FOLDER=/app/fused_moe_configs`.
 - **`--max-num-batched-tokens 4096`** is required for the MoE model (its
   gated-delta layers force an attention block size of 2112 tokens).
+- **`--max-num-batched-tokens 2048`** on Qwen3.8-27B (2026-09-03 A/B): at the
+  8192 default, a 100K+ prefill running alongside a decoding request stalls
+  that request's token generation 150–200x (47 ms → p50 3.5–4.4 s, p99 up to
+  9.8 s — each scheduler step is one big prefill chunk). 2048 caps the step at
+  one Mamba-block grid stop → ~1 s ITL during prefill, flat big-prompt TTFT,
+  −3.4% pp2048 (+27 ms). Below 2048 gains nothing (step floored at the
+  1600-token Mamba checkpoint grid). Full record:
+  [`benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md`](benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md).
 - **V1 model runner (V2 tested and rolled back, 2026-09-03)**:
   `VLLM_USE_V2_MODEL_RUNNER=1` on the pinned v0.28.1rc0 is fully correct on
   this stack (coherence, 54K × 10, image+MTP, c2 condense smoke) and prefill
