@@ -157,7 +157,7 @@ git ls-remote https://github.com/ROCm/flash-attention.git HEAD
 curl -s "https://hub.docker.com/v2/repositories/rocm/dev-ubuntu-24.04/tags?page_size=100&name=7.1" | jq -r '.results[].name' | sort -V | tail
 
 # Froggeric chat template — current pin is the first line of chat-templates/qwen.jinja
-# (template_version = "qwen3.8-froggeric-vXX.X"). Compare against upstream main:
+# (template_version = "qwen3.8-froggeric-v22.5" as of 2026-09-04). Compare against upstream main:
 curl -sL https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates/raw/main/chat_template.jinja | head -1
 head -1 chat-templates/qwen.jinja
 ```
@@ -218,7 +218,7 @@ touches one of:
   hybrid Mamba/GDN models, MTP/speculative decoding, prefix caching
   (align mamba cache mode), fp8 KV, or `ROCM_AITER_UNIFIED_ATTN` is in scope.
 - **Chat template**: froggeric `chat-templates/qwen.jinja` (pinned, e.g.
-  v22.4). A newer version matters when it changes prompt rendering in ways
+  v22.5). A newer version matters when it changes prompt rendering in ways
   this stack hits: history re-render must stay byte-identical to generated
   tokens (KV-cache/prefix-cache invariance) for thinking-off multi-turn,
   tool-argument formatting for the `qwen3_coder` XML parser, or reasoning/

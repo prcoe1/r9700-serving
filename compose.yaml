@@ -116,7 +116,7 @@ services:
       --tokenizer ${VLLM_TOKENIZER:?set in env/$MODEL_PROFILE.env}
       ${VLLM_MODEL_REVISION:+--revision "${VLLM_MODEL_REVISION}"}
       --served-model-name ${VLLM_SERVED_NAME:?set in env/$MODEL_PROFILE.env}
-      --limit-mm-per-prompt '{"image": 1, "audio": 0, "video": 0}'
+      --limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'
       --chat-template /app/chat-templates/qwen.jinja
       ${VLLM_TOOL_CHOICE:-}
       --max-model-len ${VLLM_MAX_MODEL_LEN:-131072}

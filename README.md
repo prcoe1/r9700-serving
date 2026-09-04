@@ -101,16 +101,19 @@ Runtime environment is split across files:
 ### Chat template
 
 All profiles mount and use [froggeric's Qwen-Fixed-Chat-Templates]
-(`chat-templates/qwen.jinja`, pinned to **v22.4** — `qwen3.8-froggeric-v22.4`,
+(`chat-templates/qwen.jinja`, pinned to **v22.5** — `qwen3.8-froggeric-v22.5`,
 fetched from the repo's `main`). It is applied to every model via `--chat-template` in `compose.yaml`,
 overriding each model's bundled template. It fixes rendering bugs, KV-cache
 invalidation, and token waste in the official Qwen templates, and adds
 tool-error retry warnings plus `tool_call_format` / `reasoning_effort` kwargs.
-Since **v22.4**, history re-rendering is byte-identical to generated tokens on
+Since **v22.4** (retained in v22.5), history re-rendering is byte-identical to generated tokens on
 thinking-off turns, which keeps `--enable-prefix-caching` hits intact across
 multi-turn conversations (this stack runs thinking-off). Thinking is
 partitioned into the `reasoning` field and the answer into `content`;
-`--reasoning-parser qwen3` is required for the split.
+`--reasoning-parser qwen3` is required for the split. v22.5 additionally
+conditions the tool-call instruction's `<think>` block on `enable_thinking`
+(fixes spurious `<think>` when thinking is off) and avoids truncating JSON
+`tool_response` payloads.
 
 Refresh the overlay from upstream when a newer version ships (compare the
 `template_version` line of `chat-templates/qwen.jinja` against the repo's
@@ -133,11 +136,12 @@ restart anyway).
   --reasoning-parser qwen3`** (`VLLM_TOOL_CHOICE`, all profiles): OpenAI
   tool-calling with Qwen's `qwen3_coder` parser; `--reasoning-parser qwen3` is
   required for the template's `reasoning`/`content` split.
-- **`--limit-mm-per-prompt '{"image": 1, "audio": 0, "video": 0}'`**: one
-  image per prompt, audio/video disabled. The cap of 1 fully blocks the
-  2+-large-images engine deadlock on these GDN hybrids (upstream #40707, fix
-  not merged — see the AGENTS.md watchlist); 2+-image prompts are rejected
-  with a 400 instead of hanging the engine.
+- **`--limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'`**: up to
+  99 images per prompt, audio/video disabled. Previously capped at 1 to block
+  the 2+-large-images engine deadlock on these GDN hybrids (upstream #40707,
+  fix #40709 not merged — see AGENTS.md watchlist); with 99 that deadlock
+  can hang the engine (request hangs forever, engine never recovers) if a
+  prompt contains 2+ large images — use at own risk.
 - **`--override-generation-config`**: server-side sampling defaults
   (`temperature` 1.0, `top_p` 0.95, `top_k` 20, `min_p` 0, no penalties).
 - **`--enable-prefix-caching`**: reuse KV for shared prompt prefixes (known
