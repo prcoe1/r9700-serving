@@ -136,21 +136,21 @@ restart anyway).
   --reasoning-parser qwen3`** (`VLLM_TOOL_CHOICE`, all profiles): OpenAI
   tool-calling with Qwen's `qwen3_coder` parser; `--reasoning-parser qwen3` is
   required for the template's `reasoning`/`content` split.
-- **`--limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'`**: up to
-  99 images per prompt, audio/video disabled. Previously capped at 1 to block
-  the 2+-large-images engine deadlock on these GDN hybrids (upstream #40707,
-  fix #40709 not merged — see AGENTS.md watchlist); with 99 that deadlock
-  can hang the engine (request hangs forever, engine never recovers) if a
-  prompt contains 2+ large images — use at own risk.
+- **`--limit-mm-per-prompt '{"image": 1, "audio": 0, "video": 0}'`**: up to
+  1 image per prompt, audio/video disabled. Capped at 1 to block the
+  2+-large-images engine deadlock on these GDN hybrids (upstream #40707,
+  fix #40709 not merged — see AGENTS.md watchlist): with 2+ large images the
+  align block-split collapses to 0, the request hangs forever, and the engine
+  never recovers. Re-raise the cap only once #40709 lands.
 - **`--override-generation-config`**: server-side sampling defaults
   (`temperature` 1.0, `top_p` 0.95, `top_k` 20, `min_p` 0, no penalties).
 - **`--enable-prefix-caching`**: reuse KV for shared prompt prefixes (known
   limitations on this hybrid — AGENTS.md watchlist).
 - **`--max-model-len`** (default `131072`; Qwen3.8-27B overrides to `262144`),
-  **`-tp 2`**, **`--gpu-memory-utilization 0.92`** (`VLLM_GPU_MEM_UTIL`, was
-  0.95; the lower default leaves VRAM headroom for GPU co-tenants — raise it
-  if the GPUs are single-tenant), **`--max-num-seqs 2`** (the universal #35288
-  cap, set explicitly per profile to keep it visible).
+  **`-tp 2`**, **`--gpu-memory-utilization 0.95`** (`VLLM_GPU_MEM_UTIL`,
+  single-tenant default; lower to 0.92 when a GPU co-tenant such as whisper.cpp
+  is active so it keeps ~2-3 GiB of VRAM headroom), **`--max-num-seqs 2`** (the
+  universal #35288 cap, set explicitly per profile to keep it visible).
 - **`--kv-cache-dtype bfloat16`** (`VLLM_KV_CACHE_DTYPE`, default `bfloat16`
   on all profiles; the AITER BF16 LDS-fit patch
   `patches/aiter/unified-attention-bf16-kv.patch` is required). Opting into fp8

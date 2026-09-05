@@ -98,11 +98,12 @@ services:
     # applies to ALL profiles, MTP-enabled or not, so the safe default lives here
     # (see --max-num-seqs below) rather than only in per-profile env. Raise only
     # after the upstream bug is addressed.
-    # NOTE: --gpu-memory-utilization defaults to 0.92 (was 0.95): other services
-    # share the GPUs (whisper.cpp Vulkan server on GPU0 via renderD128), so the
-    # lower target leaves ~2-3 GiB VRAM headroom per card. Raise to 0.95 when the
-    # GPUs are single-tenant (vLLM's boot log prints the equivalent utilization
-    # that would spend the remaining headroom on KV cache).
+    # NOTE: --gpu-memory-utilization defaults to 0.95 (single-tenant): spends
+    # nearly all VRAM on the KV pool (~1.4 GiB/card more than the 0.92
+    # co-tenant target — vLLM's boot log prints the equivalent utilization that
+    # would spend the remaining headroom on KV cache). Lower to 0.92 when other
+    # services share the GPUs (e.g. a whisper.cpp Vulkan server on GPU0 via
+    # renderD128) so they keep ~2-3 GiB VRAM headroom per card.
     # NOTE: --no-async-scheduling is set for MTP/spec-decode profiles only (the
     # flag tracks VLLM_SPEC_DECODE). On vLLM v0.28.0 async scheduling resolves
     # to ON by default when the spec method is MTP (EagleModelTypes) — verified
@@ -116,7 +117,7 @@ services:
       --tokenizer ${VLLM_TOKENIZER:?set in env/$MODEL_PROFILE.env}
       ${VLLM_MODEL_REVISION:+--revision "${VLLM_MODEL_REVISION}"}
       --served-model-name ${VLLM_SERVED_NAME:?set in env/$MODEL_PROFILE.env}
-      --limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'
+      --limit-mm-per-prompt '{"image": 1, "audio": 0, "video": 0}'
       --chat-template /app/chat-templates/qwen.jinja
       ${VLLM_TOOL_CHOICE:-}
       --max-model-len ${VLLM_MAX_MODEL_LEN:-131072}
@@ -124,7 +125,7 @@ services:
       --enable-prefix-caching
       ${PREFIX_CACHE_RETENTION_INTERVAL:+--prefix-cache-retention-interval ${PREFIX_CACHE_RETENTION_INTERVAL}}
       --override-generation-config '{"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repetition_penalty": 1.0}'
-      --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.92}
+      --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.95}
       --host 0.0.0.0
       --port 8180
       --dtype auto
