@@ -1,0 +1,56 @@
+# LACT (lactd) config — source of truth for this box.
+# Install:  sudo cp lact.config.yaml /etc/lact/config.yaml && sudo systemctl restart lactd
+#
+# Post lane-reconfig (2026-09-05): the two R9700s are at PCI 03:00.0 and
+# 06:00.0 (they were 04:00.0/08:00.0 before; card0=06:00.0, card1=03:00.0).
+# The old 04:00.0/08:00.0 keys are gone — they no longer address a GPU (04:00.0
+# is now GPU1's on-card switch upstream, 08:00.0 no longer exists).
+#
+# Power cap reverted to the 300 W default (2026-09-05); the previous
+# 235 W cap (Gen5-equalization stress mitigation, SYSTEM.md §6) has been
+# removed from both cards.
+version: 6
+daemon:
+  log_level: info
+  admin_group: sudo
+  disable_clocks_cleanup: false
+apply_settings_timer: 5
+gpus:
+  1002:7551-1EAE:9801-0000:03:00.0:
+    fan_control_enabled: false
+    fan_control_settings:
+      mode: curve
+      static_speed: 0.5
+      temperature_key: junction
+      interval_ms: 500
+      curve:
+        40: 0.3
+        55: 0.55
+        70: 0.8
+        80: 0.93
+        85: 1.0
+      spindown_delay_ms: 3000
+      change_threshold: 2
+    pmfw_options:
+      acoustic_limit: 3200
+      target_temperature: 83
+  1002:7551-1EAE:9801-0000:06:00.0:
+    fan_control_enabled: false
+    fan_control_settings:
+      mode: curve
+      static_speed: 0.5
+      temperature_key: junction
+      interval_ms: 500
+      curve:
+        40: 0.3
+        55: 0.55
+        70: 0.8
+        80: 0.93
+        85: 1.0
+      spindown_delay_ms: 3000
+      change_threshold: 2
+    pmfw_options:
+      acoustic_limit: 3200
+      target_temperature: 83
+current_profile: null
+auto_switch_profiles: false
