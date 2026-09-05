@@ -1,0 +1,131 @@
+From 243dfa6df183eafcc092f9812ebcbd9da2d3b98e000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Patrik Torstensson <patrik.torstensson@gmail.com>
+Date: Thu, 04 Sep 2026 11:45:34 +0000
+Subject: [PATCH] [Bugfix] Seed align-mode Mamba state_idx in Mamba blocks (#53798)
+
+Version-locked to VLLM_REF=v0.28.1rc0. Upstream PR #53798
+(https://github.com/vllm-project/vllm/pull/53798) open as of 2026-09-04,
+commit 243dfa6 on branch fix-mamba-align-resume-seed. Not in any tag
+(v0.28.1rc0, v0.29.0rc1/rc2). Drop when VLLM_REF contains the fix.
+
+Adapted for v0.28.1rc0: rc0's MambaHybridModelState._get_mamba_group_info
+takes kv_cache_config and lazily populates _mamba_spec via manual loop
+(no get_mamba_groups helper). This backport adds ModelState.set_kv_cache_config
+no-op hook, makes GPUModelRunner.initialize_kv_cache bind the config before
+any add_request, and refactors MambaHybridModelState to resolve Mamba groups
+once at init and seed add_request with MambaSpec.block_size instead of
+cache_config.block_size (align table is indexed in Mamba blocks; page
+unification can scale it past scheduler block -> wrong column or IMA in
+precopy_mamba_align_fused_kernel).
+
+Original tests omitted (test files differ at rc0); runtime fix is identical.
+
+Co-authored-by: Claude Fable 5.1 <noreply@anthropic.com>
+---
+diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
+index f92de74..cd9d668 100644
+--- a/vllm/v1/worker/gpu/model_runner.py
++++ b/vllm/v1/worker/gpu/model_runner.py
+@@ -572,6 +572,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             self.vllm_config,
+             self.device,
+         )
++        self.model_state.set_kv_cache_config(self.kv_cache_config)
+         additional_attn_cg_support = self.model_state.get_additional_cg_support()
+         attn_cg_support = attn_cg_support.narrow(*additional_attn_cg_support)
+         # The speculator clears the flag at load time when the checkpoint has
+diff --git a/vllm/v1/worker/gpu/model_states/interface.py b/vllm/v1/worker/gpu/model_states/interface.py
+index cd1b5b6..ab5b833 100644
+--- a/vllm/v1/worker/gpu/model_states/interface.py
++++ b/vllm/v1/worker/gpu/model_states/interface.py
+@@ -126,6 +126,11 @@ class ModelState(ABC):
+     def apply_staged_writes(self) -> None:
+         return None
+ 
++    def set_kv_cache_config(self, kv_cache_config: KVCacheConfig) -> None:
++        """Hook run once the runner binds a KV cache config, before any
++        request is added. No-op by default."""
++        return None
++
+     def get_additional_cg_support(self) -> tuple[AttentionCGSupport, str | None]:
+         """Cudagraph support of attention groups this ModelState builds outside
+         ``init_attn_backend`` (e.g. encoder-only layers).
+diff --git a/vllm/v1/worker/gpu/model_states/mamba_hybrid.py b/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
+index c8ccde3..b896243 100644
+--- a/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
++++ b/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
+@@ -103,31 +103,40 @@ class MambaHybridModelState(DefaultModelState):
+             self._mamba_group_ids: list[int] = []
+             self._mamba_spec: MambaSpec | None = None
+ 
++    def set_kv_cache_config(self, kv_cache_config: KVCacheConfig) -> None:
++        if not self._align_mode:
++            return
++        # Resolve Mamba groups once at KV cache init time; after page
++        # unification the Mamba block size can differ from
++        # cache_config.block_size, and the align table is indexed in Mamba
++        # blocks (see PR #53798).
++        group_ids: list[int] = []
++        specs: list[MambaSpec] = []
++        for i, group in enumerate(kv_cache_config.kv_cache_groups):
++            spec = group.kv_cache_spec
++            if isinstance(spec, MambaSpec):
++                group_ids.append(i)
++                specs.append(spec)
++        assert specs, "no mamba layers in the model"
++        assert all(specs[0] == s for s in specs), "all mamba groups must share cache scheduling parameters"
++        self._mamba_group_ids = group_ids
++        self._mamba_spec = specs[0]
++
+     def add_request(self, req_index: int, new_req_data: NewRequestData) -> None:
+         super().add_request(req_index, new_req_data)
+         # Must reset the speculative acceptance count in this idx which could be stale.
+         self.num_accepted_tokens_gpu[req_index].fill_(1)
+         if self._align_mode:
+             # Seed the running state block from the resumed/prefilled position.
++            # The align block table is laid out in Mamba blocks, which page
++            # unification can make larger than cache_config.block_size.
++            _, mamba_spec = self._get_mamba_group_info()
+             self._mamba_state_idx_gpu[req_index].fill_(
+-                (new_req_data.num_computed_tokens - 1) // self.cache_config.block_size
++                (new_req_data.num_computed_tokens - 1) // mamba_spec.block_size
+             )
+ 
+-    def _get_mamba_group_info(
+-        self, kv_cache_config: KVCacheConfig
+-    ) -> tuple[list[int], MambaSpec]:
+-        if self._mamba_spec is None:
+-            group_ids: list[int] = []
+-            specs: list[MambaSpec] = []
+-            for i, group in enumerate(kv_cache_config.kv_cache_groups):
+-                spec = group.kv_cache_spec
+-                if isinstance(spec, MambaSpec):
+-                    group_ids.append(i)
+-                    specs.append(spec)
+-            assert specs, "no mamba layers in the model"
+-            assert all(specs[0] == s for s in specs)
+-            self._mamba_group_ids = group_ids
+-            self._mamba_spec = specs[0]
++    def _get_mamba_group_info(self) -> tuple[list[int], MambaSpec]:
++        assert self._mamba_spec is not None, "KV cache config not bound"
+         return self._mamba_group_ids, self._mamba_spec
+ 
+     def _ensure_align_ctx(
+@@ -184,7 +193,7 @@ class MambaHybridModelState(DefaultModelState):
+         num_reqs = input_batch.num_reqs
+         if num_reqs == 0:
+             return
+-        mamba_group_ids, mamba_spec = self._get_mamba_group_info(kv_cache_config)
++        mamba_group_ids, mamba_spec = self._get_mamba_group_info()
+         ctx = self._ensure_align_ctx(kv_cache_config, mamba_group_ids, block_tables)
+ 
+         # The state-advance + pre-copy kernels run every step; they fast-exit per
+@@ -272,7 +281,7 @@ class MambaHybridModelState(DefaultModelState):
+             num_decode_draft_tokens_cpu = torch.from_numpy(num_decode_draft_tokens_np)
+ 
+         if self._align_mode:
+-            mamba_group_ids, _ = self._get_mamba_group_info(kv_cache_config)
++            mamba_group_ids, _ = self._get_mamba_group_info()
+             aligned_index_builders = []
+             for group_idx, group_id in enumerate(mamba_group_ids):
+                 for group in attn_groups[group_id]:
