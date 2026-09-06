@@ -22,8 +22,12 @@ header h1{margin:0;font-size:18px;letter-spacing:0.02em}
 /* 260px min so all four stats cards fit one row at the 1200px wrap width */
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;align-items:stretch}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;min-width:0}
+/* Definite heights on chart containers: with flex:1/auto heights the canvas
+   size feeds back into its parent on every Chart.js update() — Firefox grows
+   the chart unboundedly over time (Safari's layout resolves the loop away). */
 .grid .card{display:flex;flex-direction:column}
-.grid .chart-wrap{flex:1;min-height:80px;position:relative;margin-top:10px}
+.grid .chart-wrap{height:120px;position:relative;margin-top:auto}
+#benchChartWrap,#depthChartWrap,#concChartWrap{position:relative;height:140px;margin-top:12px}
 .card h3{margin:0 0 10px;font-size:13px;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted)}
 .metric{font-size:28px;font-weight:700}
 .metric small{font-size:13px;color:var(--muted);font-weight:500}
@@ -37,7 +41,7 @@ header h1{margin:0;font-size:18px;letter-spacing:0.02em}
 .btn.download{background:transparent;color:var(--accent);border-color:var(--accent)}
 .btn.small{padding:2px 8px;font-size:11px;border-radius:6px;font-weight:600;line-height:1.2}
 canvas{max-width:100%;display:block}
-.chart-wrap canvas{width:100% !important;height:100% !important}
+.chart-wrap canvas,#benchChartWrap canvas,#depthChartWrap canvas,#concChartWrap canvas{width:100% !important;height:100% !important}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{padding:8px;border-bottom:1px solid var(--border);text-align:left}
 th{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:0.05em;text-transform:uppercase}
@@ -60,9 +64,8 @@ th{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:0.05em;text-
   .card h3{font-size:12px}
   .metric{font-size:24px}
   .metric small{font-size:12px}
-  .chart-wrap{margin-top:8px}
-  .grid .chart-wrap{min-height:120px}
-  #benchChartWrap canvas,#depthChartWrap canvas,#concChartWrap canvas{height:160px !important}
+  .grid .chart-wrap{height:130px}
+  #benchChartWrap,#depthChartWrap,#concChartWrap{height:160px}
   table{font-size:12px;display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap}
   th,td{padding:6px 8px}
   .btn{padding:10px 12px;font-size:14px;min-height:44px}
