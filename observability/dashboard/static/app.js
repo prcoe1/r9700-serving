@@ -4,7 +4,7 @@ let kvChart, reqChart, hitChart, thrChart, histChart, depthChart, concChart;
 const RING_CAP = 600; // 10 min @ 1s poll
 const ring = {kv:[], running:[], hit:[], pp:[], tg:[]};
 let prevQueries = null, prevHits = null;
-let prevPromptTok = null, prevGenTok = null, prevRateTs = null;
+let prevKvUsed = null, prevGenTok = null, prevRateTs = null;
 const fmtRate = v => v==null? '—' : v>=1e6? (v/1e6).toFixed(2)+'M' : v>=1e4? (v/1e3).toFixed(1)+'k' : v>=100? v.toFixed(0) : v.toFixed(1);
 
 function makeChart(canvas, label, color){
@@ -140,19 +140,30 @@ async function tick(){
     $('running').textContent = asInt(j['vllm:num_requests_running']) ?? '—';
     $('waiting').textContent = asInt(j['vllm:num_requests_waiting']) ?? '—';
     $('swapped').textContent = asInt(j['vllm:num_requests_swapped']) ?? '0';
-    // Throughput: t/s rates derived from the cumulative token counters,
-    // using actual elapsed time between polls; a negative delta (counter
-    // reset on vLLM restart) is dropped for that interval.
+    // Throughput.
+    // prompt t/s: from KV-cache usage growth. vllm:prompt_tokens_total only
+    // moves at prefill *completion* (scheduler reports the whole prompt with
+    // the request's first output), so a long chunked prefill would land its
+    // entire length in one 1s poll — a "30k t/s" spike instead of the real
+    // ~3k. KV usage grows per prefill chunk, so its delta is the live rate.
+    // gen t/s: generation_tokens_total advances per step, so a plain counter
+    // delta. Negative deltas (freed blocks / counter reset) are dropped.
     const pt = j['vllm:prompt_tokens_total'], gt = j['vllm:generation_tokens_total'];
+    const kvUsed = (kv!=null && kvMaxTok!=null)? kv*kvMaxTok : null;
     let ppRate = null, tgRate = null;
     const nowMs = Date.now();
-    if(pt!=null && gt!=null && prevPromptTok!=null && prevRateTs!=null && nowMs>prevRateTs){
+    if(prevRateTs!=null && nowMs>prevRateTs){
       const dt = (nowMs-prevRateTs)/1000;
-      const dpt = pt-prevPromptTok, dgt = gt-prevGenTok;
-      if(dpt>=0) ppRate = dpt/dt;
-      if(dgt>=0) tgRate = dgt/dt;
+      if(prevKvUsed!=null && kvUsed!=null){
+        const dUsed = kvUsed - prevKvUsed;
+        if(dUsed>=0) ppRate = dUsed/dt;
+      }
+      if(prevGenTok!=null && gt!=null){
+        const dgt = gt-prevGenTok;
+        if(dgt>=0) tgRate = dgt/dt;
+      }
     }
-    prevPromptTok = pt; prevGenTok = gt; prevRateTs = nowMs;
+    prevKvUsed = kvUsed; prevGenTok = gt; prevRateTs = nowMs;
     $('ppRate').textContent = fmtRate(ppRate);
     $('tgRate').textContent = fmtRate(tgRate);
     $('thrDetail').textContent = (pt!=null&&gt!=null)? `cumulative ${fmtRate(pt)} / ${fmtRate(gt)} tokens` : '';

@@ -53,7 +53,7 @@
     <div class="card">
       <h3>Throughput</h3>
       <div class="row">
-        <div><div class="metric" id="ppRate">—</div><div class="muted">prompt t/s</div></div>
+        <div><div class="metric" id="ppRate">—</div><div class="muted" title="Estimated from KV-cache growth per poll. vLLM reports prompt_tokens_total only at prefill completion, so it can't show live prefill progress (a long chunked prefill would spike to the whole prompt length in one second).">prompt t/s</div></div>
         <div><div class="metric" id="tgRate">—</div><div class="muted">gen t/s</div></div>
       </div>
       <div class="muted" id="thrDetail"></div>
