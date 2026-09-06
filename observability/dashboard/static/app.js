@@ -254,7 +254,7 @@ async function refreshHistory(){
       labels.push(label);
       ppData.push(pp); tg32Data.push(tg32); tg128Data.push(tg128);
       const tr=document.createElement('tr');
-      const dlBtn = rec.ts? `<a href="/api/history/download/${rec.ts}" download>download</a> <a href="/api/history/download/${rec.ts}" target="_blank">view</a>` : '';
+      const dlBtn = rec.ts? `<a class="btn download small" href="/api/history/download/${rec.ts}" download>download</a>` : '';
       const delBtn = rec.ts? `<button class="btn danger small" onclick="deleteBench(${rec.ts})">delete</button>` : '';
       tr.innerHTML = `<td>${label}</td><td>${esc(rec.model)||''}</td><td>${pp!=null?pp.toFixed(0):'—'}</td><td>${tg32!=null?tg32.toFixed(1):'—'}</td><td>${tg128!=null?tg128.toFixed(1):'—'}</td><td>${rec.elapsed? rec.elapsed.toFixed(0)+'s':''}</td><td>${dlBtn}</td><td>${delBtn}</td>`;
       tbody.appendChild(tr);
@@ -358,7 +358,7 @@ async function refreshDepth(){
           const dr=rec.depth_results || [];
           const lastPt=dr[dr.length-1]||{};
           const tr=document.createElement('tr');
-          tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${dr.length?dr.length:rec.depths?.length||'—'} depths</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/depth/download/${rec.ts}" download>download</a> <a href="/api/depth/download/${rec.ts}" target="_blank">view</a></td><td><button class="btn danger small" onclick="deleteDepth(${rec.ts})">delete</button></td>`;
+          tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${dr.length?dr.length:rec.depths?.length||'—'} depths</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a class="btn download small" href="/api/depth/download/${rec.ts}" download>download</a></td><td><button class="btn danger small" onclick="deleteDepth(${rec.ts})">delete</button></td>`;
           tbody.appendChild(tr);
         });
       } else if(items.length===1){
@@ -368,7 +368,7 @@ async function refreshDepth(){
         const dr=rec.depth_results || [];
         const lastPt=dr[dr.length-1]||{};
         const tr=document.createElement('tr');
-        tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${dr.length?dr.length:rec.depths?.length||'—'} depths</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/depth/download/${rec.ts}" download>download</a> <a href="/api/depth/download/${rec.ts}" target="_blank">view</a></td><td><button class="btn danger small" onclick="deleteDepth(${rec.ts})">delete</button></td>`;
+        tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${dr.length?dr.length:rec.depths?.length||'—'} depths</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a class="btn download small" href="/api/depth/download/${rec.ts}" download>download</a></td><td><button class="btn danger small" onclick="deleteDepth(${rec.ts})">delete</button></td>`;
         tbody.appendChild(tr);
       }
       // Also expand latest depths as sub-rows if few sweeps
@@ -470,7 +470,7 @@ async function refreshConc(){
         const conc=rec.concurrency || (cr[0]?.concurrency) || rec.max_conc || '—';
         const lastPt=cr[cr.length-1]||{};
         const tr=document.createElement('tr');
-        tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${cr.length?cr[0].depth+'…'+cr[cr.length-1].depth : rec.depths?rec.depths[0]+'…'+rec.depths[rec.depths.length-1] : '—'}</td><td>${conc}</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/conc/download/${rec.ts}" download>download</a> <a href="/api/conc/download/${rec.ts}" target="_blank">view</a></td><td><button class="btn danger small" onclick="deleteConc(${rec.ts})">delete</button></td>`;
+        tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${cr.length?cr[0].depth+'…'+cr[cr.length-1].depth : rec.depths?rec.depths[0]+'…'+rec.depths[rec.depths.length-1] : '—'}</td><td>${conc}</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a class="btn download small" href="/api/conc/download/${rec.ts}" download>download</a></td><td><button class="btn danger small" onclick="deleteConc(${rec.ts})">delete</button></td>`;
         tbody.appendChild(tr);
       });
       if(points.length>0){

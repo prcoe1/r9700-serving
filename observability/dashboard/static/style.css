@@ -30,10 +30,11 @@ header h1{margin:0;font-size:18px;letter-spacing:0.02em}
 .kvbar{height:10px;background:#0b0d12;border-radius:999px;overflow:hidden;margin-top:8px;border:1px solid var(--border)}
 .kvbar>div{height:100%;background:linear-gradient(90deg,var(--accent),#9b6bff);transition:width 0.4s ease}
 .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.btn{appearance:none;border:1px solid var(--accent);background:var(--accent);color:white;padding:10px 14px;border-radius:10px;cursor:pointer;font-weight:600}
+.btn{appearance:none;border:1px solid var(--accent);background:var(--accent);color:white;padding:10px 14px;border-radius:10px;cursor:pointer;font-weight:600;text-decoration:none}
 .btn:disabled{opacity:0.45;cursor:not-allowed}
 .btn.secondary{background:transparent;color:var(--text);border-color:var(--border)}
 .btn.danger{background:transparent;color:var(--bad);border-color:var(--bad)}
+.btn.download{background:transparent;color:var(--accent);border-color:var(--accent)}
 .btn.small{padding:2px 8px;font-size:11px;border-radius:6px;font-weight:600;line-height:1.2}
 canvas{max-width:100%;display:block}
 .chart-wrap canvas{width:100% !important;height:100% !important}
