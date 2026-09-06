@@ -256,7 +256,20 @@ bench-json: check
     echo "Logged to observability/history.jsonl"
 
 logs-dashboard:
-    @{{compose}} logs -f dashboard
+    @{{compose}} --profile dashboard logs -f dashboard
+
+# Dashboard is optional (profile `dashboard`, disabled by default).
+# `just up` starts only vLLM; use `just dashboard-up` / `just dashboard-down`.
+dashboard-up: check
+    @{{compose}} --profile dashboard up -d dashboard
+    @echo "Dashboard at http://localhost:8083 (profile: dashboard)"
+
+dashboard-down:
+    -@{{compose}} --profile dashboard stop dashboard 2>/dev/null || true
+    -@{{compose}} --profile dashboard rm -f dashboard 2>/dev/null || true
+    @echo "Dashboard stopped."
 
 down:
     @{{compose}} down
+    -@{{compose}} --profile dashboard stop dashboard 2>/dev/null || true
+    -@{{compose}} --profile dashboard rm -f dashboard 2>/dev/null || true

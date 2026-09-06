@@ -410,7 +410,7 @@ for the #35288 MTP bug, not throughput) are archived in
 
 ## Dashboard
 
-`compose.yaml` includes a lightweight observability dashboard (`localhost/r9700-dashboard:latest`, FastAPI + Chart.js) on `http://localhost:8083` (LAN-exposed `0.0.0.0:8083→3000`). It polls `vllm:8180/metrics` every 1s and is started/stopped with `just up`/`just down` alongside vLLM. `just logs-dashboard` follows its logs; it builds from `observability/dashboard/` (`just build` includes it).
+`compose.yaml` includes an optional observability dashboard (`localhost/r9700-dashboard:latest`, FastAPI + Chart.js) on `http://localhost:8083` (LAN-exposed `0.0.0.0:8083→3000`), disabled by default (`profiles: ["dashboard"]`). `just up` starts only vLLM; `just dashboard-up` / `just dashboard-down` start/stop it (`just logs-dashboard` follows it). It polls `vllm:8180/metrics` every 1s and builds from `observability/dashboard/` (`just build` includes it).
 
 **Live panels** (10-min sparklines): KV cache `%` + `max tokens`/`blocks × block_size`/`cache_dtype`/`gpu_memory_utilization`, requests `running`/`waiting`/`swapped`, prefix cache incremental `Δ hits/queries` per poll + cumulative `queries/hits/hitrate` and `block_size`/`mamba_cache_mode` (see `#45238` note).
 

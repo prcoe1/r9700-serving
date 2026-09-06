@@ -43,6 +43,7 @@ x-amd-devices: &amd_devices
 
 services:
   dashboard:
+    profiles: ["dashboard"]
     build:
       context: ./observability/dashboard
     image: localhost/r9700-dashboard:latest
