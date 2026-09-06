@@ -43,12 +43,16 @@ just --set model qwen3.6-27b up     # Switch to Qwen3.6-27B-FP8 (dense)
 just --set model qwen3.6-35b-a3b up  # Switch to MoE 35B-A3B model
 just logs        # Follow service logs
 just down        # Stop and remove containers
+just dashboard-up   # Start optional dashboard on :8083 (disabled by default)
+just dashboard-down # Stop dashboard
+just logs-dashboard # Follow dashboard logs
 ```
 
 To use Podman: `just --set runtime podman build` or `RUNTIME=podman just up`
 (see the Podman caveats in Requirements). Run `just --list` to see all recipes
-including `rebuild` (force-rebuild) and `clear-vllm-caches` (wipe host-side
-Triton/Inductor/AITER caches; preserves the HuggingFace model cache).
+including `rebuild` (force-rebuild), `clear-vllm-caches` (wipe host-side
+Triton/Inductor/AITER caches; preserves the HuggingFace model cache), and
+`dashboard-up`/`dashboard-down`.
 
 Always go through `just`: `compose.yaml` interpolates the model arguments from
 `env/<profile>.env`, which the recipes pass to compose via `--env-file`. A bare
