@@ -8,6 +8,7 @@
 <script src="chart.umd.min.js"></script>
 </head>
 <body>
+<div class="topbar">
 <header>
   <h1>r9700 — vLLM dashboard</h1>
   <span id="health" class="badge">checking…</span>
@@ -16,11 +17,12 @@
   <span class="muted" style="margin-left:auto">vLLM <code id="vllmurl"></code> · poll 1s · <a href="/api/metrics" target="_blank">/api/metrics</a> · <a href="/api/history" target="_blank">history</a></span>
 </header>
 <nav class="tabs" role="tablist" aria-label="Dashboard sections">
-  <button data-tab="stats" class="tab-btn active" role="tab" aria-selected="true">Stats</button>
-  <button data-tab="benchmarks" class="tab-btn" role="tab" aria-selected="false">Benchmarks</button>
+  <button data-tab="stats" class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-stats">Stats</button>
+  <button data-tab="benchmarks" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-benchmarks">Benchmarks</button>
 </nav>
+</div>
 <div class="wrap">
-  <div id="tab-stats" class="tab-panel active">
+  <div id="tab-stats" class="tab-panel active" role="tabpanel" aria-label="Stats">
   <div class="grid">
     <div class="card">
       <h3>KV cache</h3>
@@ -54,12 +56,13 @@
     <div class="muted" id="lastTs"></div>
   </div>
   </div>
-  <div id="tab-benchmarks" class="tab-panel">
+  <div id="tab-benchmarks" class="tab-panel" role="tabpanel" aria-label="Benchmarks">
 
   <div class="card" id="benchCard">
     <h3>Bench history <span class="muted" style="text-transform:none;letter-spacing:0">pp2048 / tg32 / tg128 (t/s) — 1 bench = pp + 2 tg points</span></h3>
     <div class="row" style="margin-bottom:10px">
       <button id="runBench" class="btn">▶ Run bench (pp2048 + tg32/128 ×3)</button>
+      <button id="cancelBench" class="btn secondary" disabled>Cancel</button>
       <button id="refreshHist" class="btn secondary">Refresh</button>
       <button id="clearBench" class="btn secondary" style="border-color:var(--bad);color:var(--bad)">Clear data</button>
       <span id="benchStatus" class="muted"></span>

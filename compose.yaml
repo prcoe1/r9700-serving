@@ -51,6 +51,13 @@ services:
     restart: unless-stopped
     ports:
       - "8083:3000"
+    # python:3.12-slim has no curl; probe via urllib (dashboard is fast to boot).
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:3000/api/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
     env_file:
       - env/2xr9700.vllm.common
       - env/aiter-unified-attention.env

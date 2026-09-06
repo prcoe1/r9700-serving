@@ -1,22 +1,26 @@
 :root { --bg:#0f1117; --card:#1a1d27; --border:#2a2e3e; --text:#e6e8ef; --muted:#9aa0b8; --accent:#6c7bff; --ok:#2ecc71; --warn:#f1c40f; --bad:#e74c3c; --radius:12px; }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
-body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:var(--text);padding-top:env(safe-area-inset-top);padding-bottom:env(safe-area-inset-bottom)}
+body{margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;background:var(--bg);color:var(--text);padding-bottom:env(safe-area-inset-bottom)}
 a{color:var(--accent)}
-header{padding:16px 20px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;border-bottom:1px solid var(--border);background:rgba(26,29,39,0.8);backdrop-filter:blur(8px);position:sticky;top:0;z-index:10}
+.topbar{position:sticky;top:env(safe-area-inset-top);z-index:10;background:var(--bg)}
+header{padding:16px 20px;display:flex;gap:16px;align-items:center;flex-wrap:wrap;background:rgba(26,29,39,0.8);backdrop-filter:blur(8px)}
 header h1{margin:0;font-size:18px;letter-spacing:0.02em}
 .badge{padding:4px 10px;border-radius:999px;background:var(--card);border:1px solid var(--border);font-size:12px;color:var(--muted)}
 .badge.ok{border-color:var(--ok);color:var(--ok)}
 .badge.bad{border-color:var(--bad);color:var(--bad)}
-.tabs{max-width:1200px;margin:0 auto;padding:0 18px;display:flex;gap:8px;border-bottom:1px solid var(--border);background:var(--bg);position:sticky;top:60px;z-index:9}
+.tabs{max-width:1200px;margin:0 auto;padding:0 18px;display:flex;gap:8px;border-bottom:1px solid var(--border);background:var(--bg)}
 .tab-btn{appearance:none;background:transparent;border:1px solid transparent;border-bottom:none;padding:12px 20px;border-radius:12px 12px 0 0;color:var(--muted);cursor:pointer;font-weight:700;font-size:14px;letter-spacing:0.02em;transition:all 0.15s}
 .tab-btn:hover{color:var(--text);background:rgba(108,123,255,0.08)}
 .tab-btn.active{background:var(--card);color:var(--text);border-color:var(--border);border-bottom:1px solid var(--card);margin-bottom:-1px}
-.tab-panel{display:none}
+/* min-width:0 — grid items default to min-width:auto, which lets the
+   nowrap bench tables push their card (and the grid track) wider than
+   the viewport on phones; with 0 the tables scroll inside their wraps */
+.tab-panel{display:none;min-width:0}
 .tab-panel.active{display:grid;gap:16px}
 .wrap{max-width:1200px;margin:0 auto;padding:18px;display:grid;gap:16px}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;align-items:stretch}
-.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;min-width:0}
 .grid .card{display:flex;flex-direction:column}
 .grid .chart-wrap{flex:1;min-height:80px;position:relative;margin-top:10px}
 .card h3{margin:0 0 10px;font-size:13px;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted)}
@@ -46,7 +50,7 @@ th{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:0.05em;text-
   header{padding:12px 14px;gap:10px}
   header h1{font-size:16px}
   .badge{font-size:11px;padding:3px 8px}
-  .tabs{padding:0 12px;gap:4px;top:52px}
+  .tabs{padding:0 12px;gap:4px}
   .tab-btn{flex:1;text-align:center;padding:14px 10px;font-size:15px;min-height:44px}
   .wrap{padding:12px;gap:12px}
   .grid{grid-template-columns:1fr;gap:12px}

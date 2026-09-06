@@ -418,9 +418,17 @@ for the #35288 MTP bug, not throughput) are archived in
 
 `compose.yaml` includes an optional observability dashboard (`localhost/r9700-dashboard:latest`, FastAPI + Chart.js) on `http://localhost:8083` (LAN-exposed `0.0.0.0:8083→3000`), disabled by default (`profiles: ["dashboard"]`). `just up` starts only vLLM; `just dashboard-up` / `just dashboard-down` start/stop it (`just logs-dashboard` follows it). It polls `vllm:8180/metrics` every 1s and builds from `observability/dashboard/` (`just build` includes it).
 
-**Live panels** (10-min sparklines): KV cache `%` + `max tokens`/`blocks × block_size`/`cache_dtype`/`gpu_memory_utilization`, requests `running`/`waiting`/`swapped`, prefix cache incremental `Δ hits/queries` per poll + cumulative `queries/hits/hitrate` and `block_size`/`mamba_cache_mode` (see `#45238` note).
+The UI has two tabs (sticky, keyboard-navigable): **Stats** (default) and **Benchmarks**, so the live view stays compact on phones — the grid collapses to one column under 640 px (verified on iPhone 17 Pro Max, safe-area aware). Tab choice persists in `localStorage`/URL hash.
 
-**Bench history** (`pp2048`/`tg32`/`tg128`): table + chart from `observability/history.jsonl` (limit 20, also written by `just bench-json` on host). Columns `download results` (full JSON via `GET /api/history/download/{ts}`) + `modify` (red `delete` button like `Clear data`, smaller). `POST /api/bench` runs `llama-benchy` `pp2048 tg32/128 ×3` in-container (timeout 600s). Payloads are truncated in the list view (`raw` 500B preview) to keep the UI responsive.
+**Live panels** (10-min sparklines, Stats tab): KV cache `%` + `max tokens`/`blocks × block_size`/`cache_dtype`/`gpu_memory_utilization`, requests `running`/`waiting`/`swapped`, prefix cache incremental `Δ hits/queries` per poll + cumulative `queries/hits/hitrate` and `block_size`/`mamba_cache_mode` (see `#45238` note).
+
+**Bench history** (`pp2048`/`tg32`/`tg128`, Benchmarks tab): table + chart from `observability/history.jsonl` (limit 20, also written by `just bench-json` on host — a single json run; `just bench` is the md report). Columns `download results` (full JSON via `GET /api/history/download/{ts}`) + `modify` (red `delete` button like `Clear data`, smaller). `POST /api/bench` runs `llama-benchy` `pp2048 tg32/128 ×3` in-container (timeout 600s), cancellable via `Cancel` / `POST /api/bench/cancel`. Payloads are truncated in the list view (`raw` 500B preview) to keep the UI responsive.
+
+> **Security note (deliberate):** the dashboard has no auth — it is meant for a
+> trusted home LAN. Anyone who can reach `:8083` can trigger a sweep (up to
+> ~40 min of vLLM load) or wipe history. Do not expose `:8083` past your LAN.
+
+Backend helpers have unit tests: `uv run --with "fastapi==0.115.*" --with "httpx==0.28.*" --with pytest pytest observability/dashboard/test_app.py -q` (from the repo root).
 
 **Depth sweep** — `full 0–200K corpus (pp2048/tg1024, TTFT in table) — est. 20min` (`observability/depth_history.jsonl`, limit 20, `POST /api/depth`, timeout 3600s). Runs `llama-benchy --depth 0 4096 8192 16384 32768 65536 128000 200000 --tg 1024 --no-cache --runs 2`. Chart + table show latest sweep; history rows collapsed with per-run `download results`/`modify`.
 

@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 from collections import deque
 from pathlib import Path
@@ -18,6 +19,7 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 
 VLLM_URL = os.environ.get("VLLM_URL", "http://vllm:8180")
 HISTORY_PATH = Path(os.environ.get("HISTORY_PATH", "/app/history.jsonl"))
@@ -37,18 +39,18 @@ ring: deque[dict[str, Any]] = deque(maxlen=RING_SIZE)
 
 # Bench state
 bench_lock = asyncio.Lock()
-bench_state: dict[str, Any] = {"running": False, "last": None, "log": ""}
+bench_state: dict[str, Any] = {"running": False, "last": None, "log": "", "cancelled": False}
 bench_proc: subprocess.Popen | None = None
 
 # Depth sweep state (full 0-200K corpus, tg1024; 256K exceeds 262144 with overhead)
 depth_lock = asyncio.Lock()
-depth_state: dict[str, Any] = {"running": False, "last": None, "log": "", "progress": ""}
+depth_state: dict[str, Any] = {"running": False, "last": None, "log": "", "progress": "", "cancelled": False}
 depth_proc: subprocess.Popen | None = None
 DEPTHS = [0, 4096, 8192, 16384, 32768, 65536, 128000, 200000]
 
 # Concurrency sweep state (corpus up to max_num_seqs)
 conc_lock = asyncio.Lock()
-conc_state: dict[str, Any] = {"running": False, "last": None, "log": "", "progress": ""}
+conc_state: dict[str, Any] = {"running": False, "last": None, "log": "", "progress": "", "cancelled": False}
 conc_proc: subprocess.Popen | None = None
 HISTORY_LIMIT = 20
 
@@ -91,29 +93,92 @@ def _append_history_limited(path: Path, record: dict[str, Any], limit: int = HIS
         f.write(json.dumps(record) + "\n")
     # truncate to last `limit` lines
     try:
-        lines = open(path).read().strip().split("\n")
+        with open(path) as f:
+            lines = f.read().strip().split("\n")
         if len(lines) > limit:
-            open(path, "w").write("\n".join(lines[-limit:]) + "\n")
+            with open(path, "w") as f:
+                f.write("\n".join(lines[-limit:]) + "\n")
     except Exception:
         pass
 
 
+def _history_candidates(path: Path, host_path: Path) -> list[Path]:
+    return [path, host_path] if path != host_path else [path]
+
+
+def _read_history(path: Path, host_path: Path) -> list[dict[str, Any]]:
+    # List view: strip heavy raw/stderr payloads (full record available via
+    # the per-section download endpoint) to keep the UI responsive.
+    for p in _history_candidates(path, host_path):
+        if not p.exists():
+            continue
+        items: list[dict[str, Any]] = []
+        with open(p) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                raw = rec.get("raw")
+                if isinstance(raw, str) and len(raw) > 500:
+                    rec = {**rec, "raw_len": len(raw), "raw": raw[:500] + "…"}
+                err = rec.get("stderr")
+                if isinstance(err, str) and len(err) > 500:
+                    rec = {**rec, "stderr_len": len(err), "stderr": err[:500] + "…"}
+                items.append(rec)
+        return items
+    return []
+
+
+def _find_record(path: Path, host_path: Path, ts_f: float):
+    for p in _history_candidates(path, host_path):
+        if not p.exists():
+            continue
+        with open(p) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except Exception:
+                    continue
+                if rec.get("ts") is not None and abs(float(rec["ts"]) - ts_f) < 0.001:
+                    return rec
+    return None
+
+
+def _serve_download(rec: dict[str, Any], prefix: str):
+    ts = rec.get("ts")
+    fname = f"{prefix}-{ts}.json"
+    tmp = Path(f"/tmp/{fname}")
+    tmp.write_text(json.dumps(rec, indent=2))
+    return FileResponse(
+        str(tmp),
+        filename=fname,
+        media_type="application/json",
+        background=BackgroundTask(tmp.unlink, missing_ok=True),
+    )
+
+
 def _delete_history_by_ts(path: Path, host_path: Path, ts: float) -> bool:
     # Delete single row by ts (exact float match, also string compare for safety)
-    candidates = [path, host_path] if path != host_path else [path]
-    deleted = False
-    for p in candidates:
+    for p in _history_candidates(path, host_path):
         if not p.exists():
             continue
         try:
-            lines = open(p).read().strip().split("\n")
+            with open(p) as f:
+                lines = f.read().strip().split("\n")
             new_lines = []
+            deleted = False
             for line in lines:
                 if not line.strip():
                     continue
                 try:
                     rec = json.loads(line)
-                    # match ts within 1ms or exact
                     rec_ts = rec.get("ts")
                     if rec_ts is not None and abs(float(rec_ts) - float(ts)) < 0.001:
                         deleted = True
@@ -122,7 +187,8 @@ def _delete_history_by_ts(path: Path, host_path: Path, ts: float) -> bool:
                     pass
                 new_lines.append(line)
             if deleted or len(new_lines) != len(lines):
-                open(p, "w").write("\n".join(new_lines) + ("\n" if new_lines else ""))
+                with open(p, "w") as f:
+                    f.write("\n".join(new_lines) + ("\n" if new_lines else ""))
                 deleted = True
         except Exception:
             pass
@@ -130,7 +196,8 @@ def _delete_history_by_ts(path: Path, host_path: Path, ts: float) -> bool:
 
 
 def _get_max_concurrency() -> int:
-    # From env (dashboard inherits same env_file stack as vllm)
+    # From env (dashboard inherits the same env_file stack as vllm,
+    # compose.yaml env_file), so this is authoritative when set.
     for key in ("VLLM_MAX_NUM_SEQS", "VLLM_MAX_NUM_SEQS_PER_REQUEST"):
         v = os.environ.get(key)
         if v and v.isdigit():
@@ -138,13 +205,8 @@ def _get_max_concurrency() -> int:
                 return max(1, int(v))
             except Exception:
                 pass
-    # Fallback: try last metrics ring or fetch live
-    for src in (ring,):
-        if src:
-            for item in reversed(src):
-                if "num_gpu_blocks" in item:
-                    # not concurrency, skip
-                    pass
+    # No env set — match the compose.yaml --max-num-seqs default.
+    print("[warn] VLLM_MAX_NUM_SEQS not set; assuming max concurrency 2", file=sys.stderr)
     return 2
 
 
@@ -230,36 +292,7 @@ async def api_metrics():
 
 @app.get("/api/history")
 async def api_history():
-    p = _resolve_history()
-    # Also check host fallback if primary empty
-    candidates = [p, HOST_HISTORY] if p != HOST_HISTORY else [p]
-    for cand in candidates:
-        if cand.exists():
-            p = cand
-            break
-    if not p.exists():
-        return JSONResponse([])
-    items: list[dict[str, Any]] = []
-    try:
-        with open(p) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                    # strip heavy raw/stderr from list view to keep payload small
-                    # full record available via /api/history/download/{ts}
-                    if "raw" in rec:
-                        rec = {**rec, "raw_len": len(rec.get("raw") or ""), "raw": (rec["raw"][:500] + "…") if len(rec.get("raw") or "") > 500 else rec.get("raw")}
-                    if "stderr" in rec and rec["stderr"] and len(rec["stderr"]) > 500:
-                        rec = {**rec, "stderr_len": len(rec["stderr"]), "stderr": rec["stderr"][:500] + "…"}
-                    items.append(rec)
-                except json.JSONDecodeError:
-                    continue
-    except FileNotFoundError:
-        return JSONResponse([])
-    return JSONResponse(items)
+    return JSONResponse(_read_history(_resolve_history(), HOST_HISTORY))
 
 
 @app.get("/api/history/download/{ts}")
@@ -268,29 +301,10 @@ async def api_history_download(ts: str):
         ts_f = float(ts)
     except Exception:
         raise HTTPException(status_code=400, detail="invalid ts")
-    p = _resolve_history()
-    candidates = [p, HOST_HISTORY] if p != HOST_HISTORY else [p]
-    for cand in candidates:
-        if not cand.exists():
-            continue
-        try:
-            with open(cand) as f:
-                for line in f:
-                    line=line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec=json.loads(line)
-                    except Exception:
-                        continue
-                    if rec.get("ts") is not None and abs(float(rec["ts"])-ts_f) < 0.001:
-                        fname = f"bench-{ts}.json"
-                        tmp = Path(f"/tmp/{fname}")
-                        tmp.write_text(json.dumps(rec, indent=2))
-                        return FileResponse(str(tmp), filename=fname, media_type="application/json")
-        except Exception:
-            pass
-    raise HTTPException(status_code=404, detail="not found")
+    rec = _find_record(_resolve_history(), HOST_HISTORY, ts_f)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return _serve_download(rec, "bench")
 
 
 @app.post("/api/history/clear")
@@ -298,11 +312,13 @@ async def api_history_clear():
     p = _resolve_history()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        open(p, "w").close()
+        with open(p, "w"):
+            pass
         # also clear host fallback if different
         if HOST_HISTORY != p and HOST_HISTORY.exists():
             try:
-                open(HOST_HISTORY, "w").close()
+                with open(HOST_HISTORY, "w"):
+                    pass
             except Exception:
                 pass
     except Exception as e:
@@ -382,36 +398,29 @@ async def api_bench():
     return JSONResponse({"started": True})
 
 
+@app.post("/api/bench/cancel")
+async def api_bench_cancel():
+    global bench_proc
+    if not bench_state["running"]:
+        raise HTTPException(status_code=400, detail="not running")
+    bench_state["cancelled"] = True
+    bench_state["log"] += "\n[CANCEL requested]\n"
+    proc = bench_proc
+    if proc and proc.poll() is None:
+        try:
+            proc.terminate()
+            await asyncio.sleep(1)
+            if proc.poll() is None:
+                proc.kill()
+        except Exception as e:
+            bench_state["log"] += f"\n[cancel failed: {e}]"
+    return JSONResponse({"cancelled": True})
+
+
 # Depth sweep (full 0-256K corpus)
 @app.get("/api/depth/history")
 async def api_depth_history():
-    p = _resolve_depth_history()
-    candidates = [p, HOST_DEPTH_HISTORY] if p != HOST_DEPTH_HISTORY else [p]
-    for cand in candidates:
-        if cand.exists():
-            p = cand
-            break
-    if not p.exists():
-        return JSONResponse([])
-    items: list[dict[str, Any]] = []
-    try:
-        with open(p) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec=json.loads(line)
-                    if "raw" in rec and rec["raw"] and len(rec["raw"])>500:
-                        rec={**rec, "raw_len":len(rec["raw"]), "raw":rec["raw"][:500]+"…"}
-                    if "stderr" in rec and rec["stderr"] and len(rec["stderr"])>500:
-                        rec={**rec, "stderr_len":len(rec["stderr"]), "stderr":rec["stderr"][:500]+"…"}
-                    items.append(rec)
-                except json.JSONDecodeError:
-                    continue
-    except FileNotFoundError:
-        return JSONResponse([])
-    return JSONResponse(items)
+    return JSONResponse(_read_history(_resolve_depth_history(), HOST_DEPTH_HISTORY))
 
 
 @app.get("/api/depth/download/{ts}")
@@ -420,27 +429,10 @@ async def api_depth_download(ts: str):
         ts_f=float(ts)
     except Exception:
         raise HTTPException(status_code=400, detail="invalid ts")
-    p=_resolve_depth_history()
-    candidates=[p, HOST_DEPTH_HISTORY] if p!=HOST_DEPTH_HISTORY else [p]
-    for cand in candidates:
-        if not cand.exists(): continue
-        try:
-            with open(cand) as f:
-                for line in f:
-                    line=line.strip()
-                    if not line: continue
-                    try:
-                        rec=json.loads(line)
-                    except Exception:
-                        continue
-                    if rec.get("ts") is not None and abs(float(rec["ts"])-ts_f)<0.001:
-                        fname=f"depth-{ts}.json"
-                        tmp=Path(f"/tmp/{fname}")
-                        tmp.write_text(json.dumps(rec, indent=2))
-                        return FileResponse(str(tmp), filename=fname, media_type="application/json")
-        except Exception:
-            pass
-    raise HTTPException(status_code=404, detail="not found")
+    rec = _find_record(_resolve_depth_history(), HOST_DEPTH_HISTORY, ts_f)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return _serve_download(rec, "depth")
 
 
 @app.post("/api/depth/clear")
@@ -448,10 +440,12 @@ async def api_depth_clear():
     p = _resolve_depth_history()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        open(p, "w").close()
+        with open(p, "w"):
+            pass
         if HOST_DEPTH_HISTORY != p and HOST_DEPTH_HISTORY.exists():
             try:
-                open(HOST_DEPTH_HISTORY, "w").close()
+                with open(HOST_DEPTH_HISTORY, "w"):
+                    pass
             except Exception:
                 pass
     except Exception as e:
@@ -497,6 +491,7 @@ async def api_depth_cancel():
     global depth_proc
     if not depth_state["running"]:
         raise HTTPException(status_code=400, detail="not running")
+    depth_state["cancelled"] = True
     depth_state["log"] += "\n[CANCEL requested]\n"
     proc = depth_proc
     if proc and proc.poll() is None:
@@ -513,33 +508,7 @@ async def api_depth_cancel():
 # Concurrency sweep (corpus up to max_num_seqs)
 @app.get("/api/conc/history")
 async def api_conc_history():
-    p = _resolve_conc_history()
-    candidates = [p, HOST_CONC_HISTORY] if p != HOST_CONC_HISTORY else [p]
-    for cand in candidates:
-        if cand.exists():
-            p = cand
-            break
-    if not p.exists():
-        return JSONResponse([])
-    items: list[dict[str, Any]] = []
-    try:
-        with open(p) as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rec=json.loads(line)
-                    if "raw" in rec and rec["raw"] and len(rec["raw"])>500:
-                        rec={**rec, "raw_len":len(rec["raw"]), "raw":rec["raw"][:500]+"…"}
-                    if "stderr" in rec and rec["stderr"] and len(rec["stderr"])>500:
-                        rec={**rec, "stderr_len":len(rec["stderr"]), "stderr":rec["stderr"][:500]+"…"}
-                    items.append(rec)
-                except json.JSONDecodeError:
-                    continue
-    except FileNotFoundError:
-        return JSONResponse([])
-    return JSONResponse(items)
+    return JSONResponse(_read_history(_resolve_conc_history(), HOST_CONC_HISTORY))
 
 
 @app.get("/api/conc/download/{ts}")
@@ -548,27 +517,10 @@ async def api_conc_download(ts: str):
         ts_f=float(ts)
     except Exception:
         raise HTTPException(status_code=400, detail="invalid ts")
-    p=_resolve_conc_history()
-    candidates=[p, HOST_CONC_HISTORY] if p!=HOST_CONC_HISTORY else [p]
-    for cand in candidates:
-        if not cand.exists(): continue
-        try:
-            with open(cand) as f:
-                for line in f:
-                    line=line.strip()
-                    if not line: continue
-                    try:
-                        rec=json.loads(line)
-                    except Exception:
-                        continue
-                    if rec.get("ts") is not None and abs(float(rec["ts"])-ts_f)<0.001:
-                        fname=f"conc-{ts}.json"
-                        tmp=Path(f"/tmp/{fname}")
-                        tmp.write_text(json.dumps(rec, indent=2))
-                        return FileResponse(str(tmp), filename=fname, media_type="application/json")
-        except Exception:
-            pass
-    raise HTTPException(status_code=404, detail="not found")
+    rec = _find_record(_resolve_conc_history(), HOST_CONC_HISTORY, ts_f)
+    if rec is None:
+        raise HTTPException(status_code=404, detail="not found")
+    return _serve_download(rec, "conc")
 
 
 @app.post("/api/conc/clear")
@@ -576,10 +528,12 @@ async def api_conc_clear():
     p = _resolve_conc_history()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        open(p, "w").close()
+        with open(p, "w"):
+            pass
         if HOST_CONC_HISTORY != p and HOST_CONC_HISTORY.exists():
             try:
-                open(HOST_CONC_HISTORY, "w").close()
+                with open(HOST_CONC_HISTORY, "w"):
+                    pass
             except Exception:
                 pass
     except Exception as e:
@@ -625,6 +579,7 @@ async def api_conc_cancel():
     global conc_proc
     if not conc_state["running"]:
         raise HTTPException(status_code=400, detail="not running")
+    conc_state["cancelled"] = True
     conc_state["log"] += "\n[CANCEL requested]\n"
     proc = conc_proc
     if proc and proc.poll() is None:
@@ -639,6 +594,7 @@ async def api_conc_cancel():
 
 
 async def _run_bench():
+    global bench_proc
     async with bench_lock:
         if bench_state["running"]:
             return
@@ -686,20 +642,42 @@ async def _run_bench():
                 "--format", "json",
             ]
             bench_state["log"] += f"$ {' '.join(cmd)}\n"
-            # Run synchronously in thread pool (subprocess is blocking)
-            def _run():
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
-                return proc
+            bench_state["cancelled"] = False
 
+            def _run():
+                return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+            # Popen so /api/bench/cancel can terminate it (same pattern as depth/conc)
             proc = await asyncio.to_thread(_run)
-            bench_state["log"] += proc.stdout[-8000:] + "\n" + proc.stderr[-4000:]
+            bench_proc = proc
+            try:
+                def _wait():
+                    out, err = proc.communicate(timeout=600)
+                    return proc.returncode, out, err
+                returncode, stdout, stderr = await asyncio.to_thread(_wait)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                stdout, stderr = proc.communicate()
+                returncode = proc.returncode
+                bench_state["log"] += "\n[TIMEOUT after 600s]"
+                stdout = stdout or ""
+                stderr = stderr or ""
+            bench_proc = None
+            if bench_state["cancelled"]:
+                bench_state["log"] += f"\n[CANCELLED] returncode {returncode}\n"
+                bench_state["log"] += stdout[-8000:] + "\n" + stderr[-4000:]
+                bench_state["last"] = {"ts": time.time(), "cancelled": True, "elapsed": time.time() - start, "model": model}
+                bench_state["running"] = False
+                return
+
+            bench_state["log"] += stdout[-8000:] + "\n" + stderr[-4000:]
             elapsed = time.time() - start
             try:
-                result = json.loads(proc.stdout) if proc.stdout.strip().startswith("{") else None
+                result = json.loads(stdout) if stdout.strip().startswith("{") else None
                 # llama-benchy json shape may vary; keep raw
                 if result is None:
                     # try to find json blob in output
-                    m = re.search(r"\{.*\}", proc.stdout, re.DOTALL)
+                    m = re.search(r"\{.*\}", stdout, re.DOTALL)
                     if m:
                         try:
                             result = json.loads(m.group(0))
@@ -709,9 +687,9 @@ async def _run_bench():
                     "ts": time.time(),
                     "elapsed": elapsed,
                     "model": model,
-                    "returncode": proc.returncode,
-                    "raw": proc.stdout[:8000],
-                    "stderr": proc.stderr[:3000],
+                    "returncode": returncode,
+                    "raw": stdout[:8000],
+                    "stderr": stderr[:3000],
                 }
                 if isinstance(result, dict):
                     record.update(result)
@@ -751,15 +729,14 @@ async def _run_bench():
                 bench_state["last"] = record
             except Exception as e:
                 bench_state["log"] += f"\n[bench parse failed: {e}]"
-                bench_state["last"] = {"ts": time.time(), "error": str(e), "raw": proc.stdout[:4000]}
-            if proc.returncode != 0:
-                bench_state["log"] += f"\n[exit {proc.returncode}]"
-        except subprocess.TimeoutExpired:
-            bench_state["log"] += "\n[TIMEOUT after 600s]"
+                bench_state["last"] = {"ts": time.time(), "error": str(e), "raw": stdout[:4000]}
+            if returncode != 0:
+                bench_state["log"] += f"\n[exit {returncode}]"
         except Exception as e:
             bench_state["log"] += f"\n[bench failed: {e}]"
         finally:
             bench_state["running"] = False
+            bench_proc = None
 
 
 async def _run_depth():
@@ -771,6 +748,7 @@ async def _run_depth():
         depth_state["log"] = ""
         depth_state["last"] = None
         depth_state["progress"] = ""
+        depth_state["cancelled"] = False
         start = time.time()
         try:
             model = None
@@ -837,7 +815,7 @@ async def _run_depth():
 
             depth_proc = None
             # Check if cancelled
-            if "CANCEL requested" in depth_state["log"]:
+            if depth_state["cancelled"]:
                 depth_state["log"] += f"\n[CANCELLED] returncode {returncode}\n"
                 depth_state["log"] += stdout[-8000:] + "\n" + stderr[-4000:]
                 depth_state["last"] = {"ts": time.time(), "cancelled": True, "elapsed": time.time() - start, "model": model}
@@ -908,6 +886,7 @@ async def _run_conc():
         conc_state["log"] = ""
         conc_state["last"] = None
         conc_state["progress"] = ""
+        conc_state["cancelled"] = False
         start = time.time()
         try:
             model = None
@@ -972,7 +951,7 @@ async def _run_conc():
                 stderr = stderr or ""
 
             conc_proc = None
-            if "CANCEL requested" in conc_state["log"]:
+            if conc_state["cancelled"]:
                 conc_state["log"] += f"\n[CANCELLED] returncode {returncode}\n"
                 conc_state["log"] += stdout[-8000:] + "\n" + stderr[-4000:]
                 conc_state["last"] = {"ts": time.time(), "cancelled": True, "elapsed": time.time() - start, "model": model}
@@ -1034,14 +1013,7 @@ async def _run_conc():
             conc_proc = None
 
 
-# Static — mount last so /api/* takes precedence
+# Static — mount last so /api/* routes (registered earlier) take precedence.
+# StaticFiles(html=True) serves index.html for GET /.
 if STATIC_DIR.exists():
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
-
-
-@app.get("/")
-async def root():
-    idx = STATIC_DIR / "index.html"
-    if idx.exists():
-        return FileResponse(str(idx))
-    return JSONResponse({"status": "dashboard up", "vllm": VLLM_URL})

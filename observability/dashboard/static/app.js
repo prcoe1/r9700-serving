@@ -1,5 +1,7 @@
 const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let kvChart, reqChart, hitChart, histChart, depthChart, concChart;
+const RING_CAP = 600; // matches backend RING_SIZE (10 min @ 1s poll)
 const ring = {kv:[], running:[], waiting:[], hit:[]};
 let prevQueries = null, prevHits = null;
 
@@ -135,7 +137,7 @@ async function tick(){
     ring.kv.push(kv!=null? kv*100 : null);
     ring.running.push(j['vllm:num_requests_running']??0);
     ring.hit.push(chartVal);
-    if(ring.kv.length>300) {ring.kv.shift(); ring.running.shift(); ring.hit.shift();}
+    while(ring.kv.length>RING_CAP) {ring.kv.shift(); ring.running.shift(); ring.hit.shift();}
     updateRing();
     prevQueries = queries;
     prevHits = hits;
@@ -214,7 +216,7 @@ async function refreshHistory(){
       const tr=document.createElement('tr');
       const dlBtn = rec.ts? `<a href="/api/history/download/${rec.ts}" download>download</a>` : '';
       const delBtn = rec.ts? `<button class="btn danger small" onclick="deleteBench(${rec.ts})">delete</button>` : '';
-      tr.innerHTML = `<td>${label}</td><td>${rec.model||''}</td><td>${pp!=null?pp.toFixed(0):'—'}</td><td>${tg32!=null?tg32.toFixed(1):'—'}</td><td>${tg128!=null?tg128.toFixed(1):'—'}</td><td>${rec.elapsed? rec.elapsed.toFixed(0)+'s':''}</td><td>${dlBtn}</td><td>${delBtn}</td>`;
+      tr.innerHTML = `<td>${label}</td><td>${esc(rec.model)||''}</td><td>${pp!=null?pp.toFixed(0):'—'}</td><td>${tg32!=null?tg32.toFixed(1):'—'}</td><td>${tg128!=null?tg128.toFixed(1):'—'}</td><td>${rec.elapsed? rec.elapsed.toFixed(0)+'s':''}</td><td>${dlBtn}</td><td>${delBtn}</td>`;
       tbody.appendChild(tr);
     });
     if(histChart){
@@ -244,14 +246,14 @@ window.deleteBench = async (ts)=>{
 
 async function pollBenchStatus(){
   const r = await fetch('/api/bench/status').then(r=>r.json());
-  const btn=$('runBench');
+  const btn=$('runBench'), cancel=$('cancelBench');
   if(r.running){
-    btn.disabled=true; btn.textContent='⏳ bench running…';
+    btn.disabled=true; cancel.disabled=false; btn.textContent='⏳ bench running…';
     $('benchStatus').textContent='bench running — ~2-4 min for 3 runs';
     if(r.log){ $('benchLog').style.display='block'; $('benchLog').textContent = r.log.slice(-8000); }
     setTimeout(pollBenchStatus, 2000);
   } else {
-    btn.disabled=false; btn.textContent='▶ Run bench (pp2048 + tg32/128 ×3)';
+    btn.disabled=false; cancel.disabled=true; btn.textContent='▶ Run bench (pp2048 + tg32/128 ×3)';
     if(r.last) refreshHistory();
     if(r.log && r.running===false && r.log){ $('benchLog').style.display='block'; $('benchLog').textContent = r.log.slice(-8000); }
   }
@@ -262,6 +264,12 @@ $('runBench').addEventListener('click', async ()=>{
   const r = await fetch('/api/bench', {method:'POST'});
   if(r.status===409){ alert('Bench already running'); return; }
   if(!r.ok){ alert('Bench start failed: '+ await r.text()); return; }
+  pollBenchStatus();
+});
+$('cancelBench').addEventListener('click', async ()=>{
+  if(!confirm('Cancel the running bench?')) return;
+  const r=await fetch('/api/bench/cancel',{method:'POST'});
+  if(!r.ok){ alert('Cancel failed: '+await r.text()); return; }
   pollBenchStatus();
 });
 $('refreshHist').addEventListener('click', refreshHistory);
@@ -314,7 +322,7 @@ async function refreshDepth(){
           const dr=rec.depth_results || [];
           const lastPt=dr[dr.length-1]||{};
           const tr=document.createElement('tr');
-          tr.innerHTML=`<td>${d}</td><td>${rec.model||''}</td><td>${dr.length?dr.length:rec.depths?.length||'—'} depths</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/depth/download/${rec.ts}" download>download</a></td><td><button class="btn danger small" onclick="deleteDepth(${rec.ts})">delete</button></td>`;
+          tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${dr.length?dr.length:rec.depths?.length||'—'} depths</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/depth/download/${rec.ts}" download>download</a></td><td><button class="btn danger small" onclick="deleteDepth(${rec.ts})">delete</button></td>`;
           tbody.appendChild(tr);
         });
       } else if(items.length===1){
@@ -324,7 +332,7 @@ async function refreshDepth(){
         const dr=rec.depth_results || [];
         const lastPt=dr[dr.length-1]||{};
         const tr=document.createElement('tr');
-        tr.innerHTML=`<td>${d}</td><td>${rec.model||''}</td><td>${dr.length?dr.length:rec.depths?.length||'—'} depths</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/depth/download/${rec.ts}" download>download</a></td><td><button class="btn danger small" onclick="deleteDepth(${rec.ts})">delete</button></td>`;
+        tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${dr.length?dr.length:rec.depths?.length||'—'} depths</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/depth/download/${rec.ts}" download>download</a></td><td><button class="btn danger small" onclick="deleteDepth(${rec.ts})">delete</button></td>`;
         tbody.appendChild(tr);
       }
       // Also expand latest depths as sub-rows if few sweeps
@@ -426,7 +434,7 @@ async function refreshConc(){
         const conc=rec.concurrency || (cr[0]?.concurrency) || rec.max_conc || '—';
         const lastPt=cr[cr.length-1]||{};
         const tr=document.createElement('tr');
-        tr.innerHTML=`<td>${d}</td><td>${rec.model||''}</td><td>${cr.length?cr[0].depth+'…'+cr[cr.length-1].depth : rec.depths?rec.depths[0]+'…'+rec.depths[rec.depths.length-1] : '—'}</td><td>${conc}</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/conc/download/${rec.ts}" download>download</a></td><td><button class="btn danger small" onclick="deleteConc(${rec.ts})">delete</button></td>`;
+        tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${cr.length?cr[0].depth+'…'+cr[cr.length-1].depth : rec.depths?rec.depths[0]+'…'+rec.depths[rec.depths.length-1] : '—'}</td><td>${conc}</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/conc/download/${rec.ts}" download>download</a></td><td><button class="btn danger small" onclick="deleteConc(${rec.ts})">delete</button></td>`;
         tbody.appendChild(tr);
       });
       if(points.length>0){
@@ -504,40 +512,55 @@ async function refreshInfo(){
 }
 
 function initTabs(){
-  const btns = document.querySelectorAll('.tab-btn');
+  const btns = Array.from(document.querySelectorAll('.tab-btn'));
   const panels = document.querySelectorAll('.tab-panel');
-  function activate(name){
-    btns.forEach(b=>{
-      const isActive = b.dataset.tab===name;
-      b.classList.toggle('active', isActive);
-      b.setAttribute('aria-selected', isActive?'true':'false');
-    });
-    panels.forEach(p=>{
-      p.classList.toggle('active', p.id==='tab-'+name);
-    });
-    // resize charts that may have been hidden
-    setTimeout(()=>{
+  const names = btns.map(b=>b.dataset.tab);
+  function resizeCharts(){
+    // double rAF: the panel must be laid out (non-zero width) first, or the
+    // charts resize to 0 (notably iOS Safari).
+    requestAnimationFrame(()=>requestAnimationFrame(()=>{
       [kvChart, reqChart, hitChart, histChart, depthChart, concChart].forEach(c=>{
-        try{ if(c) c.resize();}
-        catch{}
+        try{ if(c) c.resize();}catch{}
       });
       updateRing();
       if(histChart) histChart.update();
       if(depthChart) depthChart.update();
       if(concChart) concChart.update();
-    }, 50);
+    }));
+  }
+  function activate(name, focus=false){
+    btns.forEach(b=>{
+      const isActive = b.dataset.tab===name;
+      b.classList.toggle('active', isActive);
+      b.setAttribute('aria-selected', isActive?'true':'false');
+      b.setAttribute('tabindex', isActive?'0':'-1');
+      if(isActive && focus) b.focus();
+    });
+    panels.forEach(p=>{
+      p.classList.toggle('active', p.id==='tab-'+name);
+    });
+    resizeCharts();
     try{ localStorage.setItem('dashboard-tab', name); }catch{}
     history.replaceState(null,'','#'+name);
   }
   btns.forEach(b=> b.addEventListener('click', ()=> activate(b.dataset.tab)));
+  // Keyboard nav per the ARIA tabs pattern
+  btns.forEach((b,i)=> b.addEventListener('keydown', e=>{
+    let j=null;
+    if(e.key==='ArrowRight') j=(i+1)%btns.length;
+    else if(e.key==='ArrowLeft') j=(i-1+btns.length)%btns.length;
+    else if(e.key==='Home') j=0;
+    else if(e.key==='End') j=btns.length-1;
+    if(j!=null){ e.preventDefault(); activate(names[j], true); }
+  }));
   // restore from hash or storage, default stats
   let initial='stats';
-  if(location.hash && ['stats','benchmarks'].includes(location.hash.slice(1))) initial=location.hash.slice(1);
-  else try{ const s=localStorage.getItem('dashboard-tab'); if(s && ['stats','benchmarks'].includes(s)) initial=s; }catch{}
+  if(location.hash && names.includes(location.hash.slice(1))) initial=location.hash.slice(1);
+  else try{ const s=localStorage.getItem('dashboard-tab'); if(s && names.includes(s)) initial=s; }catch{}
   activate(initial);
   window.addEventListener('hashchange', ()=>{
     const h=location.hash.slice(1);
-    if(['stats','benchmarks'].includes(h)) activate(h);
+    if(names.includes(h)) activate(h);
   });
 }
 
