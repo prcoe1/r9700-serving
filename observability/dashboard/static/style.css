@@ -19,7 +19,8 @@ header h1{margin:0;font-size:18px;letter-spacing:0.02em}
 .tab-panel{display:none;min-width:0}
 .tab-panel.active{display:grid;gap:16px}
 .wrap{max-width:1200px;margin:0 auto;padding:18px;display:grid;gap:16px}
-.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;align-items:stretch}
+/* 260px min so all four stats cards fit one row at the 1200px wrap width */
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;align-items:stretch}
 .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:14px;min-width:0}
 .grid .card{display:flex;flex-direction:column}
 .grid .chart-wrap{flex:1;min-height:80px;position:relative;margin-top:10px}

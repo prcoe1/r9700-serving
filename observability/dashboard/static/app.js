@@ -1,9 +1,11 @@
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-let kvChart, reqChart, hitChart, histChart, depthChart, concChart;
-const RING_CAP = 600; // matches backend RING_SIZE (10 min @ 1s poll)
-const ring = {kv:[], running:[], waiting:[], hit:[]};
+let kvChart, reqChart, hitChart, thrChart, histChart, depthChart, concChart;
+const RING_CAP = 600; // 10 min @ 1s poll
+const ring = {kv:[], running:[], hit:[], pp:[], tg:[]};
 let prevQueries = null, prevHits = null;
+let prevPromptTok = null, prevGenTok = null, prevRateTs = null;
+const fmtRate = v => v==null? '—' : v>=1e6? (v/1e6).toFixed(2)+'M' : v>=1e4? (v/1e3).toFixed(1)+'k' : v>=100? v.toFixed(0) : v.toFixed(1);
 
 function makeChart(canvas, label, color){
   return new Chart(canvas, {
@@ -26,11 +28,27 @@ function initCharts(){
     kvChart.options.scales.y.ticks = {color:'#9aa0b8', font:{size:10}, stepSize:25};
     kvChart.update();
     reqChart = makeChart($('reqChart'), 'running', '#2ecc71');
+    // request counts are whole numbers — keep the axis ticks integral
+    reqChart.options.scales.y.ticks = {color:'#9aa0b8', font:{size:10}, precision:0};
+    reqChart.update();
     hitChart = makeChart($('hitChart'), 'hit %', '#f1c40f');
     hitChart.options.scales.y.min = 0;
     hitChart.options.scales.y.max = 100;
     hitChart.options.scales.y.ticks = {color:'#9aa0b8', font:{size:10}, stepSize:25};
     hitChart.update();
+    // dual axes: prompt rate (~3k t/s) and gen rate (~60 t/s) differ ~50x
+    thrChart = new Chart($('thrChart'), {
+      type:'line',
+      data:{labels:[], datasets:[
+        {label:'prompt t/s', data:[], borderColor:'#6c7bff', backgroundColor:'rgba(108,123,255,0.12)', tension:0.25, pointRadius:0, borderWidth:1.5, fill:true, yAxisID:'y'},
+        {label:'gen t/s', data:[], borderColor:'#2ecc71', backgroundColor:'transparent', tension:0.25, pointRadius:0, borderWidth:1.5, yAxisID:'y1'},
+      ]},
+      options:{animation:false, responsive:true, maintainAspectRatio:false, plugins:{legend:{display:false}}, scales:{
+        x:{display:false},
+        y:{beginAtZero:true, position:'left', ticks:{color:'#9aa0b8', font:{size:10}}},
+        y1:{beginAtZero:true, position:'right', grid:{drawOnChartArea:false}, ticks:{color:'#9aa0b8', font:{size:10}}}
+      }}
+    });
     histChart = new Chart($('histChart'), {
       type:'line',
       data:{labels:[], datasets:[
@@ -85,10 +103,18 @@ function initCharts(){
   }
 }
 
+let ticking = false;
 async function tick(){
+  // guard: a slow vLLM /metrics (>1s) must not stack overlapping ticks,
+  // which would push ring points out of order
+  if(ticking) return;
+  ticking = true;
   try{
+    // one request serves both: a successful /metrics fetch is the liveness signal
     const r = await fetch('/api/metrics');
-    if(!r.ok) throw new Error(r.statusText);
+    const healthEl = $('health');
+    if(!r.ok){ healthEl.textContent='vLLM down'; healthEl.className='badge bad'; throw new Error('metrics '+r.status); }
+    healthEl.textContent='vLLM up'; healthEl.className='badge ok';
     const j = await r.json();
     const kv = j['vllm:kv_cache_usage_perc'];
     const kvMaxTok = j['kv_cache_size_tokens'];
@@ -109,9 +135,27 @@ async function tick(){
         $('kvCap').textContent = `capacity ${kvMaxTok.toLocaleString()} tokens · ${kvDtype||''}`.trim();
       }
     }
-    $('running').textContent = j['vllm:num_requests_running']!=null? j['vllm:num_requests_running']: '—';
-    $('waiting').textContent = j['vllm:num_requests_waiting']!=null? j['vllm:num_requests_waiting']: '—';
-    $('swapped').textContent = j['vllm:num_requests_swapped']!=null? j['vllm:num_requests_swapped']: '0';
+    // vLLM exposes these as floats (e.g. 2.0); requests are whole
+    const asInt = v => v!=null? String(Math.round(v)) : null;
+    $('running').textContent = asInt(j['vllm:num_requests_running']) ?? '—';
+    $('waiting').textContent = asInt(j['vllm:num_requests_waiting']) ?? '—';
+    $('swapped').textContent = asInt(j['vllm:num_requests_swapped']) ?? '0';
+    // Throughput: t/s rates derived from the cumulative token counters,
+    // using actual elapsed time between polls; a negative delta (counter
+    // reset on vLLM restart) is dropped for that interval.
+    const pt = j['vllm:prompt_tokens_total'], gt = j['vllm:generation_tokens_total'];
+    let ppRate = null, tgRate = null;
+    const nowMs = Date.now();
+    if(pt!=null && gt!=null && prevPromptTok!=null && prevRateTs!=null && nowMs>prevRateTs){
+      const dt = (nowMs-prevRateTs)/1000;
+      const dpt = pt-prevPromptTok, dgt = gt-prevGenTok;
+      if(dpt>=0) ppRate = dpt/dt;
+      if(dgt>=0) tgRate = dgt/dt;
+    }
+    prevPromptTok = pt; prevGenTok = gt; prevRateTs = nowMs;
+    $('ppRate').textContent = fmtRate(ppRate);
+    $('tgRate').textContent = fmtRate(tgRate);
+    $('thrDetail').textContent = (pt!=null&&gt!=null)? `cumulative ${fmtRate(pt)} / ${fmtRate(gt)} tokens` : '';
     const hit = j['prefix_hit_pct'];
     const queries = j['vllm:prefix_cache_queries_total'];
     const hits = j['vllm:prefix_cache_hits_total'];
@@ -137,18 +181,17 @@ async function tick(){
     ring.kv.push(kv!=null? kv*100 : null);
     ring.running.push(j['vllm:num_requests_running']??0);
     ring.hit.push(chartVal);
-    while(ring.kv.length>RING_CAP) {ring.kv.shift(); ring.running.shift(); ring.hit.shift();}
+    ring.pp.push(ppRate);
+    ring.tg.push(tgRate);
+    while(ring.kv.length>RING_CAP) {ring.kv.shift(); ring.running.shift(); ring.hit.shift(); ring.pp.shift(); ring.tg.shift();}
     updateRing();
     prevQueries = queries;
     prevHits = hits;
   }catch(e){
     $('lastTs').textContent = 'metrics fetch failed: '+e;
+  } finally {
+    ticking = false;
   }
-  try{
-    const h = await fetch('/api/health').then(r=>r.json());
-    const el=$('health');
-    if(h.vllm_up){ el.textContent='vLLM up'; el.className='badge ok'; } else { el.textContent='vLLM down'; el.className='badge bad'; }
-  }catch{}
 }
 
 function updateRing(){
@@ -156,6 +199,7 @@ function updateRing(){
   if(kvChart){kvChart.data.labels = labels; kvChart.data.datasets[0].data = ring.kv; kvChart.update();}
   if(reqChart){reqChart.data.labels = labels; reqChart.data.datasets[0].data = ring.running; reqChart.update();}
   if(hitChart){hitChart.data.labels = labels; hitChart.data.datasets[0].data = ring.hit; hitChart.update();}
+  if(thrChart){thrChart.data.labels = labels; thrChart.data.datasets[0].data = ring.pp; thrChart.data.datasets[1].data = ring.tg; thrChart.update();}
 }
 
 function extractThroughput(rec){
@@ -178,10 +222,6 @@ function extractThroughput(rec){
         if(tgM!=null) tg128=tgM;
       }
     }
-  }
-  if(pp==null && typeof rec.raw==='string'){
-    const m = rec.raw.match(/pp\s*2048[^0-9]*([0-9.]+)/i);
-    if(m) pp=parseFloat(m[1]);
   }
   return {pp, tg32, tg128};
 }
@@ -214,7 +254,7 @@ async function refreshHistory(){
       labels.push(label);
       ppData.push(pp); tg32Data.push(tg32); tg128Data.push(tg128);
       const tr=document.createElement('tr');
-      const dlBtn = rec.ts? `<a href="/api/history/download/${rec.ts}" download>download</a>` : '';
+      const dlBtn = rec.ts? `<a href="/api/history/download/${rec.ts}" download>download</a> <a href="/api/history/download/${rec.ts}" target="_blank">view</a>` : '';
       const delBtn = rec.ts? `<button class="btn danger small" onclick="deleteBench(${rec.ts})">delete</button>` : '';
       tr.innerHTML = `<td>${label}</td><td>${esc(rec.model)||''}</td><td>${pp!=null?pp.toFixed(0):'—'}</td><td>${tg32!=null?tg32.toFixed(1):'—'}</td><td>${tg128!=null?tg128.toFixed(1):'—'}</td><td>${rec.elapsed? rec.elapsed.toFixed(0)+'s':''}</td><td>${dlBtn}</td><td>${delBtn}</td>`;
       tbody.appendChild(tr);
@@ -227,10 +267,6 @@ async function refreshHistory(){
       histChart.update();
     }
     window._hist = items;
-    if(items.length){
-      const last = items[items.length-1];
-      if(last.model) $('model').textContent = `model: ${last.model}`;
-    }
   }catch(e){
     console.error('refreshHistory failed', e);
     $('benchStatus').textContent='history load failed: '+e;
@@ -322,7 +358,7 @@ async function refreshDepth(){
           const dr=rec.depth_results || [];
           const lastPt=dr[dr.length-1]||{};
           const tr=document.createElement('tr');
-          tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${dr.length?dr.length:rec.depths?.length||'—'} depths</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/depth/download/${rec.ts}" download>download</a></td><td><button class="btn danger small" onclick="deleteDepth(${rec.ts})">delete</button></td>`;
+          tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${dr.length?dr.length:rec.depths?.length||'—'} depths</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/depth/download/${rec.ts}" download>download</a> <a href="/api/depth/download/${rec.ts}" target="_blank">view</a></td><td><button class="btn danger small" onclick="deleteDepth(${rec.ts})">delete</button></td>`;
           tbody.appendChild(tr);
         });
       } else if(items.length===1){
@@ -332,7 +368,7 @@ async function refreshDepth(){
         const dr=rec.depth_results || [];
         const lastPt=dr[dr.length-1]||{};
         const tr=document.createElement('tr');
-        tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${dr.length?dr.length:rec.depths?.length||'—'} depths</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/depth/download/${rec.ts}" download>download</a></td><td><button class="btn danger small" onclick="deleteDepth(${rec.ts})">delete</button></td>`;
+        tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${dr.length?dr.length:rec.depths?.length||'—'} depths</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/depth/download/${rec.ts}" download>download</a> <a href="/api/depth/download/${rec.ts}" target="_blank">view</a></td><td><button class="btn danger small" onclick="deleteDepth(${rec.ts})">delete</button></td>`;
         tbody.appendChild(tr);
       }
       // Also expand latest depths as sub-rows if few sweeps
@@ -434,7 +470,7 @@ async function refreshConc(){
         const conc=rec.concurrency || (cr[0]?.concurrency) || rec.max_conc || '—';
         const lastPt=cr[cr.length-1]||{};
         const tr=document.createElement('tr');
-        tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${cr.length?cr[0].depth+'…'+cr[cr.length-1].depth : rec.depths?rec.depths[0]+'…'+rec.depths[rec.depths.length-1] : '—'}</td><td>${conc}</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/conc/download/${rec.ts}" download>download</a></td><td><button class="btn danger small" onclick="deleteConc(${rec.ts})">delete</button></td>`;
+        tr.innerHTML=`<td>${d}</td><td>${esc(rec.model)||''}</td><td>${cr.length?cr[0].depth+'…'+cr[cr.length-1].depth : rec.depths?rec.depths[0]+'…'+rec.depths[rec.depths.length-1] : '—'}</td><td>${conc}</td><td>${lastPt.pp!=null?lastPt.pp.toFixed(0):'—'}</td><td>${lastPt.tg!=null?lastPt.tg.toFixed(1):'—'}</td><td>${lastPt.ttft!=null?lastPt.ttft.toFixed(1):'—'}</td><td>${rec.elapsed?rec.elapsed.toFixed(0)+'s':''}</td><td><a href="/api/conc/download/${rec.ts}" download>download</a> <a href="/api/conc/download/${rec.ts}" target="_blank">view</a></td><td><button class="btn danger small" onclick="deleteConc(${rec.ts})">delete</button></td>`;
         tbody.appendChild(tr);
       });
       if(points.length>0){
@@ -519,7 +555,7 @@ function initTabs(){
     // double rAF: the panel must be laid out (non-zero width) first, or the
     // charts resize to 0 (notably iOS Safari).
     requestAnimationFrame(()=>requestAnimationFrame(()=>{
-      [kvChart, reqChart, hitChart, histChart, depthChart, concChart].forEach(c=>{
+      [kvChart, reqChart, hitChart, thrChart, histChart, depthChart, concChart].forEach(c=>{
         try{ if(c) c.resize();}catch{}
       });
       updateRing();

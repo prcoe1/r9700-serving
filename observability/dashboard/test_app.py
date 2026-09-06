@@ -11,8 +11,10 @@ from app import (
     _append_history_limited,
     _delete_history_by_ts,
     _find_record,
+    _history_etag,
     _parse_metrics,
     _read_history,
+    _resolve_history_path,
     _serve_download,
 )
 
@@ -25,6 +27,8 @@ vllm:num_requests_swapped 0
 vllm:gpu_cache_usage_perc 0.42
 vllm:prefix_cache_queries_total 1000.0
 vllm:prefix_cache_hits_total 560.0
+vllm:prompt_tokens_total{engine="0",model_name="qwen3.8-27b"} 19275232.0
+vllm:generation_tokens_total{engine="0",model_name="qwen3.8-27b"} 161412.0
 vllm:cache_config_info{block_size="832",mamba_cache_mode="align",cache_dtype="bfloat16",kv_cache_size_tokens="619479",num_gpu_blocks="745",gpu_memory_utilization="0.95"} 1.0
 """
 
@@ -36,6 +40,15 @@ def test_parse_metrics_scalars():
     assert m["vllm:num_requests_waiting"] == 0
     assert m["vllm:prefix_cache_queries_total"] == 1000.0
     assert m["vllm:prefix_cache_hits_total"] == 560.0
+
+
+def test_parse_metrics_token_counters():
+    # labeled counters (engine/model_name) parse to the last value per name
+    m = _parse_metrics(METRICS)
+    assert m["vllm:prompt_tokens_total"] == 19275232.0
+    assert m["vllm:generation_tokens_total"] == 161412.0
+    # bucket lines must not shadow the plain counters
+    assert "vllm:request_prompt_tokens" not in m
 
 
 def test_parse_metrics_prefix_counters():
@@ -92,14 +105,34 @@ def test_read_history_truncates_raw(tmp_path):
     assert _find_record(p, tmp_path / "nope.jsonl", 2.0) is None
 
 
-def test_serve_download_writes_file():
-    # _serve_download writes /tmp/bench-{ts}.json synchronously (the
-    # FileResponse BackgroundTask unlinks it after the response).
+def test_serve_download_returns_attachment():
+    # served in-memory as an attachment (no /tmp file — a fixed filename
+    # would race between concurrent downloads)
     rec = {"ts": 1.5, "model": "m", "pp2048": 3000.0}
     resp = _serve_download(rec, "bench")
-    assert resp.filename == "bench-1.5.json"
-    try:
-        body = Path(str(resp.path)).read_text()
-        assert json.loads(body)["model"] == "m"
-    finally:
-        Path(str(resp.path)).unlink(missing_ok=True)
+    assert resp.status_code == 200
+    assert resp.media_type == "application/json"
+    assert resp.headers["content-disposition"] == 'attachment; filename="bench-1.5.json"'
+    assert json.loads(resp.body)["model"] == "m"
+
+
+def test_resolve_history_path_prefers_mounted(tmp_path):
+    # /app/* paths are assumed to be the bind mount inside the container
+    mounted = tmp_path / "app" / "history.jsonl"
+    assert _resolve_history_path(Path("/app/history.jsonl"), tmp_path / "host.jsonl") == Path("/app/history.jsonl")
+    # an existing container path wins
+    mounted.parent.mkdir(parents=True, exist_ok=True)
+    mounted.write_text("{}\n")
+    assert _resolve_history_path(mounted, tmp_path / "host.jsonl") == mounted
+    # a non-/app path that does not exist falls back to the host file
+    assert _resolve_history_path(tmp_path / "missing" / "h.jsonl", tmp_path / "host.jsonl") == tmp_path / "host.jsonl"
+
+
+def test_history_etag(tmp_path):
+    p = tmp_path / "h.jsonl"
+    assert _history_etag(p) == '""'
+    p.write_text("{}\n")
+    first = _history_etag(p)
+    assert first != '""'
+    p.write_text("{}\n{}\n")
+    assert _history_etag(p) != first  # size/mtime changed

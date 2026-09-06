@@ -422,7 +422,7 @@ The UI has two tabs (sticky, keyboard-navigable): **Stats** (default) and **Benc
 
 **Live panels** (10-min sparklines, Stats tab): KV cache `%` + `max tokens`/`blocks × block_size`/`cache_dtype`/`gpu_memory_utilization`, requests `running`/`waiting`/`swapped`, prefix cache incremental `Δ hits/queries` per poll + cumulative `queries/hits/hitrate` and `block_size`/`mamba_cache_mode` (see `#45238` note).
 
-**Bench history** (`pp2048`/`tg32`/`tg128`, Benchmarks tab): table + chart from `observability/history.jsonl` (limit 20, also written by `just bench-json` on host — a single json run; `just bench` is the md report). Columns `download results` (full JSON via `GET /api/history/download/{ts}`) + `modify` (red `delete` button like `Clear data`, smaller). `POST /api/bench` runs `llama-benchy` `pp2048 tg32/128 ×3` in-container (timeout 600s), cancellable via `Cancel` / `POST /api/bench/cancel`. Payloads are truncated in the list view (`raw` 500B preview) to keep the UI responsive.
+**Bench history** (`pp2048`/`tg32`/`tg128`, Benchmarks tab): table + chart from `observability/history.jsonl` (limit 20, also written by `just bench-json` on host — a single json run; `just bench` is the md report). Columns `download results` (full JSON via `GET /api/history/download/{ts}`; `download` saves it, `view` opens it in a tab) + `modify` (red `delete` button like `Clear data`, smaller). `POST /api/bench` runs `llama-benchy` `pp2048 tg32/128 ×3` in-container (timeout 600s), cancellable via `Cancel` / `POST /api/bench/cancel`; stdout streams into the card's log panel live (the process is read line-by-line, not at exit). Payloads are truncated in the list view (`raw` 500B preview) to keep the UI responsive. API responses are `Cache-Control: no-store`; the history endpoints send an ETag so the periodic re-fetches can `304`.
 
 > **Security note (deliberate):** the dashboard has no auth — it is meant for a
 > trusted home LAN. Anyone who can reach `:8083` can trigger a sweep (up to
@@ -434,7 +434,7 @@ Backend helpers have unit tests: `uv run --with "fastapi==0.115.*" --with "httpx
 
 **Concurrency sweep** — `same depths 0–200K at max concurrency (x parallel, pp2048/tg1024) — est. 40min` (`observability/conc_history.jsonl`, limit 20, `POST /api/conc`, timeout 3600s). Same depths but with `--concurrency max_num_seqs` (currently 2 via `VLLM_MAX_NUM_SEQS`, `#35288`) + `--no-cache --runs 2`. Same download/modify UX.
 
-Empty sweeps minimise to header+buttons (chart+table hidden, `minimised` class) so the page stays compact before first run. `Clear data` (red) wipes each history file; `Cancel` terminates a running sweep. All bench endpoints are `409` if another bench is running.
+Empty sweeps minimise to header+buttons (chart+table hidden, `minimised` class) so the page stays compact before first run. `Clear data` (red) wipes each history file; `Cancel` kills the sweep's whole process group (uvx *and* grandchildren — runs use `start_new_session` so nothing survives to keep hammering vLLM). All bench endpoints are `409` if another bench is running.
 
 ## Stability tests
 
