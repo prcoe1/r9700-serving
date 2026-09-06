@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>r9700 dashboard</title>
+<link rel="stylesheet" href="style.css"/>
+<script src="chart.umd.min.js"></script>
+</head>
+<body>
+<header>
+  <h1>r9700 — vLLM dashboard</h1>
+  <span id="health" class="badge">checking…</span>
+  <span id="model" class="badge">model: —</span>
+  <span id="kvmeta" class="badge">kv: —</span>
+  <span class="muted" style="margin-left:auto">vLLM <code id="vllmurl"></code> · poll 1s · <a href="/api/metrics" target="_blank">/api/metrics</a> · <a href="/api/history" target="_blank">history</a></span>
+</header>
+<div class="wrap">
+  <div class="grid">
+    <div class="card">
+      <h3>KV cache</h3>
+      <div class="metric"><span id="kv">—</span><small> %</small> <span class="muted" style="font-size:11px" id="kvMax"></span></div>
+      <div class="kvbar"><div id="kvbar" style="width:0%"></div></div>
+      <div class="muted" id="kvdetail"></div>
+      <div class="muted" id="kvCap"></div>
+      <div class="chart-wrap"><canvas id="kvChart"></canvas></div>
+    </div>
+    <div class="card">
+      <h3>Requests</h3>
+      <div class="row">
+        <div><div class="metric" id="running">—</div><div class="muted">running</div></div>
+        <div><div class="metric" id="waiting">—</div><div class="muted">waiting</div></div>
+        <div><div class="metric" id="swapped">—</div><div class="muted">swapped</div></div>
+      </div>
+      <div class="chart-wrap"><canvas id="reqChart"></canvas></div>
+    </div>
+    <div class="card">
+      <h3>Prefix cache</h3>
+      <div class="metric"><span id="hitpct">—</span><small> % hit (Δ 1s)</small> <span class="muted" style="font-size:11px" id="hitCumulative"></span></div>
+      <div class="muted" id="hitdetail"></div>
+      <div class="muted" id="hitDelta"></div>
+      <div class="muted" id="blocksize"></div>
+      <div class="muted" style="font-size:11px; margin-top:6px; line-height:1.4">Δ = incremental per poll (probe signal); cumulative since boot is <span id="cumPct">—</span>%. 0% Δ on incremental multi-turn is expected for this hybrid align setup — <a href="https://github.com/vllm-project/vllm/issues/45238" target="_blank">#45238</a> (see <code>benchmarks/prefix_cache_probe.py:28</code>). Use repeated identical prompts for cumulative hits.</div>
+      <div class="chart-wrap"><canvas id="hitChart"></canvas></div>
+    </div>
+  </div>
+
+  <div class="card" id="benchCard">
+    <h3>Bench history <span class="muted" style="text-transform:none;letter-spacing:0">pp2048 / tg32 / tg128 (t/s) — 1 bench = pp + 2 tg points</span></h3>
+    <div class="row" style="margin-bottom:10px">
+      <button id="runBench" class="btn">▶ Run bench (pp2048 + tg32/128 ×3)</button>
+      <button id="refreshHist" class="btn secondary">Refresh</button>
+      <button id="clearBench" class="btn secondary" style="border-color:var(--bad);color:var(--bad)">Clear data</button>
+      <span id="benchStatus" class="muted"></span>
+    </div>
+    <div id="benchChartWrap"><canvas id="histChart" height="110"></canvas></div>
+    <div id="benchTableWrap" style="overflow:auto;max-height:320px;margin-top:12px">
+      <table id="histTable"><thead><tr><th>time</th><th>model</th><th>pp2048</th><th>tg32</th><th>tg128</th><th>elapsed</th><th>download results</th><th>modify</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="muted" style="margin-top:8px">History file: <code>observability/history.jsonl</code> (also <code>just bench-json</code> on host). LAN-exposed — anyone with :8083 can trigger a bench.</div>
+    <div id="benchLog" class="log" style="display:none;margin-top:10px"></div>
+  </div>
+
+  <div class="card" id="depthCard">
+    <h3>Depth sweep <span class="muted" style="text-transform:none;letter-spacing:0">full 0–200K corpus (pp2048/tg1024, TTFT in table) — est. 20min</span></h3>
+    <div class="row" style="margin-bottom:10px">
+      <button id="runDepth" class="btn">▶ Run depth sweep (0–200K) — est. 20min</button>
+      <button id="cancelDepth" class="btn secondary" disabled>Cancel</button>
+      <button id="refreshDepth" class="btn secondary">Refresh</button>
+      <button id="clearDepth" class="btn secondary" style="border-color:var(--bad);color:var(--bad)">Clear data</button>
+      <span id="depthStatus" class="muted"></span>
+    </div>
+    <div id="depthChartWrap"><canvas id="depthChart" height="120"></canvas></div>
+    <div id="depthTableWrap" style="overflow:auto;max-height:320px;margin-top:12px">
+      <table id="depthTable"><thead><tr><th>time</th><th>model</th><th>depth</th><th>pp</th><th>tg</th><th>TTFT (s)</th><th>elapsed</th><th>download results</th><th>modify</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="muted" style="margin-top:8px">History file: <code>observability/depth_history.jsonl</code> (limit 20, book corpus <code>--depth 0 4k…200k --tg 1024 --no-cache</code>).</div>
+    <div id="depthLog" class="log" style="display:none;margin-top:10px"></div>
+  </div>
+
+  <div class="card" id="concCard">
+    <h3>Concurrency sweep <span class="muted" style="text-transform:none;letter-spacing:0">same depths 0–200K at max concurrency (x parallel, pp2048/tg1024) — est. 40min</span></h3>
+    <div class="row" style="margin-bottom:10px">
+      <button id="runConc" class="btn">▶ Run concurrency sweep — est. 40min</button>
+      <button id="cancelConc" class="btn secondary" disabled>Cancel</button>
+      <button id="refreshConc" class="btn secondary">Refresh</button>
+      <button id="clearConc" class="btn secondary" style="border-color:var(--bad);color:var(--bad)">Clear data</button>
+      <span id="concStatus" class="muted"></span>
+    </div>
+    <div id="concChartWrap"><canvas id="concChart" height="110"></canvas></div>
+    <div id="concTableWrap" style="overflow:auto;max-height:320px;margin-top:12px">
+      <table id="concTable"><thead><tr><th>time</th><th>model</th><th>depth</th><th>conc</th><th>pp</th><th>tg</th><th>TTFT (s)</th><th>elapsed</th><th>download results</th><th>modify</th></tr></thead><tbody></tbody></table>
+    </div>
+    <div class="muted" style="margin-top:8px">History file: <code>observability/conc_history.jsonl</code> (limit 20, <code>--depth 0…200k --tg 1024 --concurrency max_num_seqs --no-cache</code>). Same book corpus as depth, but with <code>x = max_num_seqs</code> parallel runs.</div>
+    <div id="concLog" class="log" style="display:none;margin-top:10px"></div>
+  </div>
+
+  <div class="card">
+    <h3>Live metrics (last 10 min)</h3>
+    <div class="muted" id="lastTs"></div>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>

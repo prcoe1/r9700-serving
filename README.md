@@ -408,6 +408,20 @@ for the #35288 MTP bug, not throughput) are archived in
 [`archive/BENCHMARKS.md`](archive/BENCHMARKS.md), with per-run tables in
 [`archive/benchmarks/`](archive/benchmarks/).
 
+## Dashboard
+
+`compose.yaml` includes a lightweight observability dashboard (`localhost/r9700-dashboard:latest`, FastAPI + Chart.js) on `http://localhost:8083` (LAN-exposed `0.0.0.0:8083→3000`). It polls `vllm:8180/metrics` every 1s and is started/stopped with `just up`/`just down` alongside vLLM. `just logs-dashboard` follows its logs; it builds from `observability/dashboard/` (`just build` includes it).
+
+**Live panels** (10-min sparklines): KV cache `%` + `max tokens`/`blocks × block_size`/`cache_dtype`/`gpu_memory_utilization`, requests `running`/`waiting`/`swapped`, prefix cache incremental `Δ hits/queries` per poll + cumulative `queries/hits/hitrate` and `block_size`/`mamba_cache_mode` (see `#45238` note).
+
+**Bench history** (`pp2048`/`tg32`/`tg128`): table + chart from `observability/history.jsonl` (limit 20, also written by `just bench-json` on host). Columns `download results` (full JSON via `GET /api/history/download/{ts}`) + `modify` (red `delete` button like `Clear data`, smaller). `POST /api/bench` runs `llama-benchy` `pp2048 tg32/128 ×3` in-container (timeout 600s). Payloads are truncated in the list view (`raw` 500B preview) to keep the UI responsive.
+
+**Depth sweep** — `full 0–200K corpus (pp2048/tg1024, TTFT in table) — est. 20min` (`observability/depth_history.jsonl`, limit 20, `POST /api/depth`, timeout 3600s). Runs `llama-benchy --depth 0 4096 8192 16384 32768 65536 128000 200000 --tg 1024 --no-cache --runs 2`. Chart + table show latest sweep; history rows collapsed with per-run `download results`/`modify`.
+
+**Concurrency sweep** — `same depths 0–200K at max concurrency (x parallel, pp2048/tg1024) — est. 40min` (`observability/conc_history.jsonl`, limit 20, `POST /api/conc`, timeout 3600s). Same depths but with `--concurrency max_num_seqs` (currently 2 via `VLLM_MAX_NUM_SEQS`, `#35288`) + `--no-cache --runs 2`. Same download/modify UX.
+
+Empty sweeps minimise to header+buttons (chart+table hidden, `minimised` class) so the page stays compact before first run. `Clear data` (red) wipes each history file; `Cancel` terminates a running sweep. All bench endpoints are `409` if another bench is running.
+
 ## Stability tests
 
 Smoke tests, sustained-load stress, and long-context generation checks for

@@ -42,6 +42,35 @@ x-amd-devices: &amd_devices
   ipc: host
 
 services:
+  dashboard:
+    build:
+      context: ./observability/dashboard
+    image: localhost/r9700-dashboard:latest
+    container_name: r9700-dashboard
+    restart: unless-stopped
+    ports:
+      - "8083:3000"
+    env_file:
+      - env/2xr9700.vllm.common
+      - env/aiter-unified-attention.env
+      - env/qwen3.6.env.common
+      - ./env/${MODEL_PROFILE}.env
+    environment:
+      - VLLM_URL=http://vllm:8180
+      - HISTORY_PATH=/app/history.jsonl
+      - DEPTH_HISTORY_PATH=/app/depth_history.jsonl
+      - CONC_HISTORY_PATH=/app/conc_history.jsonl
+      - MODEL_PROFILE=${MODEL_PROFILE}
+    volumes:
+      - ./observability/history.jsonl:/app/history.jsonl
+      - ./observability/depth_history.jsonl:/app/depth_history.jsonl
+      - ./observability/conc_history.jsonl:/app/conc_history.jsonl
+      - ./benchmarks:/app/benchmarks:ro
+    networks:
+      default:
+        aliases:
+          - dashboard
+
   vllm:
     <<: *amd_devices
     image: localhost/vllm-fullbuild:latest

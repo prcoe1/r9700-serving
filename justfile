@@ -223,5 +223,40 @@ bench: check
         --extra-body '{"chat_template_kwargs":{"enable_thinking":false}}' \
         --format md
 
+# Bench + log JSON to observability/history.jsonl for the dashboard history chart.
+bench-json: check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    model="$(grep -m1 '^VLLM_MODEL=' "env/{{model}}.env" | cut -d= -f2-)"
+    served_name="$(grep -m1 '^VLLM_SERVED_NAME=' "env/{{model}}.env" | cut -d= -f2-)"
+    tokenizer="$(grep -m1 '^VLLM_TOKENIZER=' "env/{{model}}.env" | cut -d= -f2-)"
+    printf 'Benchmarking %s (pp2048, tg32+128) json+md ...\n\n' "$model"
+    out="$(mktemp)"
+    uvx llama-benchy@0.4.0 --base-url http://localhost:8180/v1 \
+        --model "$served_name" \
+        --tokenizer "$tokenizer" \
+        --pp 2048 \
+        --tg 32 128 \
+        --runs 3 \
+        --enable-prefix-caching \
+        --extra-body '{"chat_template_kwargs":{"enable_thinking":false}}' \
+        --format json | tee "$out"
+    # Also show md
+    uvx llama-benchy@0.4.0 --base-url http://localhost:8180/v1 \
+        --model "$served_name" \
+        --tokenizer "$tokenizer" \
+        --pp 2048 \
+        --tg 32 128 \
+        --runs 3 \
+        --enable-prefix-caching \
+        --extra-body '{"chat_template_kwargs":{"enable_thinking":false}}' \
+        --format md
+    ts="$(date +%s)"
+    python3 tools/log_bench.py "$out" "$ts" "$served_name" >> observability/history.jsonl
+    echo "Logged to observability/history.jsonl"
+
+logs-dashboard:
+    @{{compose}} logs -f dashboard
+
 down:
     @{{compose}} down

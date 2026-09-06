@@ -1,5 +1,8 @@
 .env
 SYSTEM.md
+# dashboard historical data (local bench runs, not to be committed)
+observability/history.jsonl
+observability/**/*.jsonl
 __pycache__/
 *.pyc
 *.pyo
