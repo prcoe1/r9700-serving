@@ -503,8 +503,47 @@ async function refreshInfo(){
   }
 }
 
+function initTabs(){
+  const btns = document.querySelectorAll('.tab-btn');
+  const panels = document.querySelectorAll('.tab-panel');
+  function activate(name){
+    btns.forEach(b=>{
+      const isActive = b.dataset.tab===name;
+      b.classList.toggle('active', isActive);
+      b.setAttribute('aria-selected', isActive?'true':'false');
+    });
+    panels.forEach(p=>{
+      p.classList.toggle('active', p.id==='tab-'+name);
+    });
+    // resize charts that may have been hidden
+    setTimeout(()=>{
+      [kvChart, reqChart, hitChart, histChart, depthChart, concChart].forEach(c=>{
+        try{ if(c) c.resize();}
+        catch{}
+      });
+      updateRing();
+      if(histChart) histChart.update();
+      if(depthChart) depthChart.update();
+      if(concChart) concChart.update();
+    }, 50);
+    try{ localStorage.setItem('dashboard-tab', name); }catch{}
+    history.replaceState(null,'','#'+name);
+  }
+  btns.forEach(b=> b.addEventListener('click', ()=> activate(b.dataset.tab)));
+  // restore from hash or storage, default stats
+  let initial='stats';
+  if(location.hash && ['stats','benchmarks'].includes(location.hash.slice(1))) initial=location.hash.slice(1);
+  else try{ const s=localStorage.getItem('dashboard-tab'); if(s && ['stats','benchmarks'].includes(s)) initial=s; }catch{}
+  activate(initial);
+  window.addEventListener('hashchange', ()=>{
+    const h=location.hash.slice(1);
+    if(['stats','benchmarks'].includes(h)) activate(h);
+  });
+}
+
 (async()=>{
   initCharts();
+  initTabs();
   fetch('/api/metrics').then(r=>r.json()).catch(()=>null);
   $('vllmurl').textContent = location.hostname+':8180';
   tick(); refreshHistory(); refreshDepth(); refreshConc(); refreshInfo();

@@ -15,7 +15,12 @@
   <span id="kvmeta" class="badge">kv: —</span>
   <span class="muted" style="margin-left:auto">vLLM <code id="vllmurl"></code> · poll 1s · <a href="/api/metrics" target="_blank">/api/metrics</a> · <a href="/api/history" target="_blank">history</a></span>
 </header>
+<nav class="tabs" role="tablist" aria-label="Dashboard sections">
+  <button data-tab="stats" class="tab-btn active" role="tab" aria-selected="true">Stats</button>
+  <button data-tab="benchmarks" class="tab-btn" role="tab" aria-selected="false">Benchmarks</button>
+</nav>
 <div class="wrap">
+  <div id="tab-stats" class="tab-panel active">
   <div class="grid">
     <div class="card">
       <h3>KV cache</h3>
@@ -44,6 +49,12 @@
       <div class="chart-wrap"><canvas id="hitChart"></canvas></div>
     </div>
   </div>
+  <div class="card" style="margin-top:16px">
+    <h3>Live metrics (last 10 min)</h3>
+    <div class="muted" id="lastTs"></div>
+  </div>
+  </div>
+  <div id="tab-benchmarks" class="tab-panel">
 
   <div class="card" id="benchCard">
     <h3>Bench history <span class="muted" style="text-transform:none;letter-spacing:0">pp2048 / tg32 / tg128 (t/s) — 1 bench = pp + 2 tg points</span></h3>
@@ -94,12 +105,8 @@
     <div class="muted" style="margin-top:8px">History file: <code>observability/conc_history.jsonl</code> (limit 20, <code>--depth 0…200k --tg 1024 --concurrency max_num_seqs --no-cache</code>). Same book corpus as depth, but with <code>x = max_num_seqs</code> parallel runs.</div>
     <div id="concLog" class="log" style="display:none;margin-top:10px"></div>
   </div>
-
-  <div class="card">
-    <h3>Live metrics (last 10 min)</h3>
-    <div class="muted" id="lastTs"></div>
   </div>
-</div>
+ </div>
 <script src="app.js"></script>
 </body>
 </html>
