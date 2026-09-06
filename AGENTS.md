@@ -126,12 +126,14 @@ that affect this GPU setup and model combo** before recommending a bump.
 # images+prefix-cache path, no observed symptoms).
 # v0.29.0rc3 (2026-09-02) = rc2 + CI-only commit; v0.29.0rc4 (2026-09-04)
 # = rc3 + TRT-LLM ragged-prefill sync fix — both N/A, still NONE of the
-# watchlist fixes in any tag (re-checked 2026-09-05). #53877 (56058fd)
+# watchlist fixes in any tag (re-checked 2026-09-06). #53877 (56058fd)
 # verified an ancestor of ALL v0.29.0 rc tags (rc1–rc4): a bump to the
 # final lets us drop the local 53877 backport patch. Local #48375 patch
 # needs a rebase on any of these (single_type_kv_cache_manager.py
-# refactored); aiter v0.1.20 API-compatible. Not bumped (2026-09-05):
-# ride the release that lands a watchlist fix.
+# refactored); aiter v0.1.20 API-compatible. Not bumped (2026-09-06):
+# ride the release that lands a watchlist fix. 182 commits rc0→rc4, no new
+# final; two new relevant opens since 2026-09-05 (#55600, #55533) do not
+# change the bump decision.
 # #53877 backported as a local patch
 # (patches/vllm/53877-gdn-packed-decode-beta-fp32.patch, 2026-09-02).
 gh release list -R vllm-project/vllm --limit 8
@@ -144,12 +146,12 @@ gh release list -R vllm-project/vllm --limit 8
 # rebase + re-running tools/tune_ua_config.py. #4329 (bf16-KV LDS cap) NOT
 # fixed upstream; no gfx1201/Qwen patches in the release. v0.1.21.post1
 # (2026-09-03) = v0.1.21 + one cherry-pick: #5222 (MLA _fold_seqlen_indptr
-# cudagraph-safe fix — N/A, no MLA) → no bump (re-checked 2026-09-05:
+# cudagraph-safe fix — N/A, no MLA) → no bump (re-checked 2026-09-06:
 # v0.1.21.post1 still latest, unchanged).
 gh release list -R ROCm/aiter --limit 8
 
 # Flash Attention — pinned to a commit, so compare HEAD to FLASH_ATTN_REF
-# (2026-09-05: HEAD a369df7 unchanged, 2 commits past our pin, both
+# (2026-09-06: HEAD a369df7 unchanged, 2 commits past our pin, both
 # flash_attn/cute/ SM100-Blackwell CuTe fixes — N/A on ROCm/gfx1201, no bump)
 git ls-remote https://github.com/ROCm/flash-attention.git HEAD
 
@@ -158,12 +160,12 @@ git ls-remote https://github.com/ROCm/flash-attention.git HEAD
 # legacy repo. 7.14.1 (2026-08-31) is a 2-commit point release: rocm-systems
 # net-ib fault-injection default-off (ROCm-27881/AIRDEL-40) + an sdist
 # self-dependency packaging fix — N/A for this stack, no bump (re-checked
-# 2026-09-05, `therock-7.14.1`/`7.14.1-full` still latest).
+# 2026-09-06, `therock-7.14.1`/`7.14.1-full` still latest).
 curl -s "https://hub.docker.com/v2/repositories/rocm/dev-ubuntu-24.04/tags?page_size=100&name=7.1" | jq -r '.results[].name' | sort -V | tail
 
 # Froggeric chat template — current pin is the first line of chat-templates/qwen.jinja
 # (template_version = "qwen3.8-froggeric-v22.5", upstream unchanged as of
-# 2026-09-05). Compare against upstream main:
+# 2026-09-06). Compare against upstream main:
 curl -sL https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates/raw/main/chat_template.jinja | head -1
 head -1 chat-templates/qwen.jinja
 ```
@@ -182,7 +184,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -249,7 +251,8 @@ touches one of:
     KV-first backend is ever selected
   - `#48375` MambaManager ignores `drop_eagle_block` (MTP + prefix caching
      corrupts hybrid recurrent state, #43559/#50188) — **carried as a local
-     patch** (upstream PR still open; in merge conflict as of 2026-08-31)
+     patch** (upstream PR still open; in merge conflict as of 2026-09-05,
+     re-checked 2026-09-06 still `OPEN`)
    - `#52872` GDN/hybrid prefill peak under-predicted; `--max-num-batched-tokens`
      also sizes the CUDA-graph pool. **2026-09-03**: qwen3.8-27b now pins
      `VLLM_MAX_BATCHED_TOKENS=2048` (concurrent-ITL A/B — a 100K+ prefill
@@ -284,16 +287,16 @@ touches one of:
     (2026-08-25, the leading candidate — retention-aware boundary
     materialization + removal of the speculative one-block back-off; makes the
      store side consistent with the `#52216` retention-0 default; open, not
-     merged — 2026-09-05: CONFLICTING + REVIEW_REQUIRED (head b99d152), no
-     progress;
+     merged — 2026-09-06: still CONFLICTING + REVIEW_REQUIRED (head b99d152),
+     no progress (re-checked 2026-09-06);
     interacts with our `--prefix-cache-retention-interval` pin so
     re-validate after any bump that lands it)**, and a 2026-08-27 adaptive
     single-checkpoint prototype (demand-driven, not yet a PR; positioned as an
      alternative/complement to `#53479`); `#52789` (internal
-     prefill checkpoints) merged 2026-08-22 — **verified present in
-     v0.28.1rc0** (merge `9eb9d9d` is an ancestor of the tag, checked
-     2026-08-29); Kimi-K3/FlashKDA-specific TTFT win, not a fix for the 0%-hit
-     geometry. **When a real fix merges**: prefer
+    prefill checkpoints) merged 2026-08-22 — **verified present in
+    v0.28.1rc0** (merge `9eb9d9d` is an ancestor of the tag, checked
+    2026-08-29); Kimi-K3/FlashKDA-specific TTFT win, not a fix for the 0%-hit
+    geometry. **When a real fix merges**: prefer
     the version bump; carry a local patch only if no available release
     contains it. 2026-08-24 data points (independent 27B-scale repro on sm80,
     Qwen3.8-27B):
@@ -360,8 +363,9 @@ touches one of:
     profiles (tracks `VLLM_SPEC_DECODE`); re-check upstream before removing.
     **Fix in flight (2026-09-01)**: PR `#51599` (open, decouples the async
     Mamba-align D2H accepted-count copy from `InputBatch` row shifts, closes
-    #51571; also cited as the root cause of `#35288`) — if it lands in a
-    release we adopt, re-test before dropping `--no-async-scheduling`.
+    #51571; also cited as the root cause of `#35288` — re-checked 2026-09-06
+    still `OPEN`, updated 2026-09-06T04:52Z) — if it lands in a release we
+    adopt, re-test before dropping `--no-async-scheduling`.
   - `#54039` (2026-08-27, question): vLLM's own ROCm CI disables async+MTP
     (#32275, unroot-caused shm-broadcast hang) while the default still
     enables that combination; asks for a default-resolution fix or at least a
@@ -427,25 +431,28 @@ touches one of:
     greedy-equivalence probe (target-only vs MTP3, temperature=0,
     thinking prompt) at that point.
   - `#51599` (2026-09-01, PR, open): the `#51571` fix — see the `#51571`
-    entry above.
+    entry above (re-checked 2026-09-06 still `OPEN`, updated 2026-09-06).
   - `#54076` (2026-09-01, PR, open): `_mamba_block_aligned_split` must chunk
     on the **Mamba group's** block size, not `cache_config.block_size` (the
     min over all groups) — otherwise mandatory chunk ends land on a grid the
     worker can never materialize a Mamba state at. Repro is a Qwen3.8-27B
     hybrid + spec drafter with mismatched target/drafter attention blocks
      (1648/816); our MTP drafter group can create the same geometry.
-     2026-09-05: still open (last push 2026-09-04). Monitor for a merge.
+     re-checked 2026-09-06: still open (last push 2026-09-04). Monitor for a merge.
   - `#53798` (2026-09-01, PR, open): align-mode `add_request` seeds the
     running-state block column by the scheduler block size instead of the
     (page-unification-scaled) Mamba block size, so a request admitted with
     `num_computed_tokens > 0` — explicitly under
      `--prefix-cache-retention-interval`, which we pin — points its precopy
-     source into a neighbour's row (silent wrong-state read) or past the
-     table (IMA in `precopy_mamba_align_fused_kernel`). 2026-09-05: still
-     open (last push 2026-09-04); **carried as a local patch**
-     (patches/vllm/53798-mamba-align-resume-seed.patch, 2026-09-04,
-     version-locked to v0.28.1rc0 — our retention-interval pin makes the
-     trigger reachable). Drop when a release contains the fix.
+    source into a neighbour's row (silent wrong-state read) or past the
+    table (IMA in `precopy_mamba_align_fused_kernel`). re-checked
+    2026-09-06: still open (last push 2026-09-04); **carried as a local patch**
+    (patches/vllm/53798-mamba-align-resume-seed.patch, 2026-09-04,
+    version-locked to v0.28.1rc0 — our retention-interval pin makes the
+    trigger reachable). Drop when a release contains the fix. Sibling
+    `#55600` (2026-09-06, open) shows the same line crashes with a
+    small-block drafter (DFlash2 block 64/1024 vs `mamba_block_size` 7168) —
+    still `OPEN`, no PR yet; reinforces the fix is incomplete on `main`.
   - `#50409` (2026-08-31, PR, open): when the prompt length is an exact
     multiple of the block size, align prefill runs as one chunk and the only
     cached Mamba state sits at `num_tokens`, which `get_computed_blocks`
@@ -465,6 +472,23 @@ touches one of:
      reason to keep **bf16 KV the default** (alongside the `#52793`
      calibration gap). Proposed levers (quantize Mamba state, decouple
      per-group page size) unimplemented anywhere in vLLM. Monitor; no action.
+   - `#55600` (2026-09-06, open): hybrid mamba prefix-cache hit reads out of
+     bounds — `add_request` seeds the state index with `cache_config.block_size`
+     after it was lowered to the min prefix-cacheable group (small-block drafter
+     64/1024 vs `mamba_block_size` 7168) → `precopy_mamba_align_fused_kernel`
+     IMA (Xid 31) or silent wrong-state read. GLM-5.3-Flash/DFlash2 repro on
+     `main`; same `mamba_hybrid.py` line as `#53798` — DFlash2 variant of that
+     bug. N/A for this stack (MTP drafter not small-block; we are `block_size`
+     832/mamba 1600) but sibling proof `#53798` fix still incomplete — monitor;
+     no PR yet.
+   - `#55533` (2026-09-06, open): Hybrid GDN (Qwen3.5/3.8 27B-class) + MTP
+     scheduler caps at ~3 concurrent sequences at batch ≥ 4 — acceptance/
+     throughput collapse (8-wide batch runs `[2,2,2]` only; `bs ≤ 3` healthy).
+     Root: mamba cache budget shared between target states + MTP draft slots in
+     scheduler accounting (scales with GDN layer count). **Relevant** — we have
+     the `#35288` `max-num-seqs 2` cap so not hit today, but blocks any future
+     cap raise. WIP fix `PR #55617` (2026-09-06). Monitor before raising
+     `max-num-seqs`.
  
  Issues known **not** to apply (checked; re-check only if the stack changes):
 NVIDIA-only (#52475, #52583 VL), non-Qwen models (#52833/#48568 GLM, #51530
@@ -566,6 +590,11 @@ independent 3-arm A/B/C on a Qwen3.8-27B hybrid GDN/align/fp8-KV/TP2 setup
    disagg), #54906 (thinking_token_budget ignored by V2 runner — NVFP4),
    #54165 (align-mode cache-hit restore under spec decode with a KV
    connector — no connectors here).
+   Checked 2026-09-06: #55600 (hybrid mamba OOB read above — N/A for MTP but
+   sibling to carried #53798) and #55533 (hybrid GDN+MTP 3-seq cap at batch ≥4
+   — relevant, capped today by `max-num-seqs 2`; WIP #55617). No new final;
+   v0.29.0rc4 still latest tag; `AITER v0.1.21.post1` still latest; template
+   v22.5 unchanged — no bump.
 
 ### 4. Local patches vs upstream
 
