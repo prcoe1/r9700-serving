@@ -47,7 +47,6 @@
       <div class="muted" id="hitdetail"></div>
       <div class="muted" id="hitDelta"></div>
       <div class="muted" id="blocksize"></div>
-      <div class="muted" style="font-size:11px; margin-top:6px; line-height:1.4">Δ = incremental per poll (probe signal); cumulative since boot is <span id="cumPct">—</span>%. 0% Δ on incremental multi-turn is expected for this hybrid align setup — <a href="https://github.com/vllm-project/vllm/issues/45238" target="_blank">#45238</a> (see <code>benchmarks/prefix_cache_probe.py:28</code>). Use repeated identical prompts for cumulative hits.</div>
       <div class="chart-wrap"><canvas id="hitChart"></canvas></div>
     </div>
     <div class="card">
@@ -64,6 +63,7 @@
     <h3>Live metrics (last 10 min)</h3>
     <div class="muted" id="lastTs"></div>
   </div>
+  <div class="muted footnote">Δ = incremental per poll (probe signal); cumulative since boot is <span id="cumPct">—</span>%. 0% Δ on incremental multi-turn is expected for this hybrid align setup — <a href="https://github.com/vllm-project/vllm/issues/45238" target="_blank">#45238</a> (see <code>benchmarks/prefix_cache_probe.py:28</code>). Use repeated identical prompts for cumulative hits.</div>
   </div>
   <div id="tab-benchmarks" class="tab-panel" role="tabpanel" aria-label="Benchmarks">
 

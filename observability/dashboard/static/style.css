@@ -47,6 +47,7 @@ th,td{padding:8px;border-bottom:1px solid var(--border);text-align:left}
 th{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:0.05em;text-transform:uppercase}
 .log{white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;font-size:11px;max-height:240px;overflow:auto;background:#0b0d12;border:1px solid var(--border);border-radius:8px;padding:10px;color:#cbd1e6}
 .muted{color:var(--muted);font-size:12px}
+.footnote{font-size:11px;line-height:1.4;margin-top:10px}
 .minimised{padding-bottom:10px}
 .minimised #benchChartWrap,.minimised #depthChartWrap,.minimised #concChartWrap{display:none !important}
 .minimised #benchTableWrap,.minimised #depthTableWrap,.minimised #concTableWrap{display:none !important}
