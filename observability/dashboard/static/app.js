@@ -57,12 +57,12 @@ function initCharts(){
         {label:'tg128', data:[], borderColor:'#e74c3c', backgroundColor:'transparent', tension:0.2, pointRadius:3, yAxisID:'y1'},
       ]},
       options:{
-        animation:false, responsive:true,
+        animation:false, responsive:true, maintainAspectRatio:false,
         plugins:{legend:{labels:{color:'#e6e8ef'}}},
         scales:{
           x:{ticks:{color:'#9aa0b8', maxRotation:45}},
-          y:{type:'linear', position:'left', ticks:{color:'#9aa0b8'}, title:{display:true, text:'pp t/s', color:'#9aa0b8'}},
-          y1:{type:'linear', position:'right', grid:{drawOnChartArea:false}, ticks:{color:'#9aa0b8'}, title:{display:true, text:'tg t/s', color:'#9aa0b8'}}
+          y:{type:'linear', position:'left', beginAtZero:true, ticks:{color:'#9aa0b8'}, title:{display:true, text:'pp t/s', color:'#9aa0b8'}},
+          y1:{type:'linear', position:'right', beginAtZero:true, grid:{drawOnChartArea:false}, ticks:{color:'#9aa0b8'}, title:{display:true, text:'tg t/s', color:'#9aa0b8'}}
         }
       }
     });
@@ -73,12 +73,12 @@ function initCharts(){
         {label:'tg', data:[], borderColor:'#2ecc71', backgroundColor:'transparent', tension:0.2, pointRadius:3, yAxisID:'y1'},
       ]},
       options:{
-        animation:false, responsive:true,
+        animation:false, responsive:true, maintainAspectRatio:false,
         plugins:{legend:{labels:{color:'#e6e8ef'}}},
         scales:{
           x:{ticks:{color:'#9aa0b8'}, title:{display:true, text:'depth tokens', color:'#9aa0b8'}},
-          y:{type:'linear', position:'left', ticks:{color:'#9aa0b8'}, title:{display:true, text:'pp t/s', color:'#9aa0b8'}},
-          y1:{type:'linear', position:'right', grid:{drawOnChartArea:false}, ticks:{color:'#9aa0b8'}, title:{display:true, text:'tg t/s', color:'#9aa0b8'}}
+          y:{type:'linear', position:'left', beginAtZero:true, ticks:{color:'#9aa0b8'}, title:{display:true, text:'pp t/s', color:'#9aa0b8'}},
+          y1:{type:'linear', position:'right', beginAtZero:true, grid:{drawOnChartArea:false}, ticks:{color:'#9aa0b8'}, title:{display:true, text:'tg t/s', color:'#9aa0b8'}}
         }
       }
     });
@@ -89,12 +89,12 @@ function initCharts(){
         {label:'tg', data:[], borderColor:'#2ecc71', backgroundColor:'transparent', tension:0.2, pointRadius:3, yAxisID:'y1'},
       ]},
       options:{
-        animation:false, responsive:true,
+        animation:false, responsive:true, maintainAspectRatio:false,
         plugins:{legend:{labels:{color:'#e6e8ef'}}},
         scales:{
           x:{ticks:{color:'#9aa0b8'}, title:{display:true, text:'depth tokens @ max conc', color:'#9aa0b8'}},
-          y:{type:'linear', position:'left', ticks:{color:'#9aa0b8'}, title:{display:true, text:'pp t/s', color:'#9aa0b8'}},
-          y1:{type:'linear', position:'right', grid:{drawOnChartArea:false}, ticks:{color:'#9aa0b8'}, title:{display:true, text:'tg t/s', color:'#9aa0b8'}}
+          y:{type:'linear', position:'left', beginAtZero:true, ticks:{color:'#9aa0b8'}, title:{display:true, text:'pp t/s', color:'#9aa0b8'}},
+          y1:{type:'linear', position:'right', beginAtZero:true, grid:{drawOnChartArea:false}, ticks:{color:'#9aa0b8'}, title:{display:true, text:'tg t/s', color:'#9aa0b8'}}
         }
       }
     });

@@ -26,8 +26,8 @@ header h1{margin:0;font-size:18px;letter-spacing:0.02em}
    size feeds back into its parent on every Chart.js update() — Firefox grows
    the chart unboundedly over time (Safari's layout resolves the loop away). */
 .grid .card{display:flex;flex-direction:column}
-.grid .chart-wrap{height:120px;position:relative;margin-top:auto}
-#benchChartWrap,#depthChartWrap,#concChartWrap{position:relative;height:140px;margin-top:12px}
+.grid .chart-wrap{height:140px;position:relative;margin-top:auto}
+#benchChartWrap,#depthChartWrap,#concChartWrap{position:relative;height:220px;margin-top:12px}
 .card h3{margin:0 0 10px;font-size:13px;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted)}
 .metric{font-size:28px;font-weight:700}
 .metric small{font-size:13px;color:var(--muted);font-weight:500}
@@ -65,8 +65,8 @@ th{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:0.05em;text-
   .card h3{font-size:12px}
   .metric{font-size:24px}
   .metric small{font-size:12px}
-  .grid .chart-wrap{height:130px}
-  #benchChartWrap,#depthChartWrap,#concChartWrap{height:160px}
+  .grid .chart-wrap{height:150px}
+  #benchChartWrap,#depthChartWrap,#concChartWrap{height:220px}
   table{font-size:12px;display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap}
   th,td{padding:6px 8px}
   .btn{padding:10px 12px;font-size:14px;min-height:44px}
