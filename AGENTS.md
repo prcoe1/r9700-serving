@@ -125,15 +125,19 @@ that affect this GPU setup and model combo** before recommending a bump.
 # worker cache for prefix-covered items — plausibly touches our
 # images+prefix-cache path, no observed symptoms).
 # v0.29.0rc3 (2026-09-02) = rc2 + CI-only commit; v0.29.0rc4 (2026-09-04)
-# = rc3 + TRT-LLM ragged-prefill sync fix — both N/A, still NONE of the
-# watchlist fixes in any tag (re-checked 2026-09-06). #53877 (56058fd)
-# verified an ancestor of ALL v0.29.0 rc tags (rc1–rc4): a bump to the
-# final lets us drop the local 53877 backport patch. Local #48375 patch
-# needs a rebase on any of these (single_type_kv_cache_manager.py
-# refactored); aiter v0.1.20 API-compatible. Not bumped (2026-09-06):
-# ride the release that lands a watchlist fix. 182 commits rc0→rc4, no new
-# final; two new relevant opens since 2026-09-05 (#55600, #55533) do not
-# change the bump decision.
+# = rc3 + TRT-LLM ragged-prefill sync fix — both N/A. v0.29.0rc5 + rc6
+# (both 2026-09-08, new since 2026-09-06) = rc4 + #55760 (default
+# prefix_cache_retention_interval to dense for Mamba+EAGLE) + #55861 (apply
+# that dense default to is_hybrid models — the branch that covers Qwen3.8/3.5
+# where has_inner_state=False) + a CI revert: the #53504-family root-cause
+# fix, so a v0.29.0 final carrying it lets us drop the
+# PREFIX_CACHE_RETENTION_INTERVAL pin. Still NONE of the watchlist fixes in
+# any tag (re-checked 2026-09-08). #53877 (56058fd) is an ancestor of ALL
+# v0.29.0 rc tags (rc1–rc6) but NOT in our pin v0.28.1rc0 (119 commits before
+# it): keep the local 53877 backport patch. Local #48375 patch needs a rebase
+# on any of these (single_type_kv_cache_manager.py refactored); aiter v0.1.20
+# API-compatible. Not bumped (2026-09-08): ride the release that lands a
+# watchlist fix; no new final (latest stable still v0.28.0).
 # #53877 backported as a local patch
 # (patches/vllm/53877-gdn-packed-decode-beta-fp32.patch, 2026-09-02).
 gh release list -R vllm-project/vllm --limit 8
@@ -323,8 +327,26 @@ touches one of:
     qwen3.8-27b profile, 832 on bf16 KV, 2112 on 35B-A3B). The compose var is
     deliberately NOT named `VLLM_PREFIX_CACHE_RETENTION_INTERVAL` — that
     env var is vLLM-managed, deprecated in v0.28.1, removed in v0.29 (the
-    CLI flag remains). Validate with the prefix-cache probe on any bump;
-    re-check the flag's default on v0.29.
+     CLI flag remains). Validate with the prefix-cache probe on any bump;
+     re-check the flag's default on v0.29. **Upstream root-cause fix in flight
+     (2026-09-08)**: `#55760` + `#55861` restore the dense retention default
+     for Mamba+EAGLE / is_hybrid+MTP (in v0.29.0rc5/rc6, no final yet) — when
+     a release carries them, drop this pin and re-run the prefix-cache probe.
+   - `#55766` (2026-09-07, open, new): Qwen3.8/3.5 hybrid GDN + mamba align +
+     prefix caching — a prefill that ends **4–10 tokens past a block boundary**
+     writes a bad Mamba/GDN checkpoint; a later block-aligned prefix-cache hit
+     restores it → **NaN logits** from step 1 (token-0 `"!"` spam to
+     max_tokens; `corrupted_requests_total` increments; identical retries fail
+     until the cache turns over). **This stack's exact model + cache mode +
+     TP2 + bf16** (repro at block 816 on v0.28.0; ours is 832). Silent-
+     corruption family (cf. `#53912`, `#55291`, `#39273`). **Currently
+     masked**: the carrier is a prefix-cache *restore*, and our incremental
+     multi-turn pattern is the `#45238` 0%-hit no-op, so the bad checkpoint
+     isn't restored there — but repeated-identical prompts DO hit, and it
+     becomes live the moment `#45238` is fixed. No in-repo mitigation; the
+     client-side workaround is `cache_salt` (or pad the prompt **start**) when
+     the prior prompt length mod block_size ∈ {4,6,8,10}. **Monitor**; run a
+     probe if we ever see NaN / `"!"`-spam / empty replies.
   - `#53041` RFC: tiered SWA/Mamba checkpointing (HBM tail + periodic store)
     + recompute backfill for divergent hybrid prefix hits (same family as
     `#52959`/`#52789`; monitor)
@@ -590,11 +612,14 @@ independent 3-arm A/B/C on a Qwen3.8-27B hybrid GDN/align/fp8-KV/TP2 setup
    disagg), #54906 (thinking_token_budget ignored by V2 runner — NVFP4),
    #54165 (align-mode cache-hit restore under spec decode with a KV
    connector — no connectors here).
-   Checked 2026-09-06: #55600 (hybrid mamba OOB read above — N/A for MTP but
-   sibling to carried #53798) and #55533 (hybrid GDN+MTP 3-seq cap at batch ≥4
-   — relevant, capped today by `max-num-seqs 2`; WIP #55617). No new final;
-   v0.29.0rc4 still latest tag; `AITER v0.1.21.post1` still latest; template
-   v22.5 unchanged — no bump.
+    Checked 2026-09-06: #55600 (hybrid mamba OOB read above — N/A for MTP but
+    sibling to carried #53798) and #55533 (hybrid GDN+MTP 3-seq cap at batch ≥4
+    — relevant, capped today by `max-num-seqs 2`; WIP #55617). Checked
+    2026-09-08: #55766 (Qwen3.8/3.5 hybrid GDN align prefix-hit → NaN logits;
+    our exact model — see watchlist) and v0.29.0rc5/rc6 (#55760/#55861 dense
+    retention default, the #53504-family fix). No new final; v0.29.0rc6
+    latest tag; `AITER v0.1.21.post1` still latest; flash-attn HEAD a369df7
+    unchanged; template v22.5 unchanged — no bump.
 
 ### 4. Local patches vs upstream
 
