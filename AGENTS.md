@@ -369,11 +369,11 @@ touches one of:
     family as `#52789`; in flight, not merged)
   - `#40707` hybrid Mamba scheduling deadlock with 2+ large images in one
     prompt (align block-split collapses to 0 → request hangs forever, engine
-    never recovers). **Mitigated 2026-08-28**: all profiles now pass
-    `--limit-mm-per-prompt image: 1`, so the 2+-image trigger is unreachable
-    (multi-image prompts are rejected with a 400). Fix PR `#40709` is
-    **not merged** (absent from v0.28.0rc2) — monitor it; re-raise the image
-    cap if it lands.
+    never recovers). **Previously mitigated 2026-08-28** via
+    `--limit-mm-per-prompt image: 1` (2+-image trigger unreachable, multi-image
+    rejected with 400); **cap re-raised to 99 on 2026-09-08 at user request** —
+    deadlock risk re-exposed. Fix PR `#40709` is **not merged** (absent from
+    v0.28.0rc2) — monitor it.
   - `#51571` async MTP align accepted-count race (open): async scheduling +
     MTP + hybrid GDN + `mamba-cache-mode align` → accepted-token D2H counts
     gathered from a mutated `InputBatch` after `condense()` (repeated/dropped/

@@ -56,14 +56,17 @@ RUN python3 -m venv /opt/venv \
         setuptools-rust
 
 # AMD's ROCm PyTorch stack, compiled specifically for the target GPU.
+# Guide (ROCm 10, Python 3.14): https://stable.repo.amd.com/rocm/whl-next/
+# with torch[device-gfx1201]. For ROCm 10 the amd-torch-device metapackage
+# is torch[device-gfx1201] (extra), plus torchaudio.
 RUN --mount=type=cache,target=/root/.cache/pip \
     : "${TORCH_VERSION:?set TORCH_VERSION to the pinned torch version}" \
     && : "${TORCHVISION_VERSION:?set TORCHVISION_VERSION to the pinned torchvision version}" \
     && python -m pip install \
-        --index-url https://repo.amd.com/rocm/whl-multi-arch/ \
-        "torch==${TORCH_VERSION}" \
-        "torchvision==${TORCHVISION_VERSION}" \
-        "amd-torch-device-${GPU_ARCH}==${TORCH_VERSION}"
+        --index-url https://stable.repo.amd.com/rocm/whl-next/ \
+        "torch[device-gfx1201]==${TORCH_VERSION}" \
+        "torchvision[device-gfx1201]==${TORCHVISION_VERSION}" \
+        "torchaudio==2.11.0+rocm10.0.0"
 
 RUN python - <<'PY'
 import torch

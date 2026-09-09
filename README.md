@@ -72,17 +72,21 @@ host render group gid for `/dev/dri` access — check with `getent group render`
 
 | component    | version |
 |:-------------|:--------|
-| ROCm         | 7.14.0 (`rocm/dev-ubuntu-24.04:7.14.0-full`) |
-| PyTorch      | 2.13.0+rocm7.14.0 |
-| vLLM         | 0.28.1rc0 |
-| AITER        | v0.1.20 |
-| Flash Attention | @ 1cc7ff67 |
+| ROCm         | 10.0.0 (`rocm/dev-ubuntu-24.04:10.0.0-full`, Python 3.12) |
+| PyTorch      | 2.12.0+rocm10.0.0 (`stable.repo.amd.com/whl-next`, `torch[device-gfx1201]`) |
+| vLLM         | 0.29.0 |
+| AITER        | v0.1.20.post1 |
+| Flash Attention | @ 1cc7ff67 (source; official guide uses `flash-attn==2.8.3` wheel) |
 
-ROCm 7.14 is on AMDs "TheRock" technology-preview stream (7.9/7.13/7.14); the
-production 7.2.x line lacks RDNA4/`gfx1201` support. AITER `v0.1.20` is the
-latest tagged release; vLLM is 0.28.1rc0 (421 commits past v0.28.0, including
-the `--prefix-cache-retention-interval` flag from #52216/#53504) since
-`gfx1201` requires source builds.
+ROCm 10.0 is the TheRock 10.0 stream (successor to the 7.9/7.13/7.14 previews); the
+production 7.2.x line lacks RDNA4/`gfx1201` support. AITER `v0.1.20.post1` is the
+`10.0` post-release (ROCm 10 hipcub fix #4883); vLLM is 0.29.0 (186 commits past
+v0.28.1rc0, including the dense `prefix_cache_retention_interval` default
+#55760/#55861 and the GDN decode fix #53877) since `gfx1201` requires source
+builds. Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2.12.0+rocm10.0.0`
+`torchvision[device-gfx1201]==0.27.0+rocm10.0.0` `torchaudio==2.11.0+rocm10.0.0` via
+`--index-url https://stable.repo.amd.com/rocm/whl-next/` and `flash-attn==2.8.3`
+`amd-aiter==0.1.20.post1` via `--extra-index-url https://rocm.frameworks.amd.com/whl-multi-arch/vllm/`.
 
 The default (active) model is `Qwen/Qwen3.8-27B-FP8` (`qwen3.8-27b`, the
 newest dense 27B hybrid linear/full-attention architecture, MTP trained,
@@ -140,12 +144,13 @@ restart anyway).
   --reasoning-parser qwen3`** (`VLLM_TOOL_CHOICE`, all profiles): OpenAI
   tool-calling with Qwen's `qwen3_coder` parser; `--reasoning-parser qwen3` is
   required for the template's `reasoning`/`content` split.
-- **`--limit-mm-per-prompt '{"image": 1, "audio": 0, "video": 0}'`**: up to
-  1 image per prompt, audio/video disabled. Capped at 1 to block the
-  2+-large-images engine deadlock on these GDN hybrids (upstream #40707,
+- **`--limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'`**: up to
+  99 images per prompt, audio/video disabled. Previously capped at 1 to block
+  the 2+-large-images engine deadlock on these GDN hybrids (upstream #40707,
   fix #40709 not merged — see AGENTS.md watchlist): with 2+ large images the
   align block-split collapses to 0, the request hangs forever, and the engine
-  never recovers. Re-raise the cap only once #40709 lands.
+  never recovers. Cap re-raised to 99 at user request; multi-image large prompts
+  re-expose that hang risk until #40709 lands.
 - **`--override-generation-config`**: server-side sampling defaults
   (`temperature` 1.0, `top_p` 0.95, `top_k` 20, `min_p` 0, no penalties).
 - **`--enable-prefix-caching`**: reuse KV for shared prompt prefixes (known
@@ -177,19 +182,21 @@ Version-locked patches applied at runtime by read-only bind-mounts in
 the pinned dependency.
 
 - **Tolerate empty `tools` arrays** (`patches/vllm/protocol.py`, pinned to
-  `VLLM_REF` v0.28.1rc0): some clients send `{"tools": [], "tool_choice":
+  `VLLM_REF` v0.29.0): some clients send `{"tools": [], "tool_choice":
   "none"}`, which upstream rejects with a 400. The overlay treats `tools: []`
   as a no-tools request when `tool_choice` is `"none"`/omitted, while still
   rejecting genuinely invalid combos.
 
 ### Source-build patches (applied at image build time)
 
-Local backports of upstream fixes not in `VLLM_REF` v0.28.1rc0, applied by
+Local backports of upstream fixes not in `VLLM_REF` v0.29.0, applied by
 `Dockerfile.fullbuild` from `patches/vllm/*.patch` (mirrors the aiter patch
 loop). Re-verify each patch applies cleanly on the new ref when bumping
 `VLLM_REF` — and drop any whose fix has since landed (see
 AGENTS.md §4). (#51812/#51837 were carried as patches on v0.27.1, merged
-upstream 2026-08-11, and dropped with the v0.28.0 bump.)
+upstream 2026-08-11, and dropped with the v0.28.0 bump; #53877 was carried on
+v0.28.1rc0 and dropped with the v0.29.0 bump — GDN decode beta FP32 is now
+upstream.)
 
 - **Honor `drop_eagle_block` in `MambaManager`**
   (`patches/vllm/48375-mamba-drop-eagle-block.patch`,
@@ -198,28 +205,24 @@ upstream 2026-08-11, and dropped with the v0.28.0 bump.)
   matched page holding recurrent state written over draft positions that
   verification later rejects — silent corruption spread to every later request
   sharing the prefix (#43559, #50188). The fix lowers the cache-hit search
-  ceiling by one page.
+  ceiling by one page. Version-locked to v0.29.0 (applies cleanly; MambaManager
+  still ignores the flag).
 
-- **Keep packed GDN decode beta in FP32**
-  (`patches/vllm/53877-gdn-packed-decode-beta-fp32.patch`,
-  [#53877](https://github.com/vllm-project/vllm/pull/53877), merged upstream
-  2026-08-30, first release: v0.29.0rc1): the packed GDN decode kernel
-  rounded the FP32 `sigmoid(beta)` to the input dtype (bf16) before folding it
-  into the FP32 recurrent state. That kernel is the exact decode path
-  Qwen3.8-27B runs on ROCm (the aiter RDNA fast path only serves
-  Qwen3-Next's interleaved GQA layout), and the per-step rounding error
-  compounds with decode length, degrading long-context accuracy. **Impact**:
-  the MTP3 spec-decode path (fused sigmoid-gating kernel) was already FP32 and
-  is unchanged; the fix corrects the packed/non-spec decode path (used at
-  CUDA-graph capture and non-spec decode), with no measured throughput cost —
-  verified 2026-09-02 (8/8 packed-decode tests incl. the upstream regression
-  test, coherence passed, decode at parity), see
-  [`benchmarks/2026-09-02_qwen3.8-27b_53877_backport.md`](benchmarks/2026-09-02_qwen3.8-27b_53877_backport.md).
+- **Seed align-mode Mamba `state_idx` in Mamba blocks**
+  (`patches/vllm/53798-mamba-align-resume-seed.patch`,
+  [#53798](https://github.com/vllm-project/vllm/pull/53798), open upstream):
+  without it, a request resumed with `num_computed_tokens>0` (reachable via
+  prefix-cache hits — now dense by default #55760/#55861 — or internal
+  checkpoint resumption) seeds its align-table column with
+  `cache_config.block_size` (scheduler block, 832/1600/2112 here) instead of
+  `MambaSpec.block_size` (7168-scale after page unification), landing in a
+  neighbour's row or past the table (IMA in
+  `precopy_mamba_align_fused_kernel`). Version-locked to v0.29.0.
 
 ### AITER source-build patches (applied at image build time)
 
 `Dockerfile.fullbuild` applies `patches/aiter/*.patch` to the pinned
-`AITER_REF` (v0.1.20) before building the wheel. Together they make aiter's
+`AITER_REF` (v0.1.20.post1, TheRock 10.0) before building the wheel. Together they make aiter's
 unified attention work and run well on RDNA4 (`gfx1201`):
 
 - **`unified-attention-bf16-kv.patch`** — with bf16 KV the staged K/V tiles of
@@ -247,7 +250,7 @@ unified attention work and run well on RDNA4 (`gfx1201`):
   `PREBUILD_KERNELS=0`).
 
 Re-verify each patch applies cleanly on the new ref when bumping `AITER_REF`
-(they are version-locked to v0.1.20).
+(they are version-locked to v0.1.20.post1; verified `git apply --check` clean on `v0.1.20.post1` 2026-09-09).
 
 ### Runtime env knobs
 
@@ -318,7 +321,7 @@ Key tuning decisions:
   1600-token Mamba checkpoint grid). Full record:
   [`benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md`](benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md).
 - **V1 model runner (V2 tested and rolled back, 2026-09-03)**:
-  `VLLM_USE_V2_MODEL_RUNNER=1` on the pinned v0.28.1rc0 is fully correct on
+  `VLLM_USE_V2_MODEL_RUNNER=1` on v0.29.0 is fully correct on
   this stack (coherence, 54K × 10, image+MTP, c2 condense smoke) and prefill
   is +3.6–4%, but decode and MTP acceptance are flat — the #54498
   acceptance-driven decode hypothesis did not materialize, and V2 is not a
@@ -346,17 +349,16 @@ stale triage snapshots live in
 
 ## Performance
 
-Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.28.1rc0 +
-the local patch, torch 2.13 (ROCm 7.14.0), tuned MoE/dense GEMM configs. The
+Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.29.0 +
+local patches, torch 2.13 (ROCm 7.14.0), tuned MoE/dense GEMM configs. The
 top Qwen3.8-27B row is the current default stack (**MTP3**, 256K context,
-**fp8 KV**, 2026-08-28). Since 2026-08-27 the MTP profiles
+**fp8 KV**, 2026-08-28 — re-benchmark after the v0.29.0 bump is pending;
+expect parity: #53877 is now upstream and the dense retention default
+#55760/#55861 is the previous manual pin). Since 2026-08-27 the MTP profiles
 also pass `--no-async-scheduling` (vLLM turns async on by default for MTP,
 which is the open `#51571` accepted-count race + the `#54039`/`#32275` ROCm-CI
 hang combination); re-bench shows decode parity — see
 [`benchmarks/2026-08-27_qwen3.8-27b_no_async_scheduling.md`](benchmarks/2026-08-27_qwen3.8-27b_no_async_scheduling.md).
-Since 2026-09-02 the stack also carries the #53877 GDN decode-beta FP32
-backport (build-time patch; correctness fix, no perf change — decode parity
-re-verified, see [`benchmarks/2026-09-02_qwen3.8-27b_53877_backport.md`](benchmarks/2026-09-02_qwen3.8-27b_53877_backport.md)).
 The Qwen3.6 rows are the latest
 measurements on the v0.28.0 build (2026-08-24); **35B-A3B now ships MTP4** (the #47087 MoE
 token-loop fix was re-validated clean — see below). Full methodology, per-run
@@ -369,8 +371,8 @@ files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) and [`archive/`](archive/).
 | Qwen3.6-27B-FP8 (2026-08-24)²         | MTP4 | bf16 |   ~1730 |   **80.5** |    ~69 |
 | Qwen3.6-35B-A3B-FP8 (2026-08-24)      | **MTP4** | bf16 |   ~5700 |   **194.9** |   **161.3** |
 
-² no-async scheduling. ³ vLLM 0.28.1rc0 + the retention-interval workaround,
-current live profile (fp8 KV).
+² no-async scheduling. ³ vLLM 0.29.0 (dense default, no manual retention pin),
+current live profile (fp8 KV); pre-bump numbers.
 
 ### Depth sweep (Qwen3.8-27B-FP8)
 
