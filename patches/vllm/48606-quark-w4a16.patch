@@ -1,0 +1,921 @@
+From 52d2d48d01025f21a7010901bae31a49c86acac3 Mon Sep 17 00:00:00 2001
+From: meng-amd <limitmhw@users.noreply.github.com>
+Date: Thu, 10 Sep 2026 00:00:00 +0000
+Subject: [PATCH] [Quantization] Support native Quark W4A16 INT4/UINT4 exports
+ (#48606)
+
+Version-locked to VLLM_REF=v0.29.0. Upstream PR #48606
+(https://github.com/vllm-project/vllm/pull/48606) open as of 2026-09-10,
+not in any tag. Pinned to head 52d2d48 (branch
+hongweimeng/quark-awq-int4-quark-flow_experiment, 9 files, +1128/-6).
+Drop when VLLM_REF contains the merge — and confirm ROCm/gfx1201 kernel
+coverage, not just the merge: the dense QuarkW4A16Int4 path selects an
+MPLinearKernel at load time (ROCm order: RDNA3/gfx1100-only, then
+RDNAHybrid gfx11/gfx12, then TritonW4A16 fallback), so gfx1201 support is
+unproven until the AWQ trial boots.
+
+Ported to v0.29.0 (the PR base drifted; 4 files needed rebase):
+- quark/quark.py: `_is_w4a16_int4` adapted to the v0.29.0 bool-checker
+  style; dispatch added to `_get_scheme_from_config` (replaces the PR's
+  `_get_scheme_cls_from_config`/`init_scheme` split, which does not exist
+  on v0.29.0); `_unwrap_single_quant_config` ported from main (absent on
+  v0.29.0). The PR's `weight_config=`/`layer_name=` get_scheme hunks are
+  N/A — v0.29.0 resolves configs via `_find_matched_config` and already
+  passes `layer_name`.
+- quark/quark_moe.py: `QuarkW4A16Int4MoEMethod` ported to the v0.29.0 MoE
+  API (`super().__init__(moe)`; dispatch via the `get_moe_method`
+  staticmethod checker chain instead of the PR's `get_moe_method_target`,
+  which does not exist on v0.29.0). Oracle calls
+  (`select/convert/make_wna16_*`) verified against v0.29.0 signatures.
+- tests/quantization/test_quark.py hunks DROPPED (test-only; the image
+  build does not run them).
+- schemes/quark_w4a16_int4.py: `super().__init__(keys)` replaced with plain
+  attribute assignment — v0.29.0's QuarkScheme is a bare ABC with no
+  __init__ (the PR-base call raises `TypeError` at load time); added the
+  required `has_g_idx=False` to `MPLinearLayerConfig(...)` (field absent
+  on the PR base).
+All other hunks (new `schemes/quark_w4a16_int4.py`, schemes `__init__`,
+kernels/linear log line, triton_moe, auto_awq) applied cleanly unmodified.
+NOTE to future editors: this file is applied with `git apply`, which
+silently truncates a hunk body that exceeds its `@@` line count — always
+update the counts when adding/removing `+` lines (2026-09-10: a stale
++1,217 dropped the file tail and crash-looped the server at import).
+---
+diff --git a/vllm/model_executor/kernels/linear/__init__.py b/vllm/model_executor/kernels/linear/__init__.py
+index e02334b..82672be 100644
+--- a/vllm/model_executor/kernels/linear/__init__.py
++++ b/vllm/model_executor/kernels/linear/__init__.py
+@@ -830,6 +830,7 @@ def choose_mp_linear_kernel(
+ 
+         can_implement, failure_reason = kernel.can_implement(config)
+         if can_implement:
++            logger.info_once("Using %s for mixed-precision linear", kernel.__name__)
+             return kernel
+         else:
+             failure_reasons.append(
+diff --git a/vllm/model_executor/layers/fused_moe/experts/triton_moe.py b/vllm/model_executor/layers/fused_moe/experts/triton_moe.py
+index 9f98264..da9666a 100644
+--- a/vllm/model_executor/layers/fused_moe/experts/triton_moe.py
++++ b/vllm/model_executor/layers/fused_moe/experts/triton_moe.py
+@@ -596,9 +596,9 @@ class TritonWNA16Experts(TritonExperts):
+     ) -> bool:
+         SUPPORTED_W = [
+             kInt4Static,
++            kInt4StaticAsym,
+             kInt8Static,
+             kInt4Static32,
+-            kInt4StaticAsym,
+             kInt4Static32Asym,
+             # other group sizes?
+         ]
+diff --git a/vllm/model_executor/layers/quantization/auto_awq.py b/vllm/model_executor/layers/quantization/auto_awq.py
+index 713bd7b..8b5559e 100644
+--- a/vllm/model_executor/layers/quantization/auto_awq.py
++++ b/vllm/model_executor/layers/quantization/auto_awq.py
+@@ -93,7 +93,7 @@ def _replace_or_register_parameter(
+ def _convert_awq_to_standard_format(
+     layer: torch.nn.Module,
+     w_q_name: str,
+-    w_zp_name: str,
++    w_zp_name: str | None,
+     size_bits: int,
+ ) -> None:
+     """Convert AWQ weight and zero-point tensors to standard GPTQ-like format.
+@@ -101,6 +101,7 @@ def _convert_awq_to_standard_format(
+     AWQ packs qweight along the output dim with a non-standard bit order.
+     This converts to standard bit order and repacks qweight along the input
+     dim, matching the format expected by the MPLinearKernel framework.
++    If w_zp_name is None (symmetric quantization), only the weight is converted.
+     """
+     pack_factor = 32 // size_bits
+     mask = (1 << size_bits) - 1
+@@ -139,6 +140,9 @@ def _convert_awq_to_standard_format(
+     )
+     setattr(layer, w_q_name, new_param)
+ 
++    if w_zp_name is None:
++        return
++
+     # --- Convert qzeros: fix AWQ bit ordering and repack
+     # AWQ qzeros: (G, N // pack) packed along dim 1, AWQ bit order
+     # Target: (N // pack, G) packed along dim 0, standard bit order
+diff --git a/vllm/model_executor/layers/quantization/quark/quark.py b/vllm/model_executor/layers/quantization/quark/quark.py
+index 6c877b1..54c16df 100644
+--- a/vllm/model_executor/layers/quantization/quark/quark.py
++++ b/vllm/model_executor/layers/quantization/quark/quark.py
+@@ -32,14 +32,22 @@ from vllm.model_executor.layers.quantization.quark.schemes import (
+     QuarkOCP_MX,
+     QuarkScheme,
+     QuarkW4A8_MXFP4_FP8,
++    QuarkW4A16Int4,
+     QuarkW8A8Fp8,
+     QuarkW8A8Fp8PerBlock,
+     QuarkW8A8Int8,
+ )
+ from vllm.model_executor.layers.quantization.quark.utils import (
+     deep_compare,
++    parse_w4a16_int4_weight_config,
+     should_ignore_layer,
+ )
++from vllm.model_executor.layers.quantization.utils.quant_utils import (
++    kInt4Static,
++    kInt4Static32,
++    kInt4Static32Asym,
++    kInt4StaticAsym,
++)
+ from vllm.model_executor.models.utils import WeightsMapper
+ from vllm.platforms import current_platform
+ 
+@@ -138,8 +146,10 @@ class QuarkConfig(QuantizationConfig):
+         quant_config_with_hf_to_vllm_mapper: dict[str, Any] = {}
+ 
+         for k, v in self.quant_config.items():
+-            if isinstance(v, list):
++            if isinstance(v, list) and all(isinstance(item, str) for item in v):
+                 quant_config_with_hf_to_vllm_mapper[k] = hf_to_vllm_mapper.apply_list(v)
++            elif isinstance(v, list):
++                quant_config_with_hf_to_vllm_mapper[k] = v
+             elif isinstance(v, dict):
+                 quant_config_with_hf_to_vllm_mapper[k] = hf_to_vllm_mapper.apply_dict(v)
+             else:
+@@ -409,6 +419,39 @@ class QuarkConfig(QuantizationConfig):
+         # Only symmetric weight quantization supported.
+         return is_int8_dtype and is_tensor and is_weight_symmetric and is_static
+ 
++    def _is_w4a16_int4(
++        self,
++        weight_quant: dict[str, Any] | list[dict[str, Any]] | None,
++        input_quant: dict[str, Any] | list[dict[str, Any]] | None,
++    ) -> bool:
++        # W4A16 weight-only: activations stay unquantized (input config None).
++        if weight_quant is None or input_quant is not None:
++            return False
++
++        normalized = self._unwrap_single_quant_config(weight_quant)
++        if normalized is None:
++            return False
++
++        is_int4 = normalized.get("dtype") in ("int4", "uint4")
++        is_packed = self.pack_method in ("order", "reorder")
++        if not (is_int4 and is_packed):
++            return False
++
++        try:
++            parse_w4a16_int4_weight_config(normalized)
++        except ValueError:
++            return False
++        return True
++
++    @staticmethod
++    def _unwrap_single_quant_config(
++        quant_config: dict[str, Any] | list[dict[str, Any]],
++    ) -> dict[str, Any] | None:
++        """Unwrap one-entry quantization-config lists."""
++        if isinstance(quant_config, list):
++            return quant_config[0] if len(quant_config) == 1 else None
++        return quant_config
++
+     def _is_w4a8_mxfp4_fp8(
+         self,
+         weight_quant: dict[str, Any] | None,
+@@ -703,6 +746,24 @@ class QuarkConfig(QuantizationConfig):
+                 is_static_input_scheme=False,
+                 input_symmetric=input_config.get("symmetric"),
+             )
++        elif self._is_w4a16_int4(weight_config, input_config):
++            normalized_weight_config = self._unwrap_single_quant_config(weight_config)
++            assert normalized_weight_config is not None
++            group_size, is_symmetric = parse_w4a16_int4_weight_config(
++                normalized_weight_config
++            )
++            if is_symmetric:
++                weight_key = kInt4Static32 if group_size == 32 else kInt4Static
++            else:
++                weight_key = (
++                    kInt4Static32Asym if group_size == 32 else kInt4StaticAsym
++                )
++            return QuarkW4A16Int4(
++                weight_quant_key=weight_key,
++                activation_quant_key=None,
++                pack_method=self.pack_method,
++                weight_config=normalized_weight_config,
++            )
+         elif self._is_w_ocp_mx_a_x(weight_config, input_config):
+             return QuarkOCP_MX(
+                 weight_config, input_config, dynamic_mxfp4_quant=dynamic_mxfp4_quant
+diff --git a/vllm/model_executor/layers/quantization/quark/quark_moe.py b/vllm/model_executor/layers/quantization/quark/quark_moe.py
+index d2b286f..974c559 100644
+--- a/vllm/model_executor/layers/quantization/quark/quark_moe.py
++++ b/vllm/model_executor/layers/quantization/quark/quark_moe.py
+@@ -40,6 +40,12 @@ from vllm.model_executor.layers.fused_moe.oracle.int8 import (
+     make_int8_moe_quant_config,
+     select_int8_moe_backend,
+ )
++from vllm.model_executor.layers.fused_moe.oracle.int_wna16 import (
++    convert_to_wna16_moe_kernel_format,
++    make_wna16_moe_kernel,
++    make_wna16_moe_quant_config,
++    select_wna16_moe_backend,
++)
+ from vllm.model_executor.layers.fused_moe.oracle.mxfp4 import (
+     TRITON_BACKENDS,
+     Mxfp4MoeBackend,
+@@ -56,6 +62,9 @@ from vllm.model_executor.layers.fused_moe.oracle.nvfp4 import (
+     make_nvfp4_moe_quant_config,
+     select_nvfp4_moe_backend,
+ )
++from vllm.model_executor.layers.quantization.quark.utils import (
++    parse_w4a16_int4_weight_config,
++)
+ from vllm.model_executor.layers.quantization.utils.ocp_mx_utils import (
+     OCP_MX_BLOCK_SIZE,
+     OCP_MX_Scheme,
+@@ -66,6 +75,10 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
+     kFp8DynamicTokenSym,
+     kFp8StaticChannelSym,
+     kFp8StaticTensorSym,
++    kInt4Static,
++    kInt4Static32,
++    kInt4Static32Asym,
++    kInt4StaticAsym,
+     kInt8DynamicTensorSym,
+     kInt8DynamicTokenSym,
+     kInt8StaticChannelSym,
+@@ -86,6 +99,7 @@ logger = init_logger(__name__)
+ 
+ __all__ = [
+     "QuarkMoEMethod",
++    "QuarkW4A16Int4MoEMethod",
+     "QuarkW8A8Fp8MoEMethod",
+     "QuarkOCP_MX_MoEMethod",
+     "QuarkNvfp4MoEMethod",
+@@ -123,6 +137,20 @@ class QuarkMoEMethod(FusedMoEMethodBase):
+             )
+         elif quant_config._is_fp8_w8a8(weight_config, input_config):
+             return QuarkW8A8Fp8MoEMethod(weight_config, input_config, module.moe_config)
++        elif quant_config._is_w4a16_int4(weight_config, input_config):
++            unwrapped_weight_config = quant_config._unwrap_single_quant_config(
++                weight_config
++            )
++            if unwrapped_weight_config is None:
++                raise RuntimeError(
++                    f"Missing weight quantization config for layer {layer_name}"
++                )
++            return QuarkW4A16Int4MoEMethod(
++                unwrapped_weight_config,
++                quant_config.pack_method,
++                module.moe_config,
++                quant_config=quant_config,
++            )
+         elif quant_config._is_w_ocp_mx_a_x(weight_config, input_config):
+             # All OCP MX schemes (W4A16, W4A8, etc.) handled by QuarkOCP_MX_MoEMethod
+             # Backend selection happens inside via oracle
+@@ -137,6 +165,330 @@ class QuarkMoEMethod(FusedMoEMethodBase):
+             raise RuntimeError("Unsupported FusedMoe scheme")
+ 
+ 
++class QuarkW4A16Int4MoEMethod(QuarkMoEMethod):
++    """Quark packed INT4 weight-only MoE method."""
++
++    supported_activation_quant_keys: list = [None]
++    supported_weight_quant_keys: list = [
++        kInt4Static,
++        kInt4Static32,
++        kInt4StaticAsym,
++        kInt4Static32Asym,
++    ]
++
++    def __init__(
++        self,
++        weight_config: dict[str, Any],
++        pack_method: str,
++        moe: FusedMoEConfig,
++        input_config: dict[str, Any] | None = None,
++        quant_config: "QuarkConfig | None" = None,  # type: ignore # noqa F821
++    ):
++        if input_config is not None:
++            raise NotImplementedError(
++                "QuarkW4A16Int4MoEMethod does not support activation "
++                f"quantization; input_tensors must be None, got {input_config}."
++            )
++        if weight_config.get("qscheme", "per_group") != "per_group":
++            raise NotImplementedError(
++                "QuarkW4A16Int4MoEMethod only supports per_group weight "
++                f"quantization, got {weight_config.get('qscheme')!r}."
++            )
++        if weight_config.get("is_dynamic"):
++            raise NotImplementedError(
++                "QuarkW4A16Int4MoEMethod only supports static weight quantization."
++            )
++        self.weight_quant = weight_config
++        self.quant_config = quant_config
++        self.group_size, self.is_symmetric = parse_w4a16_int4_weight_config(
++            weight_config
++        )
++        self.bit8_pack_factor = 2
++        self.pack_reorder = pack_method == "reorder"
++
++        if self.is_symmetric:
++            weight_key = kInt4Static32 if self.group_size == 32 else kInt4Static
++        else:
++            weight_key = kInt4Static32Asym if self.group_size == 32 else kInt4StaticAsym
++        super().__init__(moe)
++
++        self.use_wna16_backend = True
++        self.wna16_backend, self.experts_cls = select_wna16_moe_backend(
++            config=self.moe,
++            weight_key=weight_key,
++            quant_config=self.quant_config,
++            may_have_zp=not self.is_symmetric,
++            may_have_bias=False,
++        )
++
++    def create_weights(
++        self,
++        layer: RoutedExperts,
++        num_experts: int,
++        hidden_size: int,
++        intermediate_size_per_partition: int,
++        params_dtype: torch.dtype,
++        **extra_weight_attrs,
++    ):
++        group_size = self.group_size
++        group_size_div_factor = 1
++
++        while intermediate_size_per_partition % group_size or hidden_size % group_size:
++            group_size = group_size // 2
++            group_size_div_factor *= 2
++            assert group_size >= 32
++        layer.group_size = group_size
++        layer.group_size_div_factor = group_size_div_factor
++
++        strategy = FusedMoeWeightScaleSupported.GROUP.value
++        extra_weight_attrs.update({"quant_method": strategy, "is_transposed": False})
++
++        assert "weight_loader" in extra_weight_attrs
++        weight_loader = extra_weight_attrs["weight_loader"]
++        extra_weight_attrs["weight_loader"] = self.get_weight_loader(
++            layer, weight_loader
++        )
++
++        w13_weight = torch.nn.Parameter(
++            torch.empty(
++                num_experts,
++                2 * intermediate_size_per_partition,
++                hidden_size // self.bit8_pack_factor,
++                dtype=torch.uint8,
++            ),
++            requires_grad=False,
++        )
++        layer.register_parameter("w13_weight", w13_weight)
++        set_weight_attrs(w13_weight, extra_weight_attrs)
++
++        w2_weight = torch.nn.Parameter(
++            torch.empty(
++                num_experts,
++                hidden_size,
++                intermediate_size_per_partition // self.bit8_pack_factor,
++                dtype=torch.uint8,
++            ),
++            requires_grad=False,
++        )
++        layer.register_parameter("w2_weight", w2_weight)
++        set_weight_attrs(w2_weight, extra_weight_attrs)
++
++        w13_weight_scale = torch.nn.Parameter(
++            torch.zeros(
++                num_experts,
++                2 * intermediate_size_per_partition,
++                hidden_size // group_size,
++                dtype=params_dtype,
++            ),
++            requires_grad=False,
++        )
++        layer.register_parameter("w13_weight_scale", w13_weight_scale)
++        set_weight_attrs(w13_weight_scale, extra_weight_attrs)
++
++        w2_weight_scale = torch.nn.Parameter(
++            torch.zeros(
++                num_experts,
++                hidden_size,
++                intermediate_size_per_partition // group_size,
++                dtype=params_dtype,
++            ),
++            requires_grad=False,
++        )
++        layer.register_parameter("w2_weight_scale", w2_weight_scale)
++        set_weight_attrs(w2_weight_scale, extra_weight_attrs)
++
++        w13_weight_zero_point = torch.nn.Parameter(
++            torch.zeros(
++                num_experts,
++                2 * intermediate_size_per_partition // self.bit8_pack_factor,
++                hidden_size // group_size,
++                dtype=torch.uint8,
++            ),
++            requires_grad=False,
++        )
++        layer.register_parameter("w13_weight_zero_point", w13_weight_zero_point)
++        set_weight_attrs(w13_weight_zero_point, extra_weight_attrs)
++
++        w2_weight_zero_point = torch.nn.Parameter(
++            torch.zeros(
++                num_experts,
++                hidden_size // self.bit8_pack_factor,
++                intermediate_size_per_partition // group_size,
++                dtype=torch.uint8,
++            ),
++            requires_grad=False,
++        )
++        layer.register_parameter("w2_weight_zero_point", w2_weight_zero_point)
++        set_weight_attrs(w2_weight_zero_point, extra_weight_attrs)
++
++    def process_weights_after_loading(self, layer: RoutedExperts) -> None:
++        w13_qzeros = layer.w13_weight_zero_point if not self.is_symmetric else None
++        w2_qzeros = layer.w2_weight_zero_point if not self.is_symmetric else None
++
++        converted = convert_to_wna16_moe_kernel_format(
++            backend=self.wna16_backend,
++            layer=layer,
++            quant_config=self.quant_config,
++            input_dtype=None,
++            w13=layer.w13_weight,
++            w2=layer.w2_weight,
++            w13_scale=layer.w13_weight_scale,
++            w2_scale=layer.w2_weight_scale,
++            w13_qzeros=w13_qzeros,
++            w2_qzeros=w2_qzeros,
++        )
++
++        if converted is None:
++            # Backend rewrote the layer's params in place (e.g. Humming).
++            self._setup_kernel(layer)
++            return
++
++        (
++            w13_qweight,
++            w2_qweight,
++            w13_scales,
++            w2_scales,
++            _,  # w13_qzeros
++            _,  # w2_qzeros
++            _,  # w13_input_global_scale
++            _,  # w2_input_global_scale
++            _,  # w13_bias
++            _,  # w2_bias
++        ) = converted
++
++        replace_parameter(layer, "w13_weight", w13_qweight)
++        replace_parameter(layer, "w2_weight", w2_qweight)
++        replace_parameter(layer, "w13_weight_scale", w13_scales)
++        replace_parameter(layer, "w2_weight_scale", w2_scales)
++
++        self._setup_kernel(layer)
++
++    def _setup_kernel(self, layer: RoutedExperts) -> None:
++        assert self.experts_cls is not None
++        self.moe_quant_config = self.get_fused_moe_quant_config(layer)
++        assert self.moe_quant_config is not None
++        self.moe_kernel = make_wna16_moe_kernel(
++            moe_quant_config=self.moe_quant_config,
++            moe_config=self.moe,
++            experts_cls=self.experts_cls,
++            backend=self.wna16_backend,
++            routing_tables=layer._expert_routing_tables(),
++        )
++
++    def get_fused_moe_quant_config(
++        self, layer: RoutedExperts
++    ) -> FusedMoEQuantConfig | None:
++        w1_zp = layer.w13_weight_zero_point if not self.is_symmetric else None
++        w2_zp = layer.w2_weight_zero_point if not self.is_symmetric else None
++        return make_wna16_moe_quant_config(
++            w1_scale=layer.w13_weight_scale,
++            w2_scale=layer.w2_weight_scale,
++            w1_zp=w1_zp,
++            w2_zp=w2_zp,
++            group_size=layer.group_size,
++            num_bits=4,
++        )
++
++    def apply(
++        self,
++        layer: RoutedExperts,
++        x: torch.Tensor,
++        topk_weights: torch.Tensor,
++        topk_ids: torch.Tensor,
++        shared_experts: SharedExperts | None,
++        shared_experts_input: torch.Tensor | None,
++    ) -> torch.Tensor:
++        assert self.moe_kernel is not None
++        return self.moe_kernel.apply(
++            hidden_states=x,
++            w1=layer.w13_weight,
++            w2=layer.w2_weight,
++            topk_weights=topk_weights,
++            topk_ids=topk_ids,
++            activation=layer.activation,
++            global_num_experts=layer.global_num_experts,
++            apply_router_weight_on_input=layer.apply_router_weight_on_input,
++            expert_map=layer.expert_map,
++            shared_experts=shared_experts,
++            shared_experts_input=shared_experts_input,
++        )
++
++    def get_weight_loader(self, layer: RoutedExperts, weight_loader):
++        def convert_quark_tensor(tensor: torch.Tensor, tensor_type: str):
++            size0 = tensor.size(0)
++            tensor = tensor.view(torch.uint8)
++
++            shifter = torch.tensor([0, 4], dtype=torch.uint8, device=tensor.device)
++            tensor = (tensor[:, :, None] >> shifter) & 0xF
++
++            if self.pack_reorder:
++                reverse_awq_pack_order = [0, 4, 1, 5, 2, 6, 3, 7]
++                tensor = tensor.view(-1, 8)[:, reverse_awq_pack_order]
++            else:
++                tensor = tensor.view(-1, 8)
++            if self.is_symmetric:
++                tensor = tensor ^ 0x8
++            tensor = tensor.view(size0, -1)
++
++            tensor = tensor.T.contiguous()
++            if tensor_type == "weight":
++                tensor = tensor[:, 1::2] * 16 + tensor[:, ::2]
++            elif tensor_type == "zero_point":
++                tensor = tensor[1::2, :] * 16 + tensor[::2, :]
++            return tensor
++
++        def quark_int4_weight_loader(
++            param: torch.nn.Parameter,
++            loaded_weight: torch.Tensor,
++            weight_name: str,
++            shard_id: str,
++            expert_id: int,
++            return_success: bool = False,
++        ):
++            loaded_weight = loaded_weight.to(param.data.device)
++            shard_size = layer.intermediate_size_per_partition
++
++            if weight_name.endswith("_weight"):
++                loaded_weight = convert_quark_tensor(loaded_weight, "weight")
++            elif weight_name.endswith("_weight_zero_point"):
++                loaded_weight = convert_quark_tensor(loaded_weight, "zero_point")
++            elif weight_name.endswith("_weight_scale"):
++                loaded_weight = loaded_weight.T
++
++            if layer.group_size_div_factor > 1 and (
++                "weight_zero_point" in weight_name or "weight_scale" in weight_name
++            ):
++                loaded_weight = loaded_weight.repeat_interleave(
++                    layer.group_size_div_factor, 1
++                )
++
++            if "w13_weight_zero_point" in weight_name:
++                tensor = loaded_weight.view(
++                    layer.moe_config.tp_size, -1, loaded_weight.size(1)
++                )[layer.moe_config.tp_rank]
++                if shard_id == "w1":
++                    param.data[expert_id, : shard_size // 2] = tensor
++                else:
++                    param.data[expert_id, shard_size // 2 :] = tensor
++                return True if return_success else None
++            elif "w2_weight_zero_point" in weight_name:
++                param.data[expert_id] = loaded_weight.view(
++                    loaded_weight.size(0), layer.moe_config.tp_size, -1
++                )[:, layer.moe_config.tp_rank]
++                return True if return_success else None
++
++            return weight_loader(
++                param,
++                loaded_weight,
++                weight_name,
++                shard_id,
++                expert_id,
++                return_success=return_success,
++            )
++
++        return quark_int4_weight_loader
++
++
+ class QuarkW8A8Fp8MoEMethod(QuarkMoEMethod):
+     def __init__(
+         self,
+diff --git a/vllm/model_executor/layers/quantization/quark/schemes/__init__.py b/vllm/model_executor/layers/quantization/quark/schemes/__init__.py
+index 4db1ba3..a5857a7 100644
+--- a/vllm/model_executor/layers/quantization/quark/schemes/__init__.py
++++ b/vllm/model_executor/layers/quantization/quark/schemes/__init__.py
+@@ -5,6 +5,7 @@ from .quark_nvfp4 import QuarkNVFP4
+ from .quark_ocp_mx import QuarkOCP_MX
+ from .quark_scheme import QuarkScheme
+ from .quark_w4a8_mxfp4_fp8 import QuarkW4A8_MXFP4_FP8
++from .quark_w4a16_int4 import QuarkW4A16Int4
+ from .quark_w8a8_fp8 import QuarkW8A8Fp8, QuarkW8A8Fp8PerBlock
+ from .quark_w8a8_int8 import QuarkW8A8Int8
+ 
+@@ -14,6 +15,7 @@ __all__ = [
+     "QuarkW8A8Fp8PerBlock",
+     "QuarkW8A8Int8",
+     "QuarkOCP_MX",
++    "QuarkW4A16Int4",
+     "QuarkW4A8_MXFP4_FP8",
+     "QuarkNVFP4",
+ ]
+diff --git a/vllm/model_executor/layers/quantization/quark/schemes/quark_w4a16_int4.py b/vllm/model_executor/layers/quantization/quark/schemes/quark_w4a16_int4.py
+new file mode 100644
+index 0000000..33248d2
+--- /dev/null
++++ b/vllm/model_executor/layers/quantization/quark/schemes/quark_w4a16_int4.py
+@@ -0,0 +1,224 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++import math
++from collections.abc import Callable
++from typing import Any
++
++import torch
++
++from vllm.model_executor.kernels.linear import (
++    MPLinearKernel,
++    MPLinearLayerConfig,
++    choose_mp_linear_kernel,
++)
++from vllm.model_executor.layers.quantization.auto_awq import (
++    _convert_awq_to_standard_format,
++)
++from vllm.model_executor.layers.quantization.quark.schemes.quark_scheme import (
++    QuarkScheme,
++)
++from vllm.model_executor.layers.quantization.quark.utils import (
++    canonicalize_quark_packed_int4,
++    parse_w4a16_int4_weight_config,
++)
++from vllm.model_executor.layers.quantization.utils.quant_utils import (
++    QuantKey,
++    kInt4Static,
++    kInt4Static32,
++    kInt4Static32Asym,
++    kInt4StaticAsym,
++)
++from vllm.model_executor.parameter import (
++    GroupQuantScaleParameter,
++    PackedvLLMParameter,
++)
++from vllm.scalar_type import scalar_types
++
++
++class QuarkW4A16Int4(QuarkScheme):
++    """Quark packed INT4 weight-only linear scheme via MPLinearKernel."""
++
++    supported_activation_quant_keys: list[QuantKey | None] = [None]
++    supported_weight_quant_keys: list[QuantKey] = [
++        kInt4Static,
++        kInt4Static32,
++        kInt4StaticAsym,
++        kInt4Static32Asym,
++    ]
++
++    def __init__(
++        self,
++        weight_quant_key: QuantKey,
++        activation_quant_key: QuantKey | None,
++        pack_method: str,
++        weight_config: dict[str, Any],
++    ):
++        # v0.29.0 port: QuarkScheme is a bare ABC with no __init__ (the
++        # PR-base call super().__init__(keys) raises TypeError here), so
++        # store the keys as plain attributes instead.
++        self.weight_quant_key = weight_quant_key
++        self.activation_quant_key = activation_quant_key
++
++        if weight_config.get("qscheme", "per_group") != "per_group":
++            raise NotImplementedError(
++                "QuarkW4A16Int4 only supports per_group weight "
++                f"quantization, got {weight_config.get('qscheme')!r}."
++            )
++        if weight_config.get("is_dynamic"):
++            raise NotImplementedError(
++                "QuarkW4A16Int4 only supports static weight quantization."
++            )
++
++        group_size, is_symmetric = parse_w4a16_int4_weight_config(weight_config)
++        self.group_size = group_size
++        self.pack_factor = 8
++        self.pack_reorder = pack_method == "reorder"
++        self.is_symmetric = is_symmetric
++        self.quant_type = scalar_types.uint4b8 if is_symmetric else scalar_types.uint4
++        self.kernel: MPLinearKernel | None = None
++
++    @classmethod
++    def get_min_capability(cls) -> int:
++        return 70
++
++    def create_weights(
++        self,
++        layer: torch.nn.Module,
++        output_partition_sizes: list[int],
++        input_size_per_partition: int,
++        params_dtype: torch.dtype,
++        weight_loader: Callable,
++        **kwargs,
++    ):
++        input_size = kwargs["input_size"]
++        output_size = kwargs["output_size"]
++        group_size = (
++            self.group_size if self.group_size != -1 else input_size_per_partition
++        )
++        if input_size_per_partition % group_size != 0:
++            raise ValueError(
++                "The input size is not aligned with the quantized weight shape. "
++                "This can be caused by too large tensor parallel size. "
++                f"input_size_per_partition={input_size_per_partition}, "
++                f"group_size={group_size}."
++            )
++
++        output_size_per_partition = sum(output_partition_sizes)
++        packed_output_size_per_partition = math.ceil(
++            output_size_per_partition / self.pack_factor
++        )
++        layer.output_size_per_partition = output_size_per_partition
++        layer.packed_output_size_per_partition = packed_output_size_per_partition
++
++        mp_linear_kernel_config = MPLinearLayerConfig(
++            full_weight_shape=(input_size, output_size),
++            partition_weight_shape=(
++                input_size_per_partition,
++                output_size_per_partition,
++            ),
++            weight_type=self.quant_type,
++            act_type=params_dtype,
++            group_size=group_size,
++            zero_points=not self.is_symmetric,
++            # v0.29.0 port: MPLinearLayerConfig gained a required has_g_idx
++            # field (absent on the PR base). No activation reordering here.
++            has_g_idx=False,
++        )
++        kernel_type = choose_mp_linear_kernel(mp_linear_kernel_config)
++
++        def weight_scale_loader(
++            param: torch.nn.Parameter,
++            loaded_weight: torch.Tensor,
++            *args,
++            **loader_kwargs,
++        ) -> None:
++            if loaded_weight.shape[1] < param.data.shape[1]:
++                padded_weight = loaded_weight.new_zeros(param.data.shape)
++                padded_weight[:, : loaded_weight.shape[1]] = loaded_weight
++                loaded_weight = padded_weight
++            weight_loader(param, loaded_weight, *args, **loader_kwargs)
++
++        weight = PackedvLLMParameter(
++            data=torch.empty(
++                input_size_per_partition,
++                packed_output_size_per_partition,
++                dtype=torch.int32,
++            ),
++            input_dim=0,
++            output_dim=1,
++            packed_dim=1,
++            packed_factor=self.pack_factor,
++            weight_loader=weight_loader,
++        )
++        num_groups = input_size_per_partition // group_size
++        weight_zero_point = PackedvLLMParameter(
++            data=torch.zeros(
++                num_groups,
++                packed_output_size_per_partition,
++                dtype=torch.int32,
++            ),
++            input_dim=0,
++            output_dim=1,
++            packed_dim=1,
++            packed_factor=self.pack_factor,
++            weight_loader=weight_loader,
++        )
++        weight_scale = GroupQuantScaleParameter(
++            data=torch.empty(
++                num_groups,
++                packed_output_size_per_partition * self.pack_factor,
++                dtype=params_dtype,
++            ),
++            input_dim=0,
++            output_dim=1,
++            weight_loader=weight_scale_loader,
++        )
++
++        layer.register_parameter("weight", weight)
++        layer.register_parameter("weight_zero_point", weight_zero_point)
++        layer.register_parameter("weight_scale", weight_scale)
++
++        self.kernel = kernel_type(
++            mp_linear_kernel_config,
++            w_q_param_name="weight",
++            w_s_param_name="weight_scale",
++            w_zp_param_name="weight_zero_point" if not self.is_symmetric else None,
++        )
++
++    def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
++        layer.weight.data = canonicalize_quark_packed_int4(
++            layer.weight.data,
++            pack_reorder=self.pack_reorder,
++            is_symmetric=self.is_symmetric,
++            pack_factor=self.pack_factor,
++        )
++        if not self.is_symmetric:
++            layer.weight_zero_point.data = canonicalize_quark_packed_int4(
++                layer.weight_zero_point.data,
++                pack_reorder=self.pack_reorder,
++                is_symmetric=self.is_symmetric,
++                pack_factor=self.pack_factor,
++            )
++        output_size = layer.output_size_per_partition
++        packed_output_size = layer.packed_output_size_per_partition * self.pack_factor
++        if output_size < packed_output_size:
++            layer.weight_scale.data[:, output_size:].zero_()
++
++        _convert_awq_to_standard_format(
++            layer,
++            "weight",
++            "weight_zero_point" if not self.is_symmetric else None,
++            self.quant_type.size_bits,
++        )
++        assert self.kernel is not None
++        self.kernel.process_weights_after_loading(layer)
++
++    def apply_weights(
++        self,
++        layer: torch.nn.Module,
++        x: torch.Tensor,
++        bias: torch.Tensor | None = None,
++    ):
++        assert self.kernel is not None
++        return self.kernel.apply_weights(layer, x, bias)
+diff --git a/vllm/model_executor/layers/quantization/quark/utils.py b/vllm/model_executor/layers/quantization/quark/utils.py
+index 8f6ce4d..c41df1e 100644
+--- a/vllm/model_executor/layers/quantization/quark/utils.py
++++ b/vllm/model_executor/layers/quantization/quark/utils.py
+@@ -94,6 +94,63 @@ def should_ignore_layer(
+     return should_ignore_layer
+ 
+ 
++def parse_w4a16_int4_weight_config(
++    weight_config: Mapping[str, Any],
++) -> tuple[int, bool]:
++    """Parse required W4A16 INT4/UINT4 weight fields from Quark config."""
++    if "group_size" not in weight_config:
++        raise ValueError(
++            "Quark W4A16 INT4/UINT4 configs must specify weight.group_size"
++        )
++    if "symmetric" not in weight_config:
++        raise ValueError("Quark W4A16 INT4/UINT4 configs must specify weight.symmetric")
++
++    group_size = weight_config["group_size"]
++    is_symmetric = weight_config["symmetric"]
++    if not isinstance(group_size, int) or group_size <= 0:
++        raise ValueError(
++            f"Quark W4A16 weight.group_size must be a positive int, got {group_size!r}"
++        )
++    if not isinstance(is_symmetric, bool):
++        raise ValueError(
++            f"Quark W4A16 weight.symmetric must be a bool, got {is_symmetric!r}"
++        )
++    return group_size, is_symmetric
++
++
++def canonicalize_quark_packed_int4(
++    packed_weight: torch.Tensor,
++    *,
++    pack_reorder: bool,
++    is_symmetric: bool,
++    pack_factor: int = 8,
++) -> torch.Tensor:
++    """Convert Quark export nibble layout to AWQ checkpoint layout."""
++    from vllm.model_executor.layers.quantization.auto_awq import (
++        _REVERSE_AWQ_PACK_ORDER,
++    )
++
++    if pack_reorder:
++        source_order = torch.tensor(
++            _REVERSE_AWQ_PACK_ORDER, device=packed_weight.device, dtype=torch.int32
++        )
++    else:
++        source_order = torch.arange(
++            pack_factor, device=packed_weight.device, dtype=torch.int32
++        )
++    target_order = torch.tensor(
++        _REVERSE_AWQ_PACK_ORDER, device=packed_weight.device, dtype=torch.int32
++    )
++    source_shifts = source_order * 4
++    target_shifts = target_order * 4
++
++    values = (packed_weight.to(torch.int32)[..., None] >> source_shifts) & 0xF
++    if is_symmetric:
++        values = values ^ 0x8
++    packed = (values.to(torch.int64) << target_shifts.to(torch.int64)).sum(dim=-1)
++    return packed.to(torch.int32)
++
++
+ def check_equal_or_regex_match(layer_name: str, targets: Iterable[str]) -> bool:
+     """
+     Checks whether a layer_name is exactly equal or a regex match for

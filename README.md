@@ -90,8 +90,12 @@ builds. Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2
 
 The default (active) model is `Qwen/Qwen3.8-27B-FP8` (`qwen3.8-27b`, the
 newest dense 27B hybrid linear/full-attention architecture, MTP trained,
-vision). Alternatives: `Qwen/Qwen3.6-27B-FP8` (`qwen3.6-27b`, dense) and
-`Qwen/Qwen3.6-35B-A3B-FP8` (`qwen3.6-35b-a3b`, 35B total / 3B active MoE).
+vision). Alternatives: `Qwen/Qwen3.6-27B-FP8` (`qwen3.6-27b`, dense),
+`Qwen/Qwen3.6-35B-A3B-FP8` (`qwen3.6-35b-a3b`, 35B total / 3B active MoE),
+and `amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16` (`qwen3.8-27b-awq`, AWQ INT4
+weight-only trial — decode-optimized alternative, needs the backported
+loader `patches/vllm/48606-quark-w4a16.patch`; see
+[`benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`](benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md)).
 Model selection is controlled by `MODEL_PROFILE` in `.env` — override inline
 with `MODEL_PROFILE=qwen3.6-27b just up`.
 
@@ -105,6 +109,9 @@ Runtime environment is split across files:
 - `env/qwen3.8-27b.env` — Qwen3.8-27B-FP8 dense model config (same
   architecture as 3.6-27B, so it shares the 3.6 common settings and tuned
   per-shape fp8 GEMM configs)
+- `env/qwen3.8-27b-awq.env` — AWQ-INT4 trial profile (same settings as
+  qwen3.8-27b but bf16 KV, no KV-scale calibration); see the trial doc
+  above
 
 ### Chat template
 
@@ -370,9 +377,14 @@ files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) and [`archive/`](archive/).
 | Qwen3.8-27B-FP8 (default, 2026-08-25) | **MTP3** | bf16 |  ~3060 |   ~67 |    ~68 |
 | Qwen3.6-27B-FP8 (2026-08-24)²         | MTP4 | bf16 |   ~1730 |   **80.5** |    ~69 |
 | Qwen3.6-35B-A3B-FP8 (2026-08-24)      | **MTP4** | bf16 |   ~5700 |   **194.9** |   **161.3** |
+| Qwen3.8-27B-AWQ-INT4 (trial, 2026-09-10)⁴ | **MTP3** | bf16 | ~2130–2310 | ~81–95 | ~85–87 |
 
 ² no-async scheduling. ³ vLLM 0.29.0 (dense default, no manual retention pin),
 current live profile (fp8 KV); pre-bump numbers.
+⁴ AWQ trial profile (`qwen3.8-27b-awq`, backported #48606 loader, RDNAHybrid
+kernel): decode-optimized alternative, not the default — prefill −26%, decode
++30–50%, weights 10.3 GiB. Full record:
+[`benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`](benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md).
 
 ### Depth sweep (Qwen3.8-27B-FP8)
 

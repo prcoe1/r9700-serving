@@ -568,6 +568,22 @@ touches one of:
      the `#35288` `max-num-seqs 2` cap so not hit today, but blocks any future
      cap raise. WIP fix `PR #55617` (2026-09-06). Monitor before raising
      `max-num-seqs`.
+  - `#48606` (PR, open — **carried as a local patch for the AWQ trial
+    profile**): native Quark W4A16 INT4/UINT4 `real_quantized` (`reorder`)
+    loading path (`QuarkW4A16Int4` dense + MoE, canonicalized to the `awq_*`
+    kernel layout). Without it v0.29.0 cannot load
+    `amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16` (`quant_method: quark` matches no
+    scheme in the stock Quark plugin; the AWQ loader expects `quant_config.
+    json`). Pinned to head `52d2d48` (2026-09-09) as
+    `patches/vllm/48606-quark-w4a16.patch` (needed a v0.29.0 rebase + two
+    port fixes — bare-ABC `QuarkScheme`, required `has_g_idx`; see patch
+    header). **Trial done 2026-09-10, kept as alternative profile**
+    (`qwen3.8-27b-awq`, bf16 KV): kernel selects `RDNAHybridW4A16` on
+    gfx1201 (the CUDA-only concern did NOT materialize on the MP-kernel
+    path), decode +30–50% to d200K, prefill −26%, weights 10.3 GiB —
+    full record `benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`. **Drop
+    the patch when a pinned `VLLM_REF` contains the merge** (check merge
+    commit vs tag, plus ROCm/gfx1201 kernel coverage — not just the merge).
  
  Issues known **not** to apply (checked; re-check only if the stack changes):
 NVIDIA-only (#52475, #52583 VL), non-Qwen models (#52833/#48568 GLM, #51530

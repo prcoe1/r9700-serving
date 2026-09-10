@@ -94,6 +94,17 @@ RUN mkdir flash-attention \
     && git -C flash-attention checkout --detach FETCH_HEAD \
     && git -C flash-attention submodule update --init --recursive --depth=1
 
+# Upstream-drift workaround (2026-09-10): third_party/aiter pins
+# flydsl==0.1.9.dev599, which was yanked from PyPI (latest published: 0.3.x).
+# Relax to 0.3.1 — the same version AITER_REF builds against. setup.py
+# enforces an exact match, so patch both files. Drop if FLASH_ATTN_REF moves
+# to a submodule with a published flydsl pin.
+RUN sed -i 's/flydsl==0\.1\.9\.dev599/flydsl==0.3.1/' \
+    /src/flash-attention/third_party/aiter/pyproject.toml \
+    /src/flash-attention/third_party/aiter/setup.py \
+    && grep -rh "flydsl==" /src/flash-attention/third_party/aiter/pyproject.toml \
+    /src/flash-attention/third_party/aiter/setup.py | head -3
+
 RUN --mount=type=cache,target=/root/.cache/pip \
     cd /src/flash-attention \
     && FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE \
