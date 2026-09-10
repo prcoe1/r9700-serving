@@ -227,7 +227,7 @@ touches one of:
 - **GPU**: `gfx1201` (RDNA4, 2× R9700), ROCm 10.0. ROCm-only issues and
   AITER unified-attention paths are in scope; NVIDIA/CUDA-only fixes are not.
 - **Models**: Qwen3.6-27B (dense, MTP4), Qwen3.6-35B-A3B (MoE, MTP off),
-  Qwen3.8-27B (hybrid GDN, MTP3, 256K context, bf16 KV). Anything touching:
+  Qwen3.8-27B (hybrid GDN, MTP3, 256K context, fp8 KV). Anything touching:
   hybrid Mamba/GDN models, MTP/speculative decoding, prefix caching
   (align mamba cache mode), fp8 KV, or `ROCM_AITER_UNIFIED_ATTN` is in scope.
 - **Chat template**: froggeric `chat-templates/qwen.jinja` (pinned, e.g.
@@ -283,7 +283,7 @@ touches one of:
     `BlockPool.cache_full_blocks` skips Mamba align-mode null blocks, so only
     ~1 checkpoint hash per request is registered and a missing Mamba
     checkpoint vetoes every attention-group hit. Live geometry:
-    `block_size=832` on the bf16-KV default (was `1600` on fp8), so
+    `block_size=1600` on the fp8-KV profile (832 on bf16), so
     incremental multi-turn prefixes never hit — measured **0% on the 30-turn
     qwen3.8-27b probe (re-confirmed 2026-08-23)**. Note the cumulative
     `vllm:prefix_cache_hits_total` is non-zero: caching *does* hit on
@@ -342,7 +342,7 @@ touches one of:
      restores it → **NaN logits** from step 1 (token-0 `"!"` spam to
      max_tokens; `corrupted_requests_total` increments; identical retries fail
      until the cache turns over). **This stack's exact model + cache mode +
-     TP2 + bf16** (repro at block 816 on v0.28.0; ours is 832). Silent-
+      TP2 + fp8** (repro at block 816 on v0.28.0; ours is 1600). Silent-
      corruption family (cf. `#53912`, `#55291`, `#39273`). **Currently
      masked**: the carrier is a prefix-cache *restore*, and our incremental
      multi-turn pattern is the `#45238` 0%-hit no-op, so the bad checkpoint
@@ -355,8 +355,24 @@ touches one of:
       progress; no PR yet). **Exposure increased on v0.29.0**: the
       dense-retention default (`#55760`/`#55861`) makes the *first*
       identical-prompt repeat hit the cache, widening the window where a bad
-      checkpoint (prior prompt length mod 832 ∈ {4,6,8,10}) can be restored —
+      checkpoint (prior prompt length mod 1600 ∈ {4,6,8,10}) can be restored —
       run a targeted probe (repeated prompts at those lengths).
+      **2026-09-10 probe** (`benchmarks/nan_checkpoint_probe.py` +
+      `benchmarks/2026-09-10_qwen3.8-27b_55766_nan_probe.md`): **CLEAN on
+      v0.29.0 + MTP3 — masked, not disproven.** Measured hit geometry backs
+      off **2 blocks** from the last aligned boundary (12800-token hit on a
+      16006-token prompt = 10×1600+6; consistent across r=6/8/20): the
+      EAGLE/MTP last-block drop (`use_eagle_block_drop`, #53388 family) plus
+      the speculative one-block back-off (#53479, unmerged) both stand, and
+      the bad checkpoint sits AT the last aligned boundary → it is
+      **unrestorable under MTP3**, so the dense-retention "widened window"
+      does not apply to this carrier while MTP3 + 2-block back-off stand.
+      Upstream repro used ngram (no EAGLE drop → its hit reached the last
+      aligned boundary); the "is ngram required?" question is moot here.
+      Note: the live profile is **fp8 KV / block 1600**. **Re-probe** if spec decode changes
+       (MTP off → hit reaches the last aligned boundary → carrier live), on a
+       bump landing #53479/EAGLE-drop changes, or on any NaN / `"!"`-spam /
+       empty reply in the field.
    - `#53041` RFC: tiered SWA/Mamba checkpointing (HBM tail + periodic store)
      + recompute backfill for divergent hybrid prefix hits (same family as
      `#52959`/`#52789`; monitor)
@@ -374,7 +390,7 @@ touches one of:
     (checked 2026-08-24) are now in the current pin — no bump needed to gain
     them.
   - `#52817` RFC: hybrid SSM + SpecDec + APC re-runs the last full block on a
-    prefix hit (832 tokens here on the bf16-KV default; was 1600 on fp8),
+    prefix hit (1600 tokens here on the fp8-KV profile; 832 on bf16),
     bounding the prefix-cache win for MTP even after `#45238` is fixed. Monitor
     for a merged implementation.
   - `#51562` GDN metadata misclassifies stateless first chunk (open)
@@ -540,9 +556,9 @@ touches one of:
      after it was lowered to the min prefix-cacheable group (small-block drafter
      64/1024 vs `mamba_block_size` 7168) → `precopy_mamba_align_fused_kernel`
      IMA (Xid 31) or silent wrong-state read. GLM-5.3-Flash/DFlash2 repro on
-     `main`; same `mamba_hybrid.py` line as `#53798` — DFlash2 variant of that
-     bug. N/A for this stack (MTP drafter not small-block; we are `block_size`
-     832/mamba 1600) but sibling proof `#53798` fix still incomplete — monitor;
+      `main`; same `mamba_hybrid.py` line as `#53798` — DFlash2 variant of that
+      bug. N/A for this stack (MTP drafter not small-block; we are `block_size`
+      1600) but sibling proof `#53798` fix still incomplete — monitor;
      no PR yet.
    - `#55533` (2026-09-06, open): Hybrid GDN (Qwen3.5/3.8 27B-class) + MTP
      scheduler caps at ~3 concurrent sequences at batch ≥ 4 — acceptance/
@@ -682,7 +698,15 @@ independent 3-arm A/B/C on a Qwen3.8-27B hybrid GDN/align/fp8-KV/TP2 setup
     core fix unchanged. #54076: new push today. #55766: actively
     investigated upstream (SM89 repro), no PR. AITER v0.1.21.post2 (09-09) =
     v0.1.21 + 30 FlyDSL/CI/gfx950/1250 commits — no bump. flash-attn HEAD
-    a369df7 unchanged; template v22.5 unchanged.
+    a369df7 unchanged; template v22.5 unchanged. 2026-09-10: update check —
+    all pins still current (v0.29.0 latest, AITER no-bump stands,
+    flash-attn/ROCm-image/template unchanged), watchlist unchanged,
+    #54716 force-pushed (e829a9c) with the flagged exceeds-condition defect
+    addressed + boundary test (still open, monitor-only on MRV2). #55766
+    probe run: CLEAN — masked by the MTP 2-block hit back-off (bad
+    checkpoint unrestorable); see watchlist entry +
+    benchmarks/2026-09-10_qwen3.8-27b_55766_nan_probe.md. Live geometry
+     confirmed fp8 KV / block 1600.
 
 ### 4. Local patches vs upstream
 
