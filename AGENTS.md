@@ -126,7 +126,11 @@ that affect this GPU setup and model combo** before recommending a bump.
 # prefix-cache-covered), plus ROCm perf #52033 (dual-stream hipgraph decode),
 # #53712 (ROCr/CLR graph-replay segfault fix, up to ~20% TPOT), #53818
 # (CUDA-graph capture on current stream). Still NOT fixed in v0.29.0:
-# #54716/#51599/#53479/#48375/#40709 (all still open as of 2026-09-09).
+# #54716/#51599/#53479/#48375/#40709 (all still open as of 2026-09-09;
+# re-checked 2026-09-11: still open; #53504 CLOSED as COMPLETED; v0.29.0
+# still latest with no new tags; AITER/flash-attn/ROCm-image/template all
+# unchanged — only post-release merge in our family is #54713, main-only,
+# see watchlist).
 # **Runner change**: MRV2 is now the default for all models (#53183); on ROCm
 # the only MRV1 defaults are DeepseekV32/DeepseekV4 (ROCM_DEFAULT_MRV1_
 # ARCHITECTURES in vllm/config/vllm.py), so all three profiles now run MRV2 —
@@ -189,7 +193,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533 54713; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -296,7 +300,11 @@ touches one of:
      merged — 2026-09-06: still CONFLICTING + REVIEW_REQUIRED (head b99d152),
      no progress (re-checked 2026-09-06);
     interacts with our `--prefix-cache-retention-interval` pin so
-    re-validate after any bump that lands it)**, and a 2026-08-27 adaptive
+    re-validate after any bump that lands it; 2026-09-11: still OPEN +
+    REVIEW_REQUIRED — author states (2026-09-10) the current head is a
+    superseded branch, not the intended focused patch, and merged `#54713`
+    changed the same replay-boundary retention path; correctly NOT carried
+    as a local patch)**, and a 2026-08-27 adaptive
     single-checkpoint prototype (demand-driven, not yet a PR; positioned as an
      alternative/complement to `#53479`); `#52789` (internal
     prefill checkpoints) merged 2026-08-22 — **verified present in
@@ -333,9 +341,18 @@ touches one of:
      **Root-cause fix landed (2026-09-09)**: `#55760` + `#55861` merged
      2026-09-08 and are in the v0.29.0 final — we are pinned to it
      (8c07ffea3d) and the `PREFIX_CACHE_RETENTION_INTERVAL` pins are dropped
-     from all env files (unset now means dense for hybrid+MTP). Re-run the
+     from all env files (unset now means dense for hybrid+MTP). **2026-09-11:
+     `#53504` itself CLOSED as COMPLETED** — confirms the fix. Re-run the
      prefix-cache probe after any future bump to confirm the first-repeat
      still hits.
+   - `#54713` (merged 2026-09-10, post-v0.29.0 — main-only, not in our pin):
+     follow-up to `#53945`: `get_replay_boundary` → `get_replay_boundaries`,
+     retaining both the identical-resend and longer-sibling positions so an
+     EAGLE resend of a block-aligned prompt still hits
+     (`kv_cache_coordinator.py`, `single_type_kv_cache_manager.py` + tests).
+     Same `#53504`/`#45238` family, but the zero-hit failure it fixes is
+     sparse-retention-only — inert under our dense default. Ride the next
+     bump; no action.
    - `#55766` (2026-09-07, open, new): Qwen3.8/3.5 hybrid GDN + mamba align +
      prefix caching — a prefill that ends **4–10 tokens past a block boundary**
      writes a bad Mamba/GDN checkpoint; a later block-aligned prefix-cache hit
@@ -720,9 +737,21 @@ independent 3-arm A/B/C on a Qwen3.8-27B hybrid GDN/align/fp8-KV/TP2 setup
     #54716 force-pushed (e829a9c) with the flagged exceeds-condition defect
     addressed + boundary test (still open, monitor-only on MRV2). #55766
     probe run: CLEAN — masked by the MTP 2-block hit back-off (bad
-    checkpoint unrestorable); see watchlist entry +
-    benchmarks/2026-09-10_qwen3.8-27b_55766_nan_probe.md. Live geometry
-     confirmed fp8 KV / block 1600.
+     checkpoint unrestorable); see watchlist entry +
+     benchmarks/2026-09-10_qwen3.8-27b_55766_nan_probe.md. Live geometry
+      confirmed fp8 KV / block 1600. Checked 2026-09-11 (all N/A, no action):
+     #28649 (gfx1201/RDNA4 FP8 patch request — OP retracted 2026-09-05:
+     fall-through already routes gfx1201 to W8A8, gains were graph
+     improvements + per-model configs), #45407 (LMCache connector crash on
+     Qwen3.6 hybrid — no connectors here), #55496 (ModelOpt NVFP4
+     Flash-Next MTP load — different checkpoint format), #54094
+     (DFlash2+YaRN zero prefix reuse — we run MTP), #53142 re-confirmed
+     (requires explicit `--block-size`), #56521 (ROCm 7.2.x libhsa
+     intercept overflow — we're on ROCm 10.0, don't use vLLM's rocm_base
+     Dockerfile), #55291 (still no ≥0.28.0 repro), #54906 (NVIDIA Thor
+     reporter + `thinking_token_budget` field we never send), #56088/#55922
+     (Flash-Next), #54924/#54451/#56380 (GLM ROCm), #56506/#52911
+     (DeepSeek ROCm), #52773 (KV offloading — not used).
 
 ### 4. Local patches vs upstream
 
