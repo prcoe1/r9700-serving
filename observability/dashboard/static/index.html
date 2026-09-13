@@ -14,8 +14,9 @@
   <span id="health" class="badge">checking…</span>
   <span id="model" class="badge">model: —</span>
   <span id="kvmeta" class="badge">kv: —</span>
-  <span class="muted" style="margin-left:auto">vLLM <code id="vllmurl"></code> · poll 1s · <a href="/api/metrics" target="_blank">/api/metrics</a> · <a href="/api/history" target="_blank">history</a></span>
+  <span class="muted" style="margin-left:auto">vLLM <code id="vllmurl"></code> · poll 1s · <a href="/api/metrics" target="_blank">/api/metrics</a> · <a href="/api/bench/history" target="_blank">history</a></span>
 </header>
+<div id="errBanner" class="err-banner" role="alert" aria-live="assertive" hidden></div>
 <nav class="tabs" role="tablist" aria-label="Dashboard sections">
   <button data-tab="stats" class="tab-btn active" role="tab" aria-selected="true" aria-controls="tab-stats">Stats</button>
   <button data-tab="benchmarks" class="tab-btn" role="tab" aria-selected="false" aria-controls="tab-benchmarks">Benchmarks</button>
@@ -39,6 +40,7 @@
         <div><div class="metric" id="waiting">—</div><div class="muted">waiting</div></div>
         <div><div class="metric" id="swapped">—</div><div class="muted">swapped</div></div>
       </div>
+      <div class="muted" id="reqCap"></div>
       <div class="chart-wrap"><canvas id="reqChart"></canvas></div>
     </div>
     <div class="card">
@@ -52,10 +54,11 @@
     <div class="card">
       <h3>Throughput</h3>
       <div class="row">
-        <div><div class="metric" id="ppRate">—</div><div class="muted" title="Estimated from KV-cache growth per poll. vLLM reports prompt_tokens_total only at prefill completion, so it can't show live prefill progress (a long chunked prefill would spike to the whole prompt length in one second).">prompt t/s</div></div>
-        <div><div class="metric" id="tgRate">—</div><div class="muted">gen t/s</div></div>
+        <div><div class="metric" id="ppRate">—</div><div class="muted" title="Server-side EMA over prompt_tokens_total deltas with a chunked-prefill spike guard. Raw single-poll value available in /api/metrics as pp_raw.">prompt t/s (EMA)</div></div>
+        <div><div class="metric" id="tgRate">—</div><div class="muted">gen t/s (EMA)</div></div>
       </div>
       <div class="muted" id="thrDetail"></div>
+      <div class="muted" id="specDetail"></div>
       <div class="chart-wrap"><canvas id="thrChart"></canvas></div>
     </div>
   </div>
@@ -68,13 +71,13 @@
   <div id="tab-benchmarks" class="tab-panel" role="tabpanel" aria-label="Benchmarks">
 
   <div class="card" id="benchCard">
-    <h3>Bench history <span class="muted" style="text-transform:none;letter-spacing:0">pp2048 / tg32 / tg128 (t/s) — 1 bench = pp + 2 tg points</span></h3>
+    <h3><button class="collapse-btn" data-collapse="benchCard" aria-expanded="true" aria-label="Collapse bench history">▾</button> Bench history <span class="muted" style="text-transform:none;letter-spacing:0">pp2048 / tg32 / tg128 (t/s) — 1 bench = pp + 2 tg points</span></h3>
     <div class="row" style="margin-bottom:10px">
       <button id="runBench" class="btn">▶ Run bench (pp2048 + tg32/128 ×3)</button>
       <button id="cancelBench" class="btn secondary" disabled>Cancel</button>
       <button id="refreshHist" class="btn secondary">Refresh</button>
       <button id="clearBench" class="btn secondary" style="border-color:var(--bad);color:var(--bad)">Clear data</button>
-      <span id="benchStatus" class="muted"></span>
+      <span id="benchStatus" class="muted" role="status" aria-live="polite"></span>
     </div>
     <div id="benchChartWrap"><canvas id="histChart" height="110"></canvas></div>
     <div id="benchTableWrap" style="overflow:auto;max-height:320px;margin-top:12px">
@@ -85,13 +88,13 @@
   </div>
 
   <div class="card" id="depthCard">
-    <h3>Depth sweep <span class="muted" style="text-transform:none;letter-spacing:0">full 0–200K corpus (pp2048/tg1024, TTFT in table) — est. 20min</span></h3>
+    <h3><button class="collapse-btn" data-collapse="depthCard" aria-expanded="true" aria-label="Collapse depth sweep">▾</button> Depth sweep <span class="muted" style="text-transform:none;letter-spacing:0">full 0–200K corpus (pp2048/tg1024, TTFT in table) — est. 20min</span></h3>
     <div class="row" style="margin-bottom:10px">
       <button id="runDepth" class="btn">▶ Run depth sweep (0–200K) — est. 20min</button>
       <button id="cancelDepth" class="btn secondary" disabled>Cancel</button>
       <button id="refreshDepth" class="btn secondary">Refresh</button>
       <button id="clearDepth" class="btn secondary" style="border-color:var(--bad);color:var(--bad)">Clear data</button>
-      <span id="depthStatus" class="muted"></span>
+      <span id="depthStatus" class="muted" role="status" aria-live="polite"></span>
     </div>
     <div id="depthChartWrap"><canvas id="depthChart" height="120"></canvas></div>
     <div id="depthTableWrap" style="overflow:auto;max-height:320px;margin-top:12px">
@@ -102,13 +105,13 @@
   </div>
 
   <div class="card" id="concCard">
-    <h3>Concurrency sweep <span class="muted" style="text-transform:none;letter-spacing:0">same depths 0–200K at max concurrency (x parallel, pp2048/tg1024) — est. 40min</span></h3>
+    <h3><button class="collapse-btn" data-collapse="concCard" aria-expanded="true" aria-label="Collapse concurrency sweep">▾</button> Concurrency sweep <span class="muted" style="text-transform:none;letter-spacing:0">same depths 0–200K at max concurrency (x parallel, pp2048/tg1024) — est. 40min</span></h3>
     <div class="row" style="margin-bottom:10px">
       <button id="runConc" class="btn">▶ Run concurrency sweep — est. 40min</button>
       <button id="cancelConc" class="btn secondary" disabled>Cancel</button>
       <button id="refreshConc" class="btn secondary">Refresh</button>
       <button id="clearConc" class="btn secondary" style="border-color:var(--bad);color:var(--bad)">Clear data</button>
-      <span id="concStatus" class="muted"></span>
+      <span id="concStatus" class="muted" role="status" aria-live="polite"></span>
     </div>
     <div id="concChartWrap"><canvas id="concChart" height="110"></canvas></div>
     <div id="concTableWrap" style="overflow:auto;max-height:320px;margin-top:12px">

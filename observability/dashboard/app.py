@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -262,7 +263,42 @@ METRIC_NAMES = (
     # cumulative token counters — the UI derives t/s rates from their deltas
     "vllm:prompt_tokens_total",
     "vllm:generation_tokens_total",
+    # latency histograms (cumulative sum+count → windowed means server-side)
+    "vllm:e2e_request_latency_seconds_sum",
+    "vllm:e2e_request_latency_seconds_count",
+    "vllm:time_to_first_token_seconds_sum",
+    "vllm:time_to_first_token_seconds_count",
+    "vllm:time_per_output_token_seconds_sum",
+    "vllm:time_per_output_token_seconds_count",
+    # request outcomes + spec-decode accept counters (names vary by version;
+    # the generic _EXTRA_METRIC_RE fallback below catches renames)
+    "vllm:request_success_total",
+    "vllm:request_failure_total",
+    "vllm:spec_decode_draft_tokens_total",
+    "vllm:spec_decode_accepted_tokens_total",
 )
+
+# Generic fallback: catch counters/histogram parts in these families even when
+# the exact metric name differs across vLLM versions (e.g. spec-decode
+# renames). Deliberately narrow — a bare `vllm:*` catch-all would balloon the
+# /api/metrics payload with per-bucket histogram lines.
+_EXTRA_METRIC_RE = re.compile(
+    r"^vllm:(spec_decode|request|e2e_request|time_to_first_token|"
+    r"time_per_output_token|iteration_tokens|num_requests|queue|scheduler)[a-z_0-9]*"
+    r"(\{.*\})? "
+)
+
+# Smoothing / spike-guard tuning for server-side derived rates.
+_RATE_ALPHA = 0.35  # EMA weight for each new 1s sample
+_SPIKE_RATIO = 3.0  # a sample > max(SPIKE_RATIO*ema, SPIKE_FLOOR) is a
+_SPIKE_FLOOR = 50000.0  # chunked-prefill completion spike → hold the EMA
+
+
+def _metric_value(line: str) -> float | None:
+    try:
+        return float(line.rsplit(" ", 1)[-1])
+    except ValueError:
+        return None
 
 
 def _parse_metrics(text: str) -> dict[str, Any]:
@@ -284,14 +320,161 @@ def _parse_metrics(text: str) -> dict[str, Any]:
                     except ValueError:
                         out[k] = v
             continue
+        matched = False
         for name in METRIC_NAMES:
             if line.startswith(name + "{") or line.startswith(name + " "):
-                try:
-                    out[name] = float(line.rsplit(" ", 1)[-1])
-                except ValueError:
-                    pass
+                v = _metric_value(line)
+                if v is not None:
+                    out[name] = v
+                matched = True
                 break
+        if not matched and _EXTRA_METRIC_RE.match(line):
+            # last-wins across label sets (e.g. per-engine series); skip the
+            # `_created` timestamp gauges and histogram buckets (payload bloat,
+            # no signal for the UI)
+            fname = line.split("{", 1)[0].split(" ", 1)[0]
+            if fname.endswith(("_created", "_bucket")):
+                continue
+            v = _metric_value(line)
+            if v is not None:
+                out[fname] = v
     return out
+
+
+# ---------------------------------------------------------------------------
+# Server-side derived rates + metrics ring (survives UI tab switches; the
+# previous client-only ring was wiped on reload).
+# ---------------------------------------------------------------------------
+
+_RATE: dict[str, Any] = {
+    "ts": None, "prompt": None, "gen": None,
+    "pp_ema": None, "tg_ema": None,
+    "q": None, "h": None, "hit_ema": None,
+    "ttft_sum": None, "ttft_count": None,
+    "itl_sum": None, "itl_count": None,
+}
+
+# 15 min @ 1s poll; /api/metrics/history serves this to late-joining clients.
+_METRICS_RING: deque = deque(maxlen=900)
+
+
+def _ema(prev: float | None, sample: float) -> float:
+    return sample if prev is None else _RATE_ALPHA * sample + (1 - _RATE_ALPHA) * prev
+
+
+def _clamp_spike(raw: float, ema: float | None) -> float:
+    # Chunked-prefill completion dumps a whole prompt into one poll's counter
+    # delta (e.g. a fake "30k t/s" spike vs the real ~3k). Hold the EMA instead.
+    if ema is not None and raw > max(_SPIKE_RATIO * ema, _SPIKE_FLOOR):
+        return ema
+    return raw
+
+
+def _derive_metrics(parsed: dict[str, Any], now: float) -> dict[str, Any]:
+    """Add windowed/EMA derivatives to a parsed metrics dict (in place).
+
+    Raw per-poll deltas are jittery (1s denominator, bursty scheduler), so the
+    UI should prefer the `*_ema` / `*_window` keys and treat the raw keys as
+    debug. Counter resets (negative deltas) reset the baseline, not the EMA.
+    """
+    prev_ts = _RATE["ts"]
+    dt = (now - prev_ts) if prev_ts is not None and now > prev_ts else None
+
+    if dt:
+        pt = parsed.get("vllm:prompt_tokens_total")
+        gt = parsed.get("vllm:generation_tokens_total")
+        if pt is not None and _RATE["prompt"] is not None and pt >= _RATE["prompt"]:
+            raw_pp = (pt - _RATE["prompt"]) / dt
+            _RATE["pp_ema"] = _ema(_RATE["pp_ema"], _clamp_spike(raw_pp, _RATE["pp_ema"]))
+            parsed["pp_raw"] = raw_pp
+        if gt is not None and _RATE["gen"] is not None and gt >= _RATE["gen"]:
+            raw_tg = (gt - _RATE["gen"]) / dt
+            _RATE["tg_ema"] = _ema(_RATE["tg_ema"], _clamp_spike(raw_tg, _RATE["tg_ema"]))
+            parsed["tg_raw"] = raw_tg
+        if pt is not None:
+            _RATE["prompt"] = pt
+        if gt is not None:
+            _RATE["gen"] = gt
+        # prefix-hit window over the same interval (1s deltas are noisy on
+        # small denominators, so this is EMA-smoothed, not the raw delta)
+        q = parsed.get("vllm:prefix_cache_queries_total")
+        h = parsed.get("vllm:prefix_cache_hits_total")
+        if q is not None and h is not None and _RATE["q"] is not None:
+            dq, dh = q - _RATE["q"], h - _RATE["h"]
+            if dq > 0 and dh >= 0:
+                _RATE["hit_ema"] = _ema(_RATE["hit_ema"], dh / dq * 100.0)
+                parsed["hit_window_raw"] = dh / dq * 100.0
+        if q is not None:
+            _RATE["q"] = q
+        if h is not None:
+            _RATE["h"] = h
+        # windowed TTFT / ITL means from histogram sum/count deltas
+        for sum_k, cnt_k, prefix in (
+            ("vllm:time_to_first_token_seconds_sum", "vllm:time_to_first_token_seconds_count", "ttft"),
+            ("vllm:time_per_output_token_seconds_sum", "vllm:time_per_output_token_seconds_count", "itl"),
+        ):
+            s, c = parsed.get(sum_k), parsed.get(cnt_k)
+            ps, pc = _RATE[f"{prefix}_sum"], _RATE[f"{prefix}_count"]
+            if s is not None and c is not None and ps is not None and pc is not None:
+                dc = c - pc
+                if dc > 0 and s >= ps:
+                    parsed[f"{prefix}_window_mean"] = (s - ps) / dc
+            if s is not None:
+                _RATE[f"{prefix}_sum"] = s
+            if c is not None:
+                _RATE[f"{prefix}_count"] = c
+        _RATE["ts"] = now
+    else:
+        # first sample: seed baselines only
+        _RATE["ts"] = now
+        for k, rk in (("vllm:prompt_tokens_total", "prompt"), ("vllm:generation_tokens_total", "gen"),
+                      ("vllm:prefix_cache_queries_total", "q"), ("vllm:prefix_cache_hits_total", "h"),
+                      ("vllm:time_to_first_token_seconds_sum", "ttft_sum"),
+                      ("vllm:time_to_first_token_seconds_count", "ttft_count"),
+                      ("vllm:time_per_output_token_seconds_sum", "itl_sum"),
+                      ("vllm:time_per_output_token_seconds_count", "itl_count")):
+            if parsed.get(k) is not None:
+                _RATE[rk] = parsed[k]
+
+    if _RATE["pp_ema"] is not None:
+        parsed["pp_ema"] = _RATE["pp_ema"]
+    if _RATE["tg_ema"] is not None:
+        parsed["tg_ema"] = _RATE["tg_ema"]
+    if _RATE["hit_ema"] is not None:
+        parsed["hit_window_pct"] = _RATE["hit_ema"]
+    # cumulative spec-decode acceptance (upstream measures acceptance only).
+    # vLLM names these spec_decode_num_*_tokens_total (the num_-less pair is
+    # kept for older/newer renames).
+    for dk, ak in (("vllm:spec_decode_num_draft_tokens_total", "vllm:spec_decode_num_accepted_tokens_total"),
+                   ("vllm:spec_decode_draft_tokens_total", "vllm:spec_decode_accepted_tokens_total")):
+        d, a = parsed.get(dk), parsed.get(ak)
+        if d is not None and a is not None and d > 0:
+            parsed["spec_accept_pct"] = a / d * 100.0
+            break
+
+    q = parsed.get("vllm:prefix_cache_queries_total")
+    h = parsed.get("vllm:prefix_cache_hits_total")
+    if q is not None and h is not None:
+        parsed["prefix_hit_pct"] = (h / q) * 100.0 if q > 0 else 0.0
+    return parsed
+
+
+def _record_ring_point(enriched: dict[str, Any]) -> None:
+    _METRICS_RING.append({
+        "ts": enriched.get("ts"),
+        "kv": enriched.get("vllm:kv_cache_usage_perc"),
+        "running": enriched.get("vllm:num_requests_running"),
+        "waiting": enriched.get("vllm:num_requests_waiting"),
+        "hit": enriched.get("hit_window_pct", enriched.get("prefix_hit_pct")),
+        "pp": enriched.get("pp_ema", enriched.get("pp_raw")),
+        "tg": enriched.get("tg_ema", enriched.get("tg_raw")),
+    })
+
+
+def _reset_rate_state() -> None:
+    for k, v in _RATE.items():
+        _RATE[k] = None
+    _METRICS_RING.clear()
 
 
 @app.get("/api/metrics")
@@ -304,15 +487,20 @@ async def api_metrics():
         raise HTTPException(status_code=502, detail=f"vllm metrics fetch failed: {e}")
 
     parsed = _parse_metrics(text)
-    # derived
-    q = parsed.get("vllm:prefix_cache_queries_total")
-    h = parsed.get("vllm:prefix_cache_hits_total")
-    if q is not None and h is not None:
-        parsed["prefix_hit_pct"] = (h / q) * 100.0 if q > 0 else 0.0
-    parsed["ts"] = time.time()
+    now = time.time()
+    _derive_metrics(parsed, now)
+    parsed["ts"] = now
     # a successful /metrics fetch doubles as the liveness signal
     parsed["vllm_up"] = True
+    _record_ring_point(parsed)
     return JSONResponse(parsed)
+
+
+@app.get("/api/metrics/history")
+async def api_metrics_history(limit: int = 600):
+    # Lightweight points for late-joining clients (charts survive reload).
+    limit = max(1, min(limit, _METRICS_RING.maxlen or 900))
+    return JSONResponse(list(_METRICS_RING)[-limit:])
 
 
 @app.get("/api/health")
@@ -341,7 +529,8 @@ async def api_info():
                     model = data["data"][0].get("id", model)
         except Exception:
             pass
-    return JSONResponse({"model": model, "kv_dtype": kv, "profile": profile, "vllm_url": VLLM_URL})
+    return JSONResponse({"model": model, "kv_dtype": kv, "profile": profile, "vllm_url": VLLM_URL,
+                           "max_conc": _get_max_concurrency()})
 
 
 # ---------------------------------------------------------------------------

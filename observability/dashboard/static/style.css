@@ -45,6 +45,14 @@ canvas{max-width:100%;display:block}
 table{width:100%;border-collapse:collapse;font-size:13px}
 th,td{padding:8px;border-bottom:1px solid var(--border);text-align:left}
 th{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:0.05em;text-transform:uppercase}
+thead th{position:sticky;top:0;background:var(--card);z-index:1}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+td.num{font-variant-numeric:tabular-nums}
+.err-banner{max-width:1200px;margin:0 auto;padding:10px 18px;background:rgba(231,76,60,0.12);border-bottom:1px solid var(--bad);color:#f1948a;font-size:13px}
+.collapse-btn{appearance:none;background:transparent;border:1px solid var(--border);border-radius:6px;color:var(--muted);cursor:pointer;font-size:12px;line-height:1;padding:2px 8px;margin-right:6px}
+.collapse-btn:hover{color:var(--text);border-color:var(--accent)}
+.card.collapsed .row,.card.collapsed #benchChartWrap,.card.collapsed #depthChartWrap,.card.collapsed #concChartWrap,.card.collapsed #benchTableWrap,.card.collapsed #depthTableWrap,.card.collapsed #concTableWrap,.card.collapsed .log{display:none !important}
+.metric.small{font-size:20px}
 .log{white-space:pre-wrap;font-family:ui-monospace,Menlo,monospace;font-size:11px;max-height:240px;overflow:auto;background:#0b0d12;border:1px solid var(--border);border-radius:8px;padding:10px;color:#cbd1e6}
 .muted{color:var(--muted);font-size:12px}
 .footnote{font-size:11px;line-height:1.4;margin-top:10px}
@@ -67,7 +75,8 @@ th{color:var(--muted);font-weight:600;font-size:11px;letter-spacing:0.05em;text-
   .metric small{font-size:12px}
   .grid .chart-wrap{height:150px}
   #benchChartWrap,#depthChartWrap,#concChartWrap{height:220px}
-  table{font-size:12px;display:block;overflow-x:auto;-webkit-overflow-scrolling:touch;white-space:nowrap}
+  #benchTableWrap,#depthTableWrap,#concTableWrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  table{font-size:12px;white-space:nowrap}
   th,td{padding:6px 8px}
   .btn{padding:10px 12px;font-size:14px;min-height:44px}
   .btn.small{padding:6px 10px;font-size:12px;min-height:32px}

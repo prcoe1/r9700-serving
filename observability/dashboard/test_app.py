@@ -8,12 +8,19 @@ from pathlib import Path
 import pytest
 
 from app import (
+    _METRICS_RING,
     _append_history_limited,
+    _clamp_spike,
     _delete_history_by_ts,
+    _derive_metrics,
+    _ema,
     _find_record,
+    _get_max_concurrency,
     _history_etag,
     _parse_metrics,
     _read_history,
+    _record_ring_point,
+    _reset_rate_state,
     _resolve_history_path,
     _serve_download,
 )
@@ -136,3 +143,88 @@ def test_history_etag(tmp_path):
     assert first != '""'
     p.write_text("{}\n{}\n")
     assert _history_etag(p) != first  # size/mtime changed
+
+
+LATENCY_METRICS = METRICS + """vllm:time_to_first_token_seconds_sum 12.5
+vllm:time_to_first_token_seconds_count 10.0
+vllm:time_per_output_token_seconds_sum 2.0
+vllm:time_per_output_token_seconds_count 100.0
+vllm:spec_decode_draft_tokens_total 1000.0
+vllm:spec_decode_accepted_tokens_total 750.0
+"""
+
+
+def test_parse_metrics_latency_and_spec():
+    m = _parse_metrics(LATENCY_METRICS)
+    assert m["vllm:time_to_first_token_seconds_sum"] == 12.5
+    assert m["vllm:time_to_first_token_seconds_count"] == 10.0
+    assert m["vllm:spec_decode_accepted_tokens_total"] == 750.0
+    # labeled duplicates keep last value, bucket lines never shadow
+    m2 = _parse_metrics(LATENCY_METRICS + 'vllm:time_to_first_token_seconds_count{engine="0"} 11.0\n')
+    assert m2["vllm:time_to_first_token_seconds_count"] == 11.0
+
+
+def test_parse_metrics_extra_family_fallback():
+    # renamed/new counters in a known family are still captured
+    m = _parse_metrics(METRICS + "vllm:request_success_total 42.0\n")
+    assert m["vllm:request_success_total"] == 42.0
+    # unknown families stay out (payload stays small)
+    m2 = _parse_metrics(METRICS + "vllm:some_unrelated_gauge 7.0\n")
+    assert "vllm:some_unrelated_gauge" not in m2
+
+
+def test_derive_metrics_ema_and_window():
+    _reset_rate_state()
+    p1 = {"vllm:prompt_tokens_total": 1000.0, "vllm:generation_tokens_total": 100.0,
+          "vllm:prefix_cache_queries_total": 100.0, "vllm:prefix_cache_hits_total": 50.0,
+          "vllm:time_to_first_token_seconds_sum": 10.0, "vllm:time_to_first_token_seconds_count": 10.0}
+    _derive_metrics(p1, 1000.0)  # seeds baselines, no EMA yet
+    assert "pp_ema" not in p1
+    p2 = {"vllm:prompt_tokens_total": 4000.0, "vllm:generation_tokens_total": 160.0,
+          "vllm:prefix_cache_queries_total": 200.0, "vllm:prefix_cache_hits_total": 150.0,
+          "vllm:time_to_first_token_seconds_sum": 22.0, "vllm:time_to_first_token_seconds_count": 20.0}
+    _derive_metrics(p2, 1001.0)
+    assert p2["pp_ema"] == pytest.approx(3000.0)
+    assert p2["tg_ema"] == pytest.approx(60.0)
+    assert p2["hit_window_pct"] == pytest.approx(100.0)
+    assert p2["ttft_window_mean"] == pytest.approx(1.2)
+    assert p2["prefix_hit_pct"] == pytest.approx(75.0)
+    _reset_rate_state()
+
+
+def test_derive_metrics_spike_guard_and_reset():
+    _reset_rate_state()
+    _derive_metrics({"vllm:prompt_tokens_total": 0.0, "vllm:generation_tokens_total": 0.0}, 2000.0)
+    _derive_metrics({"vllm:prompt_tokens_total": 3000.0, "vllm:generation_tokens_total": 60.0}, 2001.0)
+    assert _ema(None, 5.0) == 5.0
+    # 1M-token jump in 1s is a chunked-prefill completion spike → EMA holds
+    assert _clamp_spike(1_000_000.0, 3000.0) == 3000.0
+    assert _clamp_spike(3100.0, 3000.0) == 3100.0
+    # counter reset (e.g. server restart) must not poison the EMA
+    before = dict(__import__("app")._RATE)
+    _derive_metrics({"vllm:prompt_tokens_total": 10.0, "vllm:generation_tokens_total": 1.0}, 2002.0)
+    assert __import__("app")._RATE["pp_ema"] == pytest.approx(before["pp_ema"])
+    _reset_rate_state()
+
+
+def test_ring_record_and_history_shape():
+    _reset_rate_state()
+    pt = {"ts": 1.0, "vllm:kv_cache_usage_perc": 0.5, "vllm:num_requests_running": 2.0,
+          "prefix_hit_pct": 50.0, "pp_ema": 3000.0}
+    _record_ring_point(pt)
+    assert len(_METRICS_RING) == 1
+    assert _METRICS_RING[0]["kv"] == 0.5
+    assert _METRICS_RING[0]["pp"] == 3000.0
+    assert "ttft" not in _METRICS_RING[0]  # unsupported: vLLM exposes no TTFT/ITL histograms
+    _reset_rate_state()
+    assert len(_METRICS_RING) == 0
+
+
+def test_get_max_concurrency_prefers_env(monkeypatch):
+    import os
+    monkeypatch.setenv("VLLM_MAX_NUM_SEQS", "2")
+    assert _get_max_concurrency() == 2
+    monkeypatch.delenv("VLLM_MAX_NUM_SEQS")
+    monkeypatch.delenv("VLLM_MAX_NUM_SEQS_PER_REQUEST", raising=False)
+    assert _get_max_concurrency() == 2  # compose.yaml --max-num-seqs default
+    assert os.environ.get("VLLM_MAX_NUM_SEQS") is None
