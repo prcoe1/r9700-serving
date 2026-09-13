@@ -127,10 +127,12 @@ that affect this GPU setup and model combo** before recommending a bump.
 # #53712 (ROCr/CLR graph-replay segfault fix, up to ~20% TPOT), #53818
 # (CUDA-graph capture on current stream). Still NOT fixed in v0.29.0:
 # #54716/#51599/#53479/#48375/#40709 (all still open as of 2026-09-09;
-# re-checked 2026-09-11: still open; #53504 CLOSED as COMPLETED; v0.29.0
-# still latest with no new tags; AITER/flash-attn/ROCm-image/template all
-# unchanged — only post-release merge in our family is #54713, main-only,
-# see watchlist).
+# re-checked 2026-09-12: still open; #53504 CLOSED as COMPLETED; v0.29.0
+# still latest stable — new `v0.29.1rc0` tag (= main HEAD 7ee8a6d, no release
+# object yet) is an RC, ~596 commits past v0.29.0: do NOT pin, wait for final.
+# AITER/flash-attn/ROCm-image/template all unchanged. Post-release merges in
+# our family, both in v0.29.1rc0: #54713 (replay boundaries) + #55450 (Mamba
+# retirement across null gaps, merged 2026-09-11) — see watchlist).
 # **Runner change**: MRV2 is now the default for all models (#53183); on ROCm
 # the only MRV1 defaults are DeepseekV32/DeepseekV4 (ROCM_DEFAULT_MRV1_
 # ARCHITECTURES in vllm/config/vllm.py), so all three profiles now run MRV2 —
@@ -155,11 +157,13 @@ gh release list -R vllm-project/vllm --limit 8
 # (no LDS commits in the range); no gfx1201/Qwen patches in the release.
 # Only ROCm-10-relevant commit is #4853 (topk_per_row hipcub::Traits fix) —
 # inert, our pin verified working on ROCm 10.0. No bump (re-checked
-# 2026-09-09: v0.1.21.post2 latest, unchanged).
+# 2026-09-12: v0.1.21.post2 still latest, unchanged; v0.29.1rc0 carries
+# #55968 bumping AITER to post2 — the next vLLM bump drags the AITER bump
+# along, so budget the UA rebase + tune re-run then).
 gh release list -R ROCm/aiter --limit 8
 
 # Flash Attention — pinned to a commit, so compare HEAD to FLASH_ATTN_REF
-# (2026-09-09: HEAD a369df7 unchanged since 2026-09-06, 2 commits past our
+# (2026-09-12: HEAD a369df7 unchanged since 2026-09-06, 2 commits past our
 # pin, both flash_attn/cute/ SM100-Blackwell CuTe fixes — N/A on
 # ROCm/gfx1201, no bump)
 git ls-remote https://github.com/ROCm/flash-attention.git HEAD
@@ -168,13 +172,13 @@ git ls-remote https://github.com/ROCm/flash-attention.git HEAD
 # (migrated 7.14.0 -> 10.0.0 on 2026-09-09 per the official vLLM-on-ROCm
 # guide: ROCm 10.0 + PyTorch 2.13 via stable.repo.amd.com/rocm/whl-next).
 # 10.0.x releases via TheRock (github.com/ROCm/TheRock releases);
-# 10.0.0-full is the only 10.0 tag so far (re-checked 2026-09-09). The
+# 10.0.0-full is the only 10.0 tag so far (re-checked 2026-09-12). The
 # 7.14 line (7.14.1 point release) is no longer relevant to this stack.
 curl -s "https://hub.docker.com/v2/repositories/rocm/dev-ubuntu-24.04/tags?page_size=100&name=10.0" | jq -r '.results[].name' | sort -V
 
 # Froggeric chat template — current pin is the first line of chat-templates/qwen.jinja
 # (template_version = "qwen3.8-froggeric-v22.5", upstream unchanged as of
-# 2026-09-09). Compare against upstream main:
+# 2026-09-12). Compare against upstream main:
 curl -sL https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates/raw/main/chat_template.jinja | head -1
 head -1 chat-templates/qwen.jinja
 ```
@@ -193,7 +197,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533 54713; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533 54713 55450; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -260,7 +264,7 @@ touches one of:
     KV-first backend is ever selected
   - `#48375` MambaManager ignores `drop_eagle_block` (MTP + prefix caching
     corrupts hybrid recurrent state, #43559/#50188) — **carried as a local
-    patch** (upstream PR still open; re-checked 2026-09-09 still `OPEN`,
+    patch** (upstream PR still open; re-checked 2026-09-12 still `OPEN`,
     updated 2026-09-08T21:31Z; local patch re-verified clean on v0.29.0 —
     `MambaManager.find_longest_cache_hit` target hunk unchanged)
    - `#52872` GDN/hybrid prefill peak under-predicted; `--max-num-batched-tokens`
@@ -303,8 +307,9 @@ touches one of:
     re-validate after any bump that lands it; 2026-09-11: still OPEN +
     REVIEW_REQUIRED — author states (2026-09-10) the current head is a
     superseded branch, not the intended focused patch, and merged `#54713`
-    changed the same replay-boundary retention path; correctly NOT carried
-    as a local patch)**, and a 2026-08-27 adaptive
+     changed the same replay-boundary retention path; correctly NOT carried
+     as a local patch; 2026-09-12: still OPEN + CONFLICTING +
+     REVIEW_REQUIRED, no action)**, and a 2026-08-27 adaptive
     single-checkpoint prototype (demand-driven, not yet a PR; positioned as an
      alternative/complement to `#53479`); `#52789` (internal
     prefill checkpoints) merged 2026-08-22 — **verified present in
@@ -350,9 +355,15 @@ touches one of:
      retaining both the identical-resend and longer-sibling positions so an
      EAGLE resend of a block-aligned prompt still hits
      (`kv_cache_coordinator.py`, `single_type_kv_cache_manager.py` + tests).
-     Same `#53504`/`#45238` family, but the zero-hit failure it fixes is
-     sparse-retention-only — inert under our dense default. Ride the next
-     bump; no action.
+      Same `#53504`/`#45238` family, but the zero-hit failure it fixes is
+      sparse-retention-only — inert under our dense default. Confirmed in
+      v0.29.1rc0 — rides the next bump; no action.
+    - `#55450` (merged 2026-09-11, in v0.29.1rc0, not in our pin): align-mode
+      Mamba retirement stopped at null gaps and leaked older states; now
+      tracks the retired prefix instead (peak retained states per group 71→8/9
+      in the GLM-5.3-Flash/MTP5 repro). Same `#45238`-family path, but a
+      memory-efficiency fix, not correctness for our geometry. Ride the
+      v0.29.1 final; not worth carrying as a patch.
    - `#55766` (2026-09-07, open, new): Qwen3.8/3.5 hybrid GDN + mamba align +
      prefix caching — a prefill that ends **4–10 tokens past a block boundary**
      writes a bad Mamba/GDN checkpoint; a later block-aligned prefix-cache hit
@@ -410,7 +421,9 @@ touches one of:
     prefix hit (1600 tokens here on the fp8-KV profile; 832 on bf16),
     bounding the prefix-cache win for MTP even after `#45238` is fixed. Monitor
     for a merged implementation.
-  - `#51562` GDN metadata misclassifies stateless first chunk (open)
+  - `#51562` GDN metadata misclassifies stateless first chunk (open;
+    2026-09-12: third-party same-base validation comment supports fix PR
+    `#51565` — still open, monitor)
   - `#52959` RFC: internal state checkpoints for Mamba align mode (same
     family as `#52789`; in flight, not merged)
   - `#40707` hybrid Mamba scheduling deadlock with 2+ large images in one
@@ -473,8 +486,8 @@ touches one of:
      defaults every non-DeepseekV32/V4 architecture to MRV2 on ROCm; the
      qwen3.6 profiles are on V2 too — user-verified fine 2026-09-09). Fix PR
      `#54519` was **closed unmerged 2026-09-01** (superseded), leaving
-     `#54716` as the sole fix (open, in no release — re-checked 2026-09-09,
-     still `OPEN`, updated 2026-09-09T19:52Z).
+     `#54716` as the sole fix (open, in no release — re-checked 2026-09-12,
+     still `OPEN` + MERGEABLE, updated 2026-09-10T07:20Z).
     Open review defect in `#54716` (flagged 2026-09-01 by the superseded
     PR's author; no response as of 2026-09-03): its `step3p5.py` re-derives
     the max-len `exceeds` condition *after* `seq_lens` has advanced in
@@ -523,7 +536,7 @@ touches one of:
      pinning → 0/400. **Monitor**; if a profile ever unpins its drafter
      backend, re-test before shipping.
    - `#51599` (2026-09-01, PR, open): the `#51571` fix — see the `#51571`
-     entry above (re-checked 2026-09-09 still `OPEN`, updated 2026-09-09;
+     entry above (re-checked 2026-09-12 still `OPEN`, updated 2026-09-08;
      retitled `[Bugfix][MRv1]`).
   - `#54076` (2026-09-01, PR, open): `_mamba_block_aligned_split` must chunk
     on the **Mamba group's** block size, not `cache_config.block_size` (the
@@ -531,8 +544,8 @@ touches one of:
     worker can never materialize a Mamba state at. Repro is a Qwen3.8-27B
     hybrid + spec drafter with mismatched target/drafter attention blocks
       (1648/816); our MTP drafter group can create the same geometry.
-      re-checked 2026-09-09: still open (new push 2026-09-09T18:30Z).
-      Monitor for a merge.
+      re-checked 2026-09-12: still OPEN + MERGEABLE + REVIEW_REQUIRED
+      (new push 2026-09-12T18:05Z). Monitor for a merge.
   - `#53798` (2026-09-01, PR, open): align-mode `add_request` seeds the
     running-state block column by the scheduler block size instead of the
     (page-unification-scaled) Mamba block size, so a request admitted with
@@ -540,8 +553,9 @@ touches one of:
      `--prefix-cache-retention-interval`, which we pin — points its precopy
     source into a neighbour's row (silent wrong-state read) or past the
     table (IMA in `precopy_mamba_align_fused_kernel`). re-checked
-    2026-09-09: still open (2026-09-09T20:43Z commit is a merge of main
-    into the fix branch — core fix unchanged); **carried as a local patch**
+     2026-09-09: still open (2026-09-09T20:43Z commit is a merge of main
+     into the fix branch — core fix unchanged); 2026-09-12: still OPEN +
+     MERGEABLE, updated 2026-09-10T22:54Z; **carried as a local patch**
     (patches/vllm/53798-mamba-align-resume-seed.patch, rebased to v0.29.0
     on 2026-09-09 — v0.29.0's dense-retention default keeps the trigger
     reachable, prefix-cache resumes now happen on first repeats too).
@@ -583,8 +597,8 @@ touches one of:
      Root: mamba cache budget shared between target states + MTP draft slots in
      scheduler accounting (scales with GDN layer count). **Relevant** — we have
      the `#35288` `max-num-seqs 2` cap so not hit today, but blocks any future
-     cap raise. WIP fix `PR #55617` (2026-09-06). Monitor before raising
-     `max-num-seqs`.
+     cap raise. WIP fix `PR #55617` (2026-09-06; 2026-09-12: still OPEN +
+     CONFLICTING/WIP). Monitor before raising `max-num-seqs`.
   - `#48606` (PR, open — **carried as a local patch for the AWQ trial
     profile**): native Quark W4A16 INT4/UINT4 `real_quantized` (`reorder`)
     loading path (`QuarkW4A16Int4` dense + MoE, canonicalized to the `awq_*`
@@ -751,7 +765,17 @@ independent 3-arm A/B/C on a Qwen3.8-27B hybrid GDN/align/fp8-KV/TP2 setup
      Dockerfile), #55291 (still no ≥0.28.0 repro), #54906 (NVIDIA Thor
      reporter + `thinking_token_budget` field we never send), #56088/#55922
      (Flash-Next), #54924/#54451/#56380 (GLM ROCm), #56506/#52911
-     (DeepSeek ROCm), #52773 (KV offloading — not used).
+     (DeepSeek ROCm), #52773 (KV offloading — not used). Checked 2026-09-12
+     (all N/A, no action): #56419 (CPU GDN+MTP — CPU backend), #56605
+     (GLM-5.3 word salad — different model), #55951 (PP>1 + spec decode —
+     no PP), #51971 (Qwen3 MoE GPTQ qzeros on gfx1201 — we run FP8, path
+     not reached), #53323 (DFlash2 acceptance collapse with ROCM_ATTN
+     drafter — we run pinned-UA MTP), #56540 (DeepSeekv4.1 ROCm log spam),
+     #54114 (GLM-5.1 reasoning), #48255 (DP attention — not used), #54761
+     re-confirmed (no DCP), #55291 (still no ≥0.28.0 repro), #51562/#52527
+     updated (still open, monitor — see watchlist), #55766 unchanged
+     (no PR). Carried patches #48375/#53798/#48606 all still open —
+     keep carrying; none in v0.29.1rc0.
 
 ### 4. Local patches vs upstream
 
