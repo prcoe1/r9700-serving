@@ -35,6 +35,9 @@ vllm:gpu_cache_usage_perc 0.42
 vllm:prefix_cache_queries_total 1000.0
 vllm:prefix_cache_hits_total 560.0
 vllm:prompt_tokens_total{engine="0",model_name="qwen3.8-27b"} 19275232.0
+vllm:prompt_tokens_by_source_total{engine="0",model_name="qwen3.8-27b",source="local_compute"} 12000000.0
+vllm:prompt_tokens_by_source_total{engine="0",model_name="qwen3.8-27b",source="local_cache_hit"} 7275232.0
+vllm:prompt_tokens_by_source_total{engine="0",model_name="qwen3.8-27b",source="external_kv_transfer"} 0.0
 vllm:generation_tokens_total{engine="0",model_name="qwen3.8-27b"} 161412.0
 vllm:cache_config_info{block_size="832",mamba_cache_mode="align",cache_dtype="bfloat16",kv_cache_size_tokens="619479",num_gpu_blocks="745",gpu_memory_utilization="0.95"} 1.0
 """
@@ -54,6 +57,10 @@ def test_parse_metrics_token_counters():
     m = _parse_metrics(METRICS)
     assert m["vllm:prompt_tokens_total"] == 19275232.0
     assert m["vllm:generation_tokens_total"] == 161412.0
+    # per-source breakdown parses per source label
+    assert m["vllm:prompt_tokens_by_source:local_compute"] == 12000000.0
+    assert m["vllm:prompt_tokens_by_source:local_cache_hit"] == 7275232.0
+    assert m["vllm:prompt_tokens_by_source:external_kv_transfer"] == 0.0
     # bucket lines must not shadow the plain counters
     assert "vllm:request_prompt_tokens" not in m
 
@@ -189,6 +196,40 @@ def test_derive_metrics_ema_and_window():
     assert p2["hit_window_pct"] == pytest.approx(100.0)
     assert p2["ttft_window_mean"] == pytest.approx(1.2)
     assert p2["prefix_hit_pct"] == pytest.approx(75.0)
+    _reset_rate_state()
+
+
+def test_derive_prompt_rate_uses_compute_not_cache_hits():
+    # prompt_tokens_total includes cache-hit tokens; the prompt t/s rate must
+    # track local_compute (real prefill work) so cache hits don't read as
+    # prefill throughput.
+    _reset_rate_state()
+    _derive_metrics({
+        "vllm:prompt_tokens_total": 5000.0,
+        "vllm:prompt_tokens_by_source:local_compute": 1000.0,
+        "vllm:generation_tokens_total": 100.0,
+    }, 3000.0)  # seeds baselines, no EMA yet
+    p2 = {
+        # 3000 tokens served from cache: total jumps, compute is flat
+        "vllm:prompt_tokens_total": 8000.0,
+        "vllm:prompt_tokens_by_source:local_compute": 1000.0,
+        "vllm:generation_tokens_total": 160.0,
+    }
+    _derive_metrics(p2, 3001.0)
+    assert p2["pp_raw"] == pytest.approx(0.0)
+    assert p2["pp_ema"] == pytest.approx(0.0)
+    assert p2["tg_ema"] == pytest.approx(60.0)
+    _reset_rate_state()
+
+
+def test_derive_prompt_rate_falls_back_to_total():
+    # vLLM builds without the by-source breakdown: total counter still drives
+    # the rate (old behavior preserved).
+    _reset_rate_state()
+    _derive_metrics({"vllm:prompt_tokens_total": 1000.0}, 4000.0)
+    p2 = {"vllm:prompt_tokens_total": 4000.0}
+    _derive_metrics(p2, 4001.0)
+    assert p2["pp_ema"] == pytest.approx(3000.0)
     _reset_rate_state()
 
 

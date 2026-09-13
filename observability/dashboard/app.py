@@ -260,7 +260,12 @@ METRIC_NAMES = (
     "vllm:prefix_cache_hits_total",
     "vllm:num_requests_swapped",
     "vllm:gpu_cache_usage_perc",
-    # cumulative token counters — the UI derives t/s rates from their deltas
+    # cumulative token counters — the UI derives t/s rates from their deltas.
+    # NOTE: vllm:prompt_tokens_total includes prefix-cache-hit tokens (it is
+    # computed + cache hits + transfers), so it overstates real prefill work
+    # whenever the cache hits. Prompt t/s is derived from the local_compute
+    # by-source series instead (see _derive_metrics); the total stays as a
+    # fallback for vLLM builds without the by-source breakdown.
     "vllm:prompt_tokens_total",
     "vllm:generation_tokens_total",
     # latency histograms (cumulative sum+count → windowed means server-side)
@@ -321,13 +326,23 @@ def _parse_metrics(text: str) -> dict[str, Any]:
                         out[k] = v
             continue
         matched = False
-        for name in METRIC_NAMES:
-            if line.startswith(name + "{") or line.startswith(name + " "):
-                v = _metric_value(line)
-                if v is not None:
-                    out[name] = v
-                matched = True
-                break
+        if line.startswith("vllm:prompt_tokens_by_source_total{"):
+            # Labeled per-source breakdown (local_compute / local_cache_hit /
+            # external_kv_transfer). Parsed per source — the prompt t/s rate
+            # uses local_compute (real prefill work, not cache hits).
+            m = re.search(r'source="([^"]+)"', line)
+            v = _metric_value(line)
+            if m and v is not None:
+                out[f"vllm:prompt_tokens_by_source:{m.group(1)}"] = v
+            matched = True
+        if not matched:
+            for name in METRIC_NAMES:
+                if line.startswith(name + "{") or line.startswith(name + " "):
+                    v = _metric_value(line)
+                    if v is not None:
+                        out[name] = v
+                    matched = True
+                    break
         if not matched and _EXTRA_METRIC_RE.match(line):
             # last-wins across label sets (e.g. per-engine series); skip the
             # `_created` timestamp gauges and histogram buckets (payload bloat,
@@ -381,7 +396,12 @@ def _derive_metrics(parsed: dict[str, Any], now: float) -> dict[str, Any]:
     dt = (now - prev_ts) if prev_ts is not None and now > prev_ts else None
 
     if dt:
-        pt = parsed.get("vllm:prompt_tokens_total")
+        # Prompt t/s tracks real prefill work (local_compute), NOT the total
+        # counter — the total includes prefix-cache-hit tokens, which would
+        # report cache hits as prefill throughput. Falls back to the total on
+        # vLLM builds without the by-source breakdown.
+        pt = parsed.get("vllm:prompt_tokens_by_source:local_compute",
+                         parsed.get("vllm:prompt_tokens_total"))
         gt = parsed.get("vllm:generation_tokens_total")
         if pt is not None and _RATE["prompt"] is not None and pt >= _RATE["prompt"]:
             raw_pp = (pt - _RATE["prompt"]) / dt
@@ -427,7 +447,11 @@ def _derive_metrics(parsed: dict[str, Any], now: float) -> dict[str, Any]:
     else:
         # first sample: seed baselines only
         _RATE["ts"] = now
-        for k, rk in (("vllm:prompt_tokens_total", "prompt"), ("vllm:generation_tokens_total", "gen"),
+        pt_seed = parsed.get("vllm:prompt_tokens_by_source:local_compute",
+                             parsed.get("vllm:prompt_tokens_total"))
+        if pt_seed is not None:
+            _RATE["prompt"] = pt_seed
+        for k, rk in (("vllm:generation_tokens_total", "gen"),
                       ("vllm:prefix_cache_queries_total", "q"), ("vllm:prefix_cache_hits_total", "h"),
                       ("vllm:time_to_first_token_seconds_sum", "ttft_sum"),
                       ("vllm:time_to_first_token_seconds_count", "ttft_count"),
