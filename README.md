@@ -92,9 +92,10 @@ The default (active) model is `Qwen/Qwen3.8-27B-FP8` (`qwen3.8-27b`, the
 newest dense 27B hybrid linear/full-attention architecture, MTP trained,
 vision). Alternatives: `Qwen/Qwen3.6-27B-FP8` (`qwen3.6-27b`, dense),
 `Qwen/Qwen3.6-35B-A3B-FP8` (`qwen3.6-35b-a3b`, 35B total / 3B active MoE),
-and `amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16` (`qwen3.8-27b-awq`, AWQ INT4
-weight-only trial — decode-optimized alternative, needs the backported
-loader `patches/vllm/48606-quark-w4a16.patch`; see
+and `cyankiwi/Qwen3.8-27B-AWQ-BF16-INT4` (`qwen3.8-27b-awq`, compressed-tensors
+W4A16 weight-only trial — decode-optimized alternative, MTP3 via a local
+HF-config snapshot (upstream `#53387` workaround) with calibrated fp8 KV;
+earlier Quark trial in
 [`benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`](benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md)).
 Model selection is controlled by `MODEL_PROFILE` in `.env` — override inline
 with `MODEL_PROFILE=qwen3.6-27b just up`.

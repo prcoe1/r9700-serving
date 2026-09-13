@@ -236,9 +236,16 @@ def main() -> None:
     idx = json.load(open(os.path.join(args.model_dir, "model.safetensors.index.json")))
     by_key: dict[tuple[str, int], str] = {}
     for key in idx.get("weight_map", {}):
-        if not key.endswith(".self_attn.q_proj.weight"):
+        # q_proj weight key across formats: plain fp8/bf16 (".q_proj.weight"),
+        # compressed-tensors/Marlin pack-quantized (".q_proj.weight_packed",
+        # ".q_proj.weight_scale", ...), GPTQ/AWQ (".q_proj.qweight", ...).
+        # The scale tensor name derives from the module prefix, which is
+        # format-independent, so any suffix after ".self_attn.q_proj" maps to
+        # the same base.
+        marker = ".self_attn.q_proj"
+        if marker not in key:
             continue
-        base = key[: -len(".q_proj.weight")]
+        base = key[: key.index(marker) + len(".self_attn")]
         kind = "mtp" if ".mtp.layers." in base or base.startswith(
             "mtp.layers."
         ) else "main"

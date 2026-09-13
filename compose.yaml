@@ -153,6 +153,7 @@ services:
       ${VLLM_MODEL:?set in env/$MODEL_PROFILE.env; start the server with `just up`}
       --tokenizer ${VLLM_TOKENIZER:?set in env/$MODEL_PROFILE.env}
       ${VLLM_MODEL_REVISION:+--revision "${VLLM_MODEL_REVISION}"}
+      ${VLLM_HF_CONFIG_PATH:+--hf-config-path "${VLLM_HF_CONFIG_PATH}"}
       --served-model-name ${VLLM_SERVED_NAME:?set in env/$MODEL_PROFILE.env}
       --limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'
       --chat-template /app/chat-templates/qwen.jinja
