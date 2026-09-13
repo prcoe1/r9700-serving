@@ -92,7 +92,7 @@ The default (active) model is `Qwen/Qwen3.8-27B-FP8` (`qwen3.8-27b`, the
 newest dense 27B hybrid linear/full-attention architecture, MTP trained,
 vision). Alternatives: `Qwen/Qwen3.6-27B-FP8` (`qwen3.6-27b`, dense),
 `Qwen/Qwen3.6-35B-A3B-FP8` (`qwen3.6-35b-a3b`, 35B total / 3B active MoE),
-and `cyankiwi/Qwen3.8-27B-AWQ-BF16-INT4` (`qwen3.8-27b-awq`, compressed-tensors
+and `cyankiwi/Qwen3.8-27B-AWQ-BF16-INT4` (`qwen3.8-27b`, compressed-tensors
 W4A16 weight-only trial — decode-optimized alternative, MTP3 via a local
 HF-config snapshot (upstream `#53387` workaround) with calibrated fp8 KV;
 earlier Quark trial in
@@ -382,7 +382,7 @@ files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) and [`archive/`](archive/).
 
 ² no-async scheduling. ³ vLLM 0.29.0 (dense default, no manual retention pin),
 current live profile (fp8 KV); pre-bump numbers.
-⁴ AWQ trial profile (`qwen3.8-27b-awq`, backported #48606 loader, RDNAHybrid
+⁴ AWQ trial profile (`qwen3.8-27b`, backported #48606 loader, RDNAHybrid
 kernel): decode-optimized alternative, not the default — prefill −26%, decode
 +30–50%, weights 10.3 GiB. Full record:
 [`benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`](benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md).
