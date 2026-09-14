@@ -157,9 +157,15 @@ gh release list -R vllm-project/vllm --limit 8
 # (no LDS commits in the range); no gfx1201/Qwen patches in the release.
 # Only ROCm-10-relevant commit is #4853 (topk_per_row hipcub::Traits fix) —
 # inert, our pin verified working on ROCm 10.0. No bump (re-checked
-# 2026-09-12: v0.1.21.post2 still latest, unchanged; v0.29.1rc0 carries
-# #55968 bumping AITER to post2 — the next vLLM bump drags the AITER bump
-# along, so budget the UA rebase + tune re-run then).
+# 2026-09-14: NEW v0.1.22 (bi-weekly, released today) supersedes post2 —
+# still no bump: #4329/vllm#48723 (bf16-KV LDS) both still OPEN, so the
+# local LDS-cap patch stays load-bearing; #5088+#4761 still in it (UA
+# rebase + tune re-run cost stands); new gfx1201 item #5441 (FlyDSL FA
+# opt, R9700-tested 1.35-1.43x causal, bit-identical) is the FlyDSL FA
+# kernel, not the pinned Triton unified-attn path — perf upside only,
+# no fix in our path; v0.29.1rc0 carries #55968 bumping AITER to post2
+# — the next vLLM bump drags the AITER bump along, so budget the UA
+# rebase + tune re-run then).
 gh release list -R ROCm/aiter --limit 8
 
 # Flash Attention — pinned to a commit, so compare HEAD to FLASH_ATTN_REF
@@ -775,7 +781,28 @@ independent 3-arm A/B/C on a Qwen3.8-27B hybrid GDN/align/fp8-KV/TP2 setup
      re-confirmed (no DCP), #55291 (still no ≥0.28.0 repro), #51562/#52527
      updated (still open, monitor — see watchlist), #55766 unchanged
      (no PR). Carried patches #48375/#53798/#48606 all still open —
-     keep carrying; none in v0.29.1rc0.
+     keep carrying; none in v0.29.1rc0. Checked 2026-09-14 (all N/A /
+     monitor-only, no bump): v0.29.0 still latest stable (v0.29.1rc0 =
+     main HEAD 7ee8a6d, no release object — RC, do NOT pin; ~596 commits
+     past v0.29.0, in-scope riders for the next final: #54713, #55450
+     (known) + newly spotted #54826 (honour draft attention_backend on
+     MRV2 — aligns with our #55894 mitigation), #53388 (trailing-block-drop
+     opt-out — touches the #55766 2-block geometry), #53945 (Mamba state at
+     EAGLE-resume grid), #55178 (Mamba state for padded tails — possible
+     #55766-family signal), #54251 (Qwen GDN RMSNorm warmup); Quark
+     refactors #52958/#54824/#54573/#52263 grow future #48606 rebase risk).
+     AITER v0.1.22 released today — no bump (see step 1). flash-attn HEAD
+     a369df7 unchanged (2 commits past pin, Blackwell-only); ROCm-image /
+     template unchanged. #56736 (NEW today: hybrid GDN + spec decode Xid 31
+     in precopy_mamba_align_fused_kernel — same family as #53798/#55600,
+     but v0.13.0 backport + NVIDIA sm_80 + DFlash2 + async-on + seqs 8,
+     NOT reproduced on main; our MTP + --no-async + max-seqs 2 shrink the
+     surface — monitor-only). #54775 (KDA chunked-scan OOM at 80K+ batched
+     tokens — GLM/KDA, we run Qwen GDN at 2048). #56832 (Flash-Next NVFP4),
+     #56701 (KV offload+MTP), #56774 (hidden-state extraction) — paths not
+     reached. #55196: volunteer comment only, no code. #55617 (WIP fix for
+     #55533) pushed 09-13, still WIP. #54076 pushed today, still open.
+     #53798 pushed 09-13, still CONFLICTING — keep carrying.
 
 ### 4. Local patches vs upstream
 
