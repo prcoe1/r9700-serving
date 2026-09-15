@@ -127,8 +127,9 @@ that affect this GPU setup and model combo** before recommending a bump.
 # #53712 (ROCr/CLR graph-replay segfault fix, up to ~20% TPOT), #53818
 # (CUDA-graph capture on current stream). Still NOT fixed in v0.29.0:
 # #54716/#51599/#53479/#48375/#40709 (all still open as of 2026-09-09;
-# re-checked 2026-09-12: still open; #53504 CLOSED as COMPLETED; v0.29.0
-# still latest stable — new `v0.29.1rc0` tag (= main HEAD 7ee8a6d, no release
+# re-checked 2026-09-12: still open; re-checked 2026-09-15: still open;
+# #53504 CLOSED as COMPLETED; v0.29.0 still latest stable — new
+# `v0.29.1rc0` tag (= main HEAD 7ee8a6d, no release object yet) is an RC,
 # object yet) is an RC, ~596 commits past v0.29.0: do NOT pin, wait for final.
 # AITER/flash-attn/ROCm-image/template all unchanged. Post-release merges in
 # our family, both in v0.29.1rc0: #54713 (replay boundaries) + #55450 (Mamba
@@ -165,11 +166,18 @@ gh release list -R vllm-project/vllm --limit 8
 # kernel, not the pinned Triton unified-attn path — perf upside only,
 # no fix in our path; v0.29.1rc0 carries #55968 bumping AITER to post2
 # — the next vLLM bump drags the AITER bump along, so budget the UA
-# rebase + tune re-run then).
+# rebase + tune re-run then; re-checked 2026-09-15: v0.1.22 still latest,
+# no bump. NEW: upstream LDS fix #4868 (Guard RDNA unified attention
+# against LDS overflow, supersedes #4385) merged to main 2026-09-15 and
+# CLOSED #4329 as COMPLETED — but it is main-only, NOT in v0.1.22, and
+# vllm#48723 is still OPEN, so the local LDS-cap patch stays load-bearing.
+# Re-evaluate dropping it when a pinned AITER_REF contains #4868 — verify
+# equivalence first (upstream shrinks num_stages-then-TILE_SIZE generically;
+# ours is bf16-KV caps + gfx1201 tuning) and note #5035 is still open).
 gh release list -R ROCm/aiter --limit 8
 
 # Flash Attention — pinned to a commit, so compare HEAD to FLASH_ATTN_REF
-# (2026-09-12: HEAD a369df7 unchanged since 2026-09-06, 2 commits past our
+# (2026-09-15: HEAD a369df7 unchanged since 2026-09-06, 2 commits past our
 # pin, both flash_attn/cute/ SM100-Blackwell CuTe fixes — N/A on
 # ROCm/gfx1201, no bump)
 git ls-remote https://github.com/ROCm/flash-attention.git HEAD
@@ -178,13 +186,13 @@ git ls-remote https://github.com/ROCm/flash-attention.git HEAD
 # (migrated 7.14.0 -> 10.0.0 on 2026-09-09 per the official vLLM-on-ROCm
 # guide: ROCm 10.0 + PyTorch 2.13 via stable.repo.amd.com/rocm/whl-next).
 # 10.0.x releases via TheRock (github.com/ROCm/TheRock releases);
-# 10.0.0-full is the only 10.0 tag so far (re-checked 2026-09-12). The
+# 10.0.0-full is the only 10.0 tag so far (re-checked 2026-09-15). The
 # 7.14 line (7.14.1 point release) is no longer relevant to this stack.
 curl -s "https://hub.docker.com/v2/repositories/rocm/dev-ubuntu-24.04/tags?page_size=100&name=10.0" | jq -r '.results[].name' | sort -V
 
 # Froggeric chat template — current pin is the first line of chat-templates/qwen.jinja
 # (template_version = "qwen3.8-froggeric-v22.5", upstream unchanged as of
-# 2026-09-12). Compare against upstream main:
+# 2026-09-15). Compare against upstream main:
 curl -sL https://huggingface.co/froggeric/Qwen-Fixed-Chat-Templates/raw/main/chat_template.jinja | head -1
 head -1 chat-templates/qwen.jinja
 ```
@@ -803,6 +811,28 @@ independent 3-arm A/B/C on a Qwen3.8-27B hybrid GDN/align/fp8-KV/TP2 setup
      reached. #55196: volunteer comment only, no code. #55617 (WIP fix for
      #55533) pushed 09-13, still WIP. #54076 pushed today, still open.
      #53798 pushed 09-13, still CONFLICTING — keep carrying.
+     Checked 2026-09-15 (all N/A / monitor-only, no bump): v0.29.0 still
+     latest stable, v0.29.1rc0 still RC-only (no release object, do NOT
+     pin); in-scope v0.29.1-final riders now MERGED: #54713, #55450
+     (known) + #54826 (honour draft attention_backend on MRV2 — aligns
+     with our #55894 mitigation), #53388 (trailing-block-drop opt-out —
+     touches the #55766 2-block geometry), #53945, #55178, #54251.
+     AITER v0.1.22 still latest — no bump (see step 1); NEW main-only
+     LDS fix #4868 CLOSED aiter#4329 today (not in v0.1.22, vllm#48723
+     still OPEN — local LDS-cap patch stays load-bearing). flash-attn
+     HEAD a369df7 unchanged; ROCm-image / template unchanged. Carried
+     patches #48375/#53798 (pushed 09-13, still CONFLICTING)/#48606
+     (updated today) all still open — keep carrying. #51599 updated
+     today, still OPEN + MERGEABLE ([MRv1]) — --no-async stays. #54076
+     updated 09-14, #53479 updated 09-10, #51562/#52527/#55196 updated
+     recently — all still open, monitor. #55766 unchanged (no PR).
+     #55291 still no ≥0.28.0 repro. NEW, all N/A: #56972
+     (Mooncake connector drops Mamba states — no connectors here),
+     #57032 (dflash drafter KV group — we run MTP), #56832 (marlin
+     moe-backend on Flash-Next NVFP4/Blackwell — we set no moe-backend),
+     #56945 (prebuilt rocm/vllm image — we build from source). #56736
+     confirmed v0.13.0-backport + NVIDIA sm_80 + DFlash2 + async-on,
+     NOT on main — monitor-only stands.
 
 ### 4. Local patches vs upstream
 
@@ -811,11 +841,12 @@ applied at build time. Before bumping any pin:
 
 - The aiter patches (version-locked to `AITER_REF` v0.1.20.post1) are **RDNA4-local
   work**, not upstream cherry-picks: `unified-attention-bf16-kv.patch`
-  (bf16-KV LDS caps, the fix for upstream ROCm/aiter#4329 / vllm#48723, still
-  open), `unified-attention-gfx1201-tune.patch` (per-arch gfx1201 tuning:
+  (bf16-KV LDS caps, the fix for upstream ROCm/aiter#4329 / vllm#48723 —
+  #4329 CLOSED 2026-09-15 via main-only #4868, NOT in any release, and
+  vllm#48723 still OPEN, so the patch stays load-bearing), `unified-attention-gfx1201-tune.patch` (per-arch gfx1201 tuning:
   attn_warps 4 in 3D decode ~1.4-1.9x, num_warps 8 in 2D large-prefill ~7%),
-  and `allowed-archs-gfx1201.patch` (build-path arch acceptance). When a newer
-  `AITER_REF` merges #4329, the bf16-KV cap should be **dropped** (upstreamed)
+  and `allowed-archs-gfx1201.patch` (build-path arch acceptance). When a pinned
+  `AITER_REF` contains #4868, the bf16-KV cap should be **dropped** (upstreamed)
   but re-verify the tuning still wins — re-run `tools/tune_ua_config.py` (with
   `just down` first) and re-check the LDS guard. See
   `benchmarks/2026-08-25_gfx1201_ua_tuning.md`.
