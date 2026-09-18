@@ -1,0 +1,66 @@
+# Version-locked to VLLM_REF=v0.29.0 (both anchors verified verbatim
+# against the v0.29.0 tag, 2026-09-18; `git apply --check` clean).
+# Streaming/non-streaming tool-parser parity on truncated tool calls
+# (vLLM issue #47137). Adapted from magiccodingman/vllm-radiance
+# patch_qwen3_toolparse.py (StillDeadcode/libr4d lineage), rebased from
+# their v0.28.0 base to v0.29.0 with no functional changes.
+# Upstream state: content-leak half fixed by #46875 (merged 2026-06-30,
+# in this ref); mid-parameter args-divergence half still open as #48007
+# (open + conflicting since 2026-08-15). Drop this patch when a pinned
+# VLLM_REF contains the #48007 equivalent. Engine-parsers only
+# (qwen3_coder / qwen3_xml here); legacy parser paths untouched.
+# Leading comments are ignored by `git apply`.
+diff --git a/vllm/parser/abstract_parser.py b/vllm/parser/abstract_parser.py
+--- a/vllm/parser/abstract_parser.py
++++ b/vllm/parser/abstract_parser.py
+@@ -502,13 +502,19 @@ class DelegatingParser:
+             else:
+                 # No tool calls.
+                 # For required/named tool choice (when falling back to auto
+                 # parsing), if content is empty or whitespace-only, return
+                 # empty list with None content.
+                 if (is_required_tool_choice or is_named_tool_choice) and (
+                     content is None
+                     or (isinstance(content, str) and not content.strip())
+                 ):
+                     return [], None
++                # Engine-based parsers already strip incomplete / un-promoted
++                # tool-call markup from content, so return that (drops it)
++                # rather than the raw input. Keeps non-streaming in agreement
++                # with streaming on a truncated <tool_call> opener (vLLM #47137).
++                if self._engine_based and tool_call_info is not None:
++                    return None, tool_call_info.content
+                 return None, content
+
+         return tool_calls, content
+diff --git a/vllm/parser/engine/parser_engine.py b/vllm/parser/engine/parser_engine.py
+--- a/vllm/parser/engine/parser_engine.py
++++ b/vllm/parser/engine/parser_engine.py
+@@ -1029,14 +1029,27 @@ class ParserEngine:
+             elif raw_body.strip():
+                 converter = self._arg_converter
+                 if converter is not None:
+                     try:
+                         args_json = converter(raw_body, False)
+                     except (json.JSONDecodeError, ValueError, TypeError):
+                         logger.debug(
+                             "arg converter failed (extract): %s", raw_body[:80]
+                         )
+                         args_json = self._extract_args_json(raw_body, name)
++                    else:
++                        # vLLM #47137: a call truncated mid-parameter drops
++                        # the unterminated value under partial=False, but a
++                        # streaming client already received it. When
++                        # partial=True parses further, the body is truncated;
++                        # emit the exact streamed args so non-streaming agrees
++                        # with streaming.
++                        try:
++                            partial_json = converter(raw_body, True)
++                        except (json.JSONDecodeError, ValueError, TypeError):
++                            partial_json = args_json
++                        if partial_json != args_json and slot.streamed_json:
++                            args_json = slot.streamed_json
+                 else:
+                     args_json = self._extract_args_json(raw_body, name)
+             else:
+                 args_json = "{}"

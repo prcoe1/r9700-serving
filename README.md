@@ -227,6 +227,18 @@ upstream.)
   neighbour's row or past the table (IMA in
   `precopy_mamba_align_fused_kernel`). Version-locked to v0.29.0.
 
+- **Streaming/non-streaming tool-parser parity on truncated tool calls**
+  (`patches/vllm/47137-tool-truncation-parity.patch`,
+  [issue #47137](https://github.com/vllm-project/vllm/issues/47137);
+  content-leak half fixed upstream by #46875, args half still open as
+  [#48007](https://github.com/vllm-project/vllm/pull/48007)): without it, a
+  tool call cut short by `max_tokens`/`stop` returns raw markup or dropped
+  (`{}`) arguments non-streaming while streaming clients already received the
+  partial text/args. Adapted from magiccodingman/vllm-radiance
+  (`patch_qwen3_toolparse.py`); engine-parsers only (`qwen3_coder` here).
+  Verified live 2026-09-18 (`benchmarks/tool_truncation_probe.py` PASS).
+  Drop when a pinned `VLLM_REF` contains the #48007 equivalent.
+
 ### AITER source-build patches (applied at image build time)
 
 `Dockerfile.fullbuild` applies `patches/aiter/*.patch` to the pinned
