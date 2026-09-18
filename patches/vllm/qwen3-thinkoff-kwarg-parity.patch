@@ -1,0 +1,52 @@
+# Version-locked to VLLM_REF=v0.29.0 (anchor verified verbatim
+# against the v0.29.0 tag, 2026-09-18; `git apply --check` clean).
+# Make Qwen3Parser agree with the chat template about whether thinking is
+# on. The froggeric template (chat-templates/qwen.jinja) pre-closes <think>
+# in the PROMPT for reasoning_effort in ('none', 'off') and for
+# auto_disable_thinking_with_tools with tools present — but Qwen3Parser
+# only reads enable_thinking (default true), so with thinking off by any
+# other route the output contains no </think>, the parser files everything
+# as reasoning, and content comes back null with the answer hiding in
+# `reasoning`. Fixed by mirroring the template's own kwarg decision before
+# qwen3_config() consumes it (also repairs streaming, which keys off the
+# same initial_state). Output is deliberately NOT sniffed: "no </think>"
+# cannot distinguish "thinking was off" from "truncated mid-thought".
+# Adapted from GGZ14/vllm-mxfp4 patch_qwen3_thinkoff.py
+# (StillDeadcode/libr4d lineage), rebased to v0.29.0 with no functional
+# changes. No upstream fix as of 2026-09-18. Engine parser only; inherited
+# by NemotronV3/SeedOss subclass parsers. Drop when a pinned VLLM_REF
+# derives thinking_enabled from the same kwargs.
+# Leading comments are ignored by `git apply`.
+diff --git a/vllm/parser/qwen3.py b/vllm/parser/qwen3.py
+--- a/vllm/parser/qwen3.py
++++ b/vllm/parser/qwen3.py
+@@ -226,8 +226,28 @@ class Qwen3Parser(ParserEngine):
+         tools: list[Tool] | None = None,
+         **kwargs,
+     ) -> None:
+         chat_kwargs = kwargs.get("chat_template_kwargs", {}) or {}
+-        self.thinking_enabled = chat_kwargs.get("enable_thinking", True)
++        # Agree with the template about thinking, not just enable_thinking.
++        # The froggeric template also pre-closes </think> in the PROMPT for
++        # reasoning_effort in {none, off} and for
++        # auto_disable_thinking_with_tools when tools are present. This parser
++        # only sees the OUTPUT, so a pre-closed block leaves no </think> to
++        # find and every token is filed as reasoning -- content comes back
++        # null and the answer hides in `reasoning`. Decide from the same
++        # kwargs the template read; sniffing the output cannot tell "thinking
++        # was off" from "truncated mid-thought", and the latter must stay
++        # reasoning.
++        _thinkoff_effort = chat_kwargs.get("reasoning_effort")
++        _thinkoff_effort = (
++            str(_thinkoff_effort).strip().lower()
++            if _thinkoff_effort is not None
++            else "medium"
++        )
++        self.thinking_enabled = bool(chat_kwargs.get("enable_thinking", True))
++        if _thinkoff_effort in ("none", "off"):
++            self.thinking_enabled = False
++        if chat_kwargs.get("auto_disable_thinking_with_tools") and tools:
++            self.thinking_enabled = False
+         kwargs.setdefault(
+             "parser_engine_config",
+             qwen3_config(

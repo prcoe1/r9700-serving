@@ -73,7 +73,7 @@ host render group gid for `/dev/dri` access — check with `getent group render`
 | component    | version |
 |:-------------|:--------|
 | ROCm         | 10.0.0 (`rocm/dev-ubuntu-24.04:10.0.0-full`, Python 3.12) |
-| PyTorch      | 2.12.0+rocm10.0.0 (`stable.repo.amd.com/whl-next`, `torch[device-gfx1201]`) |
+| PyTorch      | 2.13.0+rocm10.0.0 (`stable.repo.amd.com/whl-next`, `torch[device-gfx1201]`) |
 | vLLM         | 0.29.0 |
 | AITER        | v0.1.20.post1 |
 | Flash Attention | @ 1cc7ff67 (source; official guide uses `flash-attn==2.8.3` wheel) |
@@ -83,8 +83,8 @@ production 7.2.x line lacks RDNA4/`gfx1201` support. AITER `v0.1.20.post1` is th
 `10.0` post-release (ROCm 10 hipcub fix #4883); vLLM is 0.29.0 (186 commits past
 v0.28.1rc0, including the dense `prefix_cache_retention_interval` default
 #55760/#55861 and the GDN decode fix #53877) since `gfx1201` requires source
-builds. Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2.12.0+rocm10.0.0`
-`torchvision[device-gfx1201]==0.27.0+rocm10.0.0` `torchaudio==2.11.0+rocm10.0.0` via
+builds. Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2.13.0+rocm10.0.0`
+`torchvision[device-gfx1201]==0.28.0+rocm10.0.0` `torchaudio==2.11.0+rocm10.0.0` via
 `--index-url https://stable.repo.amd.com/rocm/whl-next/` and `flash-attn==2.8.3`
 `amd-aiter==0.1.20.post1` via `--extra-index-url https://rocm.frameworks.amd.com/whl-multi-arch/vllm/`.
 
@@ -111,8 +111,8 @@ Runtime environment is split across files:
   architecture as 3.6-27B, so it shares the 3.6 common settings and tuned
   per-shape fp8 GEMM configs)
 - `env/qwen3.8-27b-awq.env` — AWQ-INT4 trial profile (same settings as
-  qwen3.8-27b but bf16 KV, no KV-scale calibration); see the trial doc
-  above
+  qwen3.8-27b, fp8 KV with calibrated scales, MTP3 via the HF-config snapshot);
+  see the trial doc above
 
 ### Chat template
 
@@ -168,15 +168,20 @@ restart anyway).
   single-tenant default; lower to 0.92 when a GPU co-tenant such as whisper.cpp
   is active so it keeps ~2-3 GiB of VRAM headroom), **`--max-num-seqs 2`** (the
   universal #35288 cap, set explicitly per profile to keep it visible).
-- **`--kv-cache-dtype bfloat16`** (`VLLM_KV_CACHE_DTYPE`, default `bfloat16`
-  on all profiles; the AITER BF16 LDS-fit patch
-  `patches/aiter/unified-attention-bf16-kv.patch` is required). Opting into fp8
-  KV (`VLLM_KV_CACHE_DTYPE=fp8`) halves KV memory and automatically serves the
-  calibrated local copy built by `just up` (`ensure-kvscales`): the stock
-  checkpoints ship no KV scales, and uncalibrated scale-1.0 is miscalibrated.
-  Calibration is a correctness fix, not a measured quality win — see the
-  `#52793` note in AGENTS.md and
-  [`benchmarks/2026-08-22_kv_calibration_quality_ab.md`](benchmarks/2026-08-22_kv_calibration_quality_ab.md).
+- **`--kv-cache-dtype`** (`VLLM_KV_CACHE_DTYPE`): **fp8 on qwen3.8-27b**
+  (the live default), served from the calibrated local copy that `just up`
+  builds via `ensure-kvscales` — the stock checkpoints ship no KV scales and
+  uncalibrated scale-1.0 is miscalibrated (deep-layer V amax ~132 vs the
+  ~1-24 range scale 1.0 assumes). Calibration is a correctness fix, not a
+  measured quality win — the 2026-08-22 A/B found calibrated and scale-1.0
+  fp8 KV indistinguishable on PPL and long-context recall (see the `#52793`
+  note in AGENTS.md and
+  [`benchmarks/2026-08-22_kv_calibration_quality_ab.md`](benchmarks/2026-08-22_kv_calibration_quality_ab.md)).
+  The 3.6 profiles run **bf16 KV** (higher K/V fidelity at the cost of KV
+  bytes; the AITER BF16 LDS-fit patch
+  `patches/aiter/unified-attention-bf16-kv.patch` is required), with a
+  calibrated fp8 sidecar already on disk for 3.6-27b as the opt-in path when
+  context length is the binding constraint.
 - **`--attention-backend ROCM_AITER_UNIFIED_ATTN`** + `--speculative-config`
   (MTP4 on Qwen3.6-27B, **MTP3** on Qwen3.8-27B, **MTP4 on 35B-A3B**). MTP3 is
   the Qwen3.8-27B default: DFlash2's decode win is short-context only (it
@@ -238,6 +243,18 @@ upstream.)
   (`patch_qwen3_toolparse.py`); engine-parsers only (`qwen3_coder` here).
   Verified live 2026-09-18 (`benchmarks/tool_truncation_probe.py` PASS).
   Drop when a pinned `VLLM_REF` contains the #48007 equivalent.
+
+- **Qwen3 parser/template agreement on thinking-off**
+  (`patches/vllm/qwen3-thinkoff-kwarg-parity.patch`, no upstream fix as of
+  2026-09-18): the template pre-closes `<think>` in the prompt for
+  `reasoning_effort` in (`none`, `off`) and for
+  `auto_disable_thinking_with_tools`, but `Qwen3Parser` only read
+  `enable_thinking` — so thinking-off-by-any-other-route filed the whole
+  output as reasoning (`content=None`, answer stranded in `reasoning`).
+  Adapted from GGZ14/vllm-mxfp4 (`patch_qwen3_thinkoff.py`); engine parser
+  only. Verified live 2026-09-18 (`benchmarks/thinkoff_probe.py` PASS).
+  Drop when a pinned `VLLM_REF` derives `thinking_enabled` from the same
+  kwargs.
 
 ### AITER source-build patches (applied at image build time)
 
@@ -311,14 +328,14 @@ Key tuning decisions:
   token-loop bug (fixed upstream by #51113 in v0.27.1) was re-tested clean on
   the v0.28.0 build and delivers a ~2x decode win (tg32 194.9 vs 87.8 MTP-off);
   the old "disabled" state is documented in [`archive/DEADENDS.md`](archive/DEADENDS.md).
-- **bf16 KV cache** (current default, `VLLM_KV_CACHE_DTYPE=bfloat16`): higher
-  KV fidelity than fp8. It uses more K/V bytes than fp8, so fp8 (with the
-  calibrated-copy scale fix, halving KV memory) remains the option when context
-  length is the binding constraint. The 2026-08-22 quality A/B found fp8
-  (calibrated or scale-1.0) indistinguishable from bf16 on PPL and long-context
-  recall, so bf16's extra fidelity costs nothing measurable and it is the
-  safer default; the prior "garbage" output was MTP token loops, not the KV
-  dtype.
+- **KV dtype split**: **fp8 (calibrated) on qwen3.8-27B**, **bf16 on the
+  3.6 profiles**. bf16 costs more K/V bytes than fp8; fp8 (with the
+  calibrated-copy scale fix) remains the option when context length is the
+  binding constraint, and a calibrated sidecar is already on disk for
+  3.6-27b. The 2026-08-22 quality A/B found fp8 (calibrated or scale-1.0)
+  indistinguishable from bf16 on PPL and long-context recall, so the split
+  is about capacity headroom per profile, not measured quality; the prior
+  "garbage" output was MTP token loops, not the KV dtype.
 - **Tuned dense w8a8 block-FP8 configs** (`fp8_configs/N=*,K=*,device_name=AMD_Radeon_R9700,...json`):
   the 5 per-GPU weight shapes for both 35B-A3B and 27B (TP=2) are now tuned for the
   R9700 via `tools/tune_fp8_dense.py`. Sweeps 576 Triton tile configurations per shape
@@ -340,14 +357,12 @@ Key tuning decisions:
   −3.4% pp2048 (+27 ms). Below 2048 gains nothing (step floored at the
   1600-token Mamba checkpoint grid). Full record:
   [`benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md`](benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md).
-- **V1 model runner (V2 tested and rolled back, 2026-09-03)**:
-  `VLLM_USE_V2_MODEL_RUNNER=1` on v0.29.0 is fully correct on
-  this stack (coherence, 54K × 10, image+MTP, c2 condense smoke) and prefill
-  is +3.6–4%, but decode and MTP acceptance are flat — the #54498
-  acceptance-driven decode hypothesis did not materialize, and V2 is not a
-  platform-default path for this model family upstream. The line stays
-  commented out in `env/qwen3.8-27b.env`; revisit conditions are in
-  [`benchmarks/2026-09-03_qwen3.8-27b_v1_vs_v2.md`](benchmarks/2026-09-03_qwen3.8-27b_v1_vs_v2.md).
+- **V2 model runner (MRV2) everywhere**: v0.29.0 made MRV2 the platform
+  default on ROCm and all profiles run it (qwen3.8-27b pins
+  `VLLM_USE_V2_MODEL_RUNNER=1` explicitly, also the #54498 mitigation; the
+  qwen3.6 profiles migrated implicitly and are confirmed fine). The 2026-09-03
+  V1-vs-V2 A/B record is archived
+  (`archive/benchmarks/2026-09-03_qwen3.8-27b_v1_vs_v2.md`).
 
 ### MTP concurrency bug
 
@@ -370,34 +385,31 @@ stale triage snapshots live in
 ## Performance
 
 Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.29.0 +
-local patches, torch 2.13 (ROCm 7.14.0), tuned MoE/dense GEMM configs. The
+local patches, torch 2.13 (ROCm 10.0), tuned MoE/dense GEMM configs. The
 top Qwen3.8-27B row is the current default stack (**MTP3**, 256K context,
-**fp8 KV**, 2026-08-28 — re-benchmark after the v0.29.0 bump is pending;
-expect parity: #53877 is now upstream and the dense retention default
-#55760/#55861 is the previous manual pin). Since 2026-08-27 the MTP profiles
+**fp8 KV**), benched 2026-09-18 on the live image. Since 2026-08-27 the MTP profiles
 also pass `--no-async-scheduling` (vLLM turns async on by default for MTP,
 which is the open `#51571` accepted-count race + the `#54039`/`#32275` ROCm-CI
 hang combination); re-bench shows decode parity — see
 [`benchmarks/2026-08-27_qwen3.8-27b_no_async_scheduling.md`](benchmarks/2026-08-27_qwen3.8-27b_no_async_scheduling.md).
-The Qwen3.6 rows are the latest
-measurements on the v0.28.0 build (2026-08-24); **35B-A3B now ships MTP4** (the #47087 MoE
-token-loop fix was re-validated clean — see below). Full methodology, per-run
-files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) and [`archive/`](archive/).
+Full methodology, per-run files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) and [`archive/`](archive/).
 
 | model                     | MTP (draft #) | KV   | pp2048 t/s | tg32 t/s | tg128 t/s |
 |:--------------------------|:--------------|:-----|-----------:|---------:|----------:|
-| Qwen3.8-27B-FP8 (default, 2026-08-28)³ | **MTP3** | fp8 |  ~3160 |   ~62 |    ~61 |
-| Qwen3.8-27B-FP8 (default, 2026-08-25) | **MTP3** | bf16 |  ~3060 |   ~67 |    ~68 |
-| Qwen3.6-27B-FP8 (2026-08-24)²         | MTP4 | bf16 |   ~1730 |   **80.5** |    ~69 |
-| Qwen3.6-35B-A3B-FP8 (2026-08-24)      | **MTP4** | bf16 |   ~5700 |   **194.9** |   **161.3** |
-| Qwen3.8-27B-AWQ-INT4 (trial, 2026-09-10)⁴ | **MTP3** | bf16 | ~2130–2310 | ~81–95 | ~85–87 |
+| Qwen3.8-27B-FP8 (default, 2026-09-18)³ | **MTP3** | fp8 |  ~3275 |   ~68 |    ~71 |
+| Qwen3.8-27B-FP8 (2026-08-28, pre-v0.29.0) | **MTP3** | fp8 |  ~3160 |   ~62 |    ~61 |
+| Qwen3.8-27B-FP8 (2026-08-25, pre-v0.29.0) | **MTP3** | bf16 |  ~3060 |   ~67 |    ~68 |
+| Qwen3.8-27B-AWQ-INT4 (trial, 2026-09-10)⁴ | **MTP3** | fp8 | ~2130–2310 | ~81–95 | ~85–87 |
 
-² no-async scheduling. ³ vLLM 0.29.0 (dense default, no manual retention pin),
-current live profile (fp8 KV); pre-bump numbers.
+² no-async scheduling. ³ vLLM 0.29.0 + all local patches, current live
+profile (fp8 KV, MRV2); coherence PASSED.
 ⁴ AWQ trial profile (`qwen3.8-27b`, backported #48606 loader, RDNAHybrid
 kernel): decode-optimized alternative, not the default — prefill −26%, decode
 +30–50%, weights 10.3 GiB. Full record:
 [`benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`](benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md).
+
+(The `qwen3.6-27b` / `qwen3.6-35b-a3b` profiles remain switchable via
+`MODEL_PROFILE` but are not bench-tracked — see `BENCHMARKS.md`.)
 
 ### Depth sweep (Qwen3.8-27B-FP8)
 
@@ -427,9 +439,8 @@ slower than the fp8 sweep** (pp256K 953 vs 1563 t/s, ~39% down; TTFT 271 vs
 the depth doc). Coherence passed at every depth; MTP acceptance ~33% unchanged.
 Full tables and the fp8-vs-bf16 comparison in
 [`benchmarks/2026-08-22_qwen3.8-27b_bf16kv_depth_mtp3.md`](benchmarks/2026-08-22_qwen3.8-27b_bf16kv_depth_mtp3.md);
-the earlier fp8-KV depth sweeps are in
-[`benchmarks/08_19_qwen3.8-27b_fp8kv_mtp3_depth.md`](benchmarks/08_19_qwen3.8-27b_fp8kv_mtp3_depth.md)
-and [`benchmarks/08_19_qwen3.8-27b_fp8kv_mtp3_d0.md`](benchmarks/08_19_qwen3.8-27b_fp8kv_mtp3_d0.md).
+an earlier fp8-KV depth sweep is in
+[`benchmarks/08_19_qwen3.8-27b_fp8kv_mtp3_depth.md`](benchmarks/08_19_qwen3.8-27b_fp8kv_mtp3_depth.md).
 
 ### 35B-A3B depth sweep and concurrency (archived)
 
