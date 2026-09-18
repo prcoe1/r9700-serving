@@ -198,6 +198,9 @@ up: check ensure-cache-dirs prewarm ensure-kvscales
         printf 'error: warmup request failed. Run `just logs`.\n' >&2
         exit 1
     fi
+    printf 'Starting dashboard ...\n'
+    {{compose}} --profile dashboard up -d dashboard
+    printf 'Dashboard at http://localhost:8083\n'
 
 # Run a command inside the running vLLM container (e.g. `just exec bash`).
 exec *args:
@@ -251,8 +254,9 @@ bench-json: check
 logs-dashboard:
     @{{compose}} --profile dashboard logs -f dashboard
 
-# Dashboard is optional (profile `dashboard`, disabled by default).
-# `just up` starts only vLLM; use `just dashboard-up` / `just dashboard-down`.
+# Dashboard rides along with `up` (and is removed by `down`); these recipes
+# control it standalone.
+# `just up` starts vLLM + dashboard; use `just dashboard-down` to stop only it.
 dashboard-up: check
     @{{compose}} --profile dashboard up -d dashboard
     @echo "Dashboard at http://localhost:8083 (profile: dashboard)"

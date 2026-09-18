@@ -38,21 +38,20 @@ cd r9700-serving
 cp .env.example .env  # Build version pins + default model profile (untracked)
 just build       # Build localhost/vllm-fullbuild:latest
 just check       # Validate the compose config for the selected profile
-just up          # Start vLLM in the background (default: Qwen3.8-27B-FP8)
+just up          # Start vLLM in the background (default: Qwen3.8-27B-FP8) + dashboard on :8083
 just --set model qwen3.6-27b up     # Switch to Qwen3.6-27B-FP8 (dense)
 just --set model qwen3.6-35b-a3b up  # Switch to MoE 35B-A3B model
 just logs        # Follow service logs
-just down        # Stop and remove containers
-just dashboard-up   # Start optional dashboard on :8083 (disabled by default)
-just dashboard-down # Stop dashboard
+just down        # Stop and remove containers (server + dashboard)
+just dashboard-down # Stop only the dashboard (`up` restarts it)
 just logs-dashboard # Follow dashboard logs
 ```
 
 To use Podman: `just --set runtime podman build` or `RUNTIME=podman just up`
 (see the Podman caveats in Requirements). Run `just --list` to see all recipes
 including `rebuild` (force-rebuild), `clear-vllm-caches` (wipe host-side
-Triton/Inductor/AITER caches; preserves the HuggingFace model cache), and
-`dashboard-up`/`dashboard-down`.
+Triton/Inductor/AITER caches; preserves the HuggingFace model cache),
+`dashboard-up` (standalone start), and `dashboard-down` (standalone stop).
 
 Always go through `just`: `compose.yaml` interpolates the model arguments from
 `env/<profile>.env`, which the recipes pass to compose via `--env-file`. A bare
@@ -452,9 +451,9 @@ for the #35288 MTP bug, not throughput) are archived in
 
 ## Dashboard
 
-![Dashboard screenshot](docs/dashboard.png)
+![Dashboard screenshot](docs/screenshot-2026-09-19_05-49-25.png)
 
-`compose.yaml` includes an optional observability dashboard (`localhost/r9700-dashboard:latest`, FastAPI + Chart.js) on `http://localhost:8083` (LAN-exposed `0.0.0.0:8083→3000`), disabled by default (`profiles: ["dashboard"]`). `just up` starts only vLLM; `just dashboard-up` / `just dashboard-down` start/stop it (`just logs-dashboard` follows it). It polls `vllm:8180/metrics` every 1s and builds from `observability/dashboard/` (`just build` includes it).
+`compose.yaml` includes an observability dashboard (`localhost/r9700-dashboard:latest`, FastAPI + Chart.js) on `http://localhost:8083` (LAN-exposed `0.0.0.0:8083→3000`). `just up` starts it alongside vLLM (`just down` removes both); `just dashboard-down` stops only the dashboard and `just dashboard-up` starts it standalone (`just logs-dashboard` follows it). It polls `vllm:8180/metrics` every 1s and builds from `observability/dashboard/` (`just build` includes it).
 
 The UI has two tabs (sticky, keyboard-navigable): **Stats** (default) and **Benchmarks**, so the live view stays compact on phones — the grid collapses to one column under 640 px (verified on iPhone 17 Pro Max, safe-area aware). Tab choice persists in `localStorage`/URL hash.
 
