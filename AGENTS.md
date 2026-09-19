@@ -334,8 +334,11 @@ touches one of:
     family as `#52789`; in flight, not merged)
   - `#40707` hybrid Mamba scheduling deadlock with 2+ large images in one
     prompt (align block-split collapses to 0 → request hangs forever, engine
-    never recovers). **Cap is 99 (user request)** — deadlock risk re-exposed.
-    Fix PR `#40709` is **not merged** — monitor it.
+    never recovers). **Carried as a local patch**
+    (`patches/vllm/40707-mamba-block-aligned-split-deadlock.patch`, verbatim
+    upstream fix `#40709`, open as of 2026-09-18 — applies cleanly on v0.29.0).
+    Drop when a pinned `VLLM_REF` contains the fix. Live since the 2026-09-19
+    rebuild; verified with `benchmarks/multi_image_probe.py` (PASS).
   - `#51571` async MTP align accepted-count race (open): async scheduling +
     MTP + hybrid GDN + `mamba-cache-mode align` → accepted-token D2H counts
     gathered from a mutated `InputBatch` after `condense()` (repeated/dropped/

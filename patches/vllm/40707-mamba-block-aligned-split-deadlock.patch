@@ -1,0 +1,45 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: vllm-project contributors (PR #40709)
+Date: Thu, 18 Sep 2026 00:00:00 +0000
+Subject: [PATCH] Fix scheduling deadlock in _mamba_block_aligned_split with
+ large multimodal inputs (#40707)
+
+Version-locked to VLLM_REF=v0.29.0. Upstream PR #40709
+(https://github.com/vllm-project/vllm/pull/40709) open as of 2026-09-18,
+not in any tag. Drop when VLLM_REF contains the fix.
+
+Carried verbatim: applies cleanly on v0.29.0 (the hunk context and
+request.has_encoder_inputs guard are unchanged from the PR base). When the
+encoder-compute budget caps a multimodal chunk below block_size, the
+block-align floor collapses aligned_end to start (0 new tokens) and the
+scheduler skips the request forever: Image 1's placeholder tokens are never
+consumed so its encoder cache entry is never freed and Image 2 can never
+load. Keeping the original unaligned end in that case lets the sub-block
+chunk make forward progress; its Mamba state simply isn't block-cached for
+this step (consistent with the existing "less than block_size, no special
+handling" comment).
+---
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index cbef879b29..93775b99c0 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -443,7 +443,18 @@ def _mamba_block_aligned_split(
+                 max_prefill_tokens = min(max_prefill_tokens, long_prefill_threshold)
+             aligned_end = end // block_size * block_size
+             if aligned_end > start or block_size <= max_prefill_tokens:
+-                end = aligned_end
++                # For multimodal requests, when the encoder-compute budget
++                # caps num_new_tokens below block_size the floor can collapse
++                # aligned_end to start (or below), producing 0 tokens. The
++                # caller then skips the request, stranding the queue when the
++                # occupying encoder cache entry can never be freed.
++                # In that case keep the original unaligned end so that the
++                # sub-block chunk still makes forward progress; its Mamba
++                # state simply won't be block-cached for this step.
++                if aligned_end <= start and request.has_encoder_inputs:
++                    pass  # keep original `end`
++                else:
++                    end = aligned_end
+
+         next_block_boundary = (start // block_size + 1) * block_size
+         tail_boundary = (

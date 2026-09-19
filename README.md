@@ -4,6 +4,10 @@ Build and run vLLM from source for AMD Radeon AI PRO R9700 GPUs. The default
 configuration targets two R9700s (`gfx1201`) and serves a model through vLLM's
 OpenAI-compatible API.
 
+Project goal, in order: **stability first, performance second**. This stack
+serves real work traffic, so correctness and uptime outrank benchmark wins —
+tuning is accepted only when it doesn't regress reliability.
+
 ## Requirements
 
 - Docker with the Compose plugin (`docker compose`), or Podman (`podman
@@ -154,10 +158,12 @@ restart anyway).
 - **`--limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'`**: up to
   99 images per prompt, audio/video disabled. Previously capped at 1 to block
   the 2+-large-images engine deadlock on these GDN hybrids (upstream #40707,
-  fix #40709 not merged — see AGENTS.md watchlist): with 2+ large images the
-  align block-split collapses to 0, the request hangs forever, and the engine
-  never recovers. Cap re-raised to 99 at user request; multi-image large prompts
-  re-expose that hang risk until #40709 lands.
+  see AGENTS.md watchlist): with 2+ large images the align block-split
+  collapses to 0, the request hangs forever, and the engine never recovers.
+  The upstream fix #40709 is now carried as a local build patch
+  (`patches/vllm/40707-mamba-block-aligned-split-deadlock.patch`, live since
+  the 2026-09-19 rebuild — verified with `benchmarks/multi_image_probe.py`);
+  drop it when a pinned `VLLM_REF` contains the fix.
 - **`--override-generation-config`**: server-side sampling defaults
   (`temperature` 1.0, `top_p` 0.95, `top_k` 20, `min_p` 0, no penalties).
 - **`--enable-prefix-caching`**: reuse KV for shared prompt prefixes (known
@@ -230,6 +236,15 @@ upstream.)
   `MambaSpec.block_size` (7168-scale after page unification), landing in a
   neighbour's row or past the table (IMA in
   `precopy_mamba_align_fused_kernel`). Version-locked to v0.29.0.
+
+- **Fix `_mamba_block_aligned_split` deadlock on 2+ large images**
+  (`patches/vllm/40707-mamba-block-aligned-split-deadlock.patch`,
+  [#40709](https://github.com/vllm-project/vllm/pull/40709), open upstream):
+  without it, the encoder cache holds one large image while the second waits,
+  and a sub-`block_size` remainder floors to 0 new tokens — the scheduler
+  skips the request forever (hang, engine never recovers). The patch keeps
+  the unaligned chunk end for multimodal requests in that case (state simply
+  isn't block-cached that step). Version-locked to v0.29.0 (applies cleanly).
 
 - **Streaming/non-streaming tool-parser parity on truncated tool calls**
   (`patches/vllm/47137-tool-truncation-parity.patch`,
