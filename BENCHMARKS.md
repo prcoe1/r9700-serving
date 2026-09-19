@@ -26,6 +26,8 @@ concurrency degrades sharply (see the c1-vs-c2 head-to-head in
 
 | file | contents |
 |:-----|:---------|
+| [`benchmarks/2026-09-19_qwen3.8-27b_stability_depth_conc.md`](benchmarks/2026-09-19_qwen3.8-27b_stability_depth_conc.md) | **release validation** (v0.29.0 + #40709 patch, live): stability 400/400 + 10/10 + 10/10, depth d0–d256K matches 08-27 shape, conc-ITL p50 880 ms / p99 1.38 s, coherence PASS everywhere — no regressions |
+| [`benchmarks/2026-09-19_qwen3.8-27b_40707_multi_image_probe.md`](benchmarks/2026-09-19_qwen3.8-27b_40707_multi_image_probe.md) | #40707 4-large-image probe: PASS on the patched build (1-image limit lifted) |
 | [`benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md`](benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md) | `--max-num-batched-tokens` 8192/4096/2048 A/B: big-prompt prefill stalled the co-decoder 150–200x (ITL p99 up to 9.8 s) at 8192; 2048 → ~1 s ITL, flat big-prompt TTFT, −3.4% pp2048 → **2048 adopted** on qwen3.8-27b |
 | [`benchmarks/2026-09-10_qwen3.8-27b_55766_nan_probe.md`](benchmarks/2026-09-10_qwen3.8-27b_55766_nan_probe.md) | #55766 NaN-checkpoint probe: CLEAN on v0.29.0 + MTP3 (masked by the 2-block hit back-off, not disproven) |
 | [`benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`](benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md) | AWQ-INT4 trial profile record (decode +30–50%, prefill −26%) |

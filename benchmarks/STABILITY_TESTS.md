@@ -3,6 +3,12 @@
 Operational health checks for the vLLM server — catches crashes, memory errors,
 garbage output, and token-loop degeneration under sustained load.
 
+> Latest full validation:
+> [`2026-09-19_qwen3.8-27b_stability_depth_conc.md`](2026-09-19_qwen3.8-27b_stability_depth_conc.md)
+> (v0.29.0 + #40709 patch, qwen3.8-27b: stress 400/400, long-context 10/10,
+> thinking 10/10, 0 errors). Scripts below name older qwen3.6 models — substitute
+> the live served name when running.
+
 ## Quick health
 
 ```sh
