@@ -1,51 +1,58 @@
-From 52d2d48d01025f21a7010901bae31a49c86acac3 Mon Sep 17 00:00:00 2001
-From: meng-amd <limitmhw@users.noreply.github.com>
-Date: Thu, 10 Sep 2026 00:00:00 +0000
-Subject: [PATCH] [Quantization] Support native Quark W4A16 INT4/UINT4 exports
- (#48606)
+From 54ec10ab3b5f904165a1a637b513b65cd3a2de17 Mon Sep 17 00:00:00 2001
+From: opencode <opencode@localhost>
+Date: Tue, 22 Sep 2026 10:35:14 +0000
+Subject: [PATCH] [PATCH] [Quantization] Support native Quark W4A16 INT4/UINT4
+ exports (#48606)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
 
-Version-locked to VLLM_REF=v0.29.0. Upstream PR #48606
-(https://github.com/vllm-project/vllm/pull/48606) open as of 2026-09-10,
-not in any tag. Pinned to head 52d2d48 (branch
-hongweimeng/quark-awq-int4-quark-flow_experiment, 9 files, +1128/-6).
-Drop when VLLM_REF contains the merge — and confirm ROCm/gfx1201 kernel
-coverage, not just the merge: the dense QuarkW4A16Int4 path selects an
-MPLinearKernel at load time (ROCm order: RDNA3/gfx1100-only, then
-RDNAHybrid gfx11/gfx12, then TritonW4A16 fallback), so gfx1201 support is
-unproven until the AWQ trial boots.
+Version-locked to VLLM_REF=v0.30.0 (rebased 2026-09-22; git apply
+--check clean on the v0.30.0 tag). Upstream PR #48606 MERGED to main
+2026-09-18 (6df2b1a8), AFTER the v0.30.0 branch cut — verified NOT in
+the v0.30.0 tag. Drop when a pinned VLLM_REF contains the merge, and
+confirm ROCm/gfx1201 kernel coverage, not just the merge: the dense
+QuarkW4A16Int4 path selects an MPLinearKernel at load time (ROCm order:
+RDNA3/gfx1100-only, then RDNAHybrid gfx11/gfx12, then TritonW4A16
+fallback), so gfx1201 support is proven only by the AWQ trial boot.
 
-Ported to v0.29.0 (the PR base drifted; 4 files needed rebase):
-- quark/quark.py: `_is_w4a16_int4` adapted to the v0.29.0 bool-checker
-  style; dispatch added to `_get_scheme_from_config` (replaces the PR's
-  `_get_scheme_cls_from_config`/`init_scheme` split, which does not exist
-  on v0.29.0); `_unwrap_single_quant_config` ported from main (absent on
-  v0.29.0). The PR's `weight_config=`/`layer_name=` get_scheme hunks are
-  N/A — v0.29.0 resolves configs via `_find_matched_config` and already
-  passes `layer_name`.
-- quark/quark_moe.py: `QuarkW4A16Int4MoEMethod` ported to the v0.29.0 MoE
-  API (`super().__init__(moe)`; dispatch via the `get_moe_method`
-  staticmethod checker chain instead of the PR's `get_moe_method_target`,
-  which does not exist on v0.29.0). Oracle calls
-  (`select/convert/make_wna16_*`) verified against v0.29.0 signatures.
-- tests/quantization/test_quark.py hunks DROPPED (test-only; the image
-  build does not run them).
-- schemes/quark_w4a16_int4.py: `super().__init__(keys)` replaced with plain
-  attribute assignment — v0.29.0's QuarkScheme is a bare ABC with no
-  __init__ (the PR-base call raises `TypeError` at load time); added the
-  required `has_g_idx=False` to `MPLinearLayerConfig(...)` (field absent
-  on the PR base).
-All other hunks (new `schemes/quark_w4a16_int4.py`, schemes `__init__`,
-kernels/linear log line, triton_moe, auto_awq) applied cleanly unmodified.
-NOTE to future editors: this file is applied with `git apply`, which
-silently truncates a hunk body that exceeds its `@@` line count — always
-update the counts when adding/removing `+` lines (2026-09-10: a stale
-+1,217 dropped the file tail and crash-looped the server at import).
+v0.30.0 rebase: v0.30.0 already uses the PR's post-review structure
+(_get_scheme_cls_from_config returning key tuples + init_scheme, MoE
+detector returning (keys, method_cls)), so this rebase mirrors the
+MERGED upstream version instead of the v0.29.0 adaptation:
+- quark.py: QuantKeyMatch _is_w4a16_int4, key-tuple dispatch branch,
+  init_scheme weight_config path + W4A16 construction, layer_name=prefix
+  at the get_moe_method call site. The v0.29.0 backport's duplicate
+  _unwrap_single_quant_config is dropped (native in v0.30.0).
+- quark_moe.py: key-tuple detector branch, layer_name param + W4A16
+  branch in get_moe_method, MoE method __init__ takes quant keys and
+  calls super().__init__(moe, keys) like upstream.
+- schemes/quark_w4a16_int4.py: super().__init__ restored (v0.30.0
+  QuarkScheme has __init__); has_g_idx dropped (removed upstream by
+  #54809); symmetry/group handling identical to merged upstream.
+- utils.py: parse/canonicalize helpers unchanged from merged upstream.
+- Unchanged carriers: mp-linear log line, triton_moe kInt4StaticAsym
+  order, auto_awq symmetric (w_zp_name None) support.
+NOTE to future editors: this file is applied with git apply, which
+silently truncates a hunk body that exceeds its @@ line count — always
+regenerate via git diff/format-patch instead of hand-editing counts.
 ---
+ .../model_executor/kernels/linear/__init__.py |   1 +
+ .../layers/fused_moe/experts/triton_moe.py    |   2 +-
+ .../layers/quantization/auto_awq.py           |   6 +-
+ .../layers/quantization/quark/quark.py        |  56 ++-
+ .../layers/quantization/quark/quark_moe.py    | 354 +++++++++++++++++-
+ .../quantization/quark/schemes/__init__.py    |   2 +
+ .../quark/schemes/quark_w4a16_int4.py         | 212 +++++++++++
+ .../layers/quantization/quark/utils.py        |  57 +++
+ 8 files changed, 685 insertions(+), 5 deletions(-)
+ create mode 100644 vllm/model_executor/layers/quantization/quark/schemes/quark_w4a16_int4.py
+
 diff --git a/vllm/model_executor/kernels/linear/__init__.py b/vllm/model_executor/kernels/linear/__init__.py
-index e02334b..82672be 100644
+index d3c41f9..94899ae 100644
 --- a/vllm/model_executor/kernels/linear/__init__.py
 +++ b/vllm/model_executor/kernels/linear/__init__.py
-@@ -830,6 +830,7 @@ def choose_mp_linear_kernel(
+@@ -867,6 +867,7 @@ def choose_mp_linear_kernel(
  
          can_implement, failure_reason = kernel.can_implement(config)
          if can_implement:
@@ -69,7 +76,7 @@ index 9f98264..da9666a 100644
              # other group sizes?
          ]
 diff --git a/vllm/model_executor/layers/quantization/auto_awq.py b/vllm/model_executor/layers/quantization/auto_awq.py
-index 713bd7b..8b5559e 100644
+index f8c7269..07bfae2 100644
 --- a/vllm/model_executor/layers/quantization/auto_awq.py
 +++ b/vllm/model_executor/layers/quantization/auto_awq.py
 @@ -93,7 +93,7 @@ def _replace_or_register_parameter(
@@ -100,10 +107,10 @@ index 713bd7b..8b5559e 100644
      # AWQ qzeros: (G, N // pack) packed along dim 1, AWQ bit order
      # Target: (N // pack, G) packed along dim 0, standard bit order
 diff --git a/vllm/model_executor/layers/quantization/quark/quark.py b/vllm/model_executor/layers/quantization/quark/quark.py
-index 6c877b1..54c16df 100644
+index 855a413..d2ba40e 100644
 --- a/vllm/model_executor/layers/quantization/quark/quark.py
 +++ b/vllm/model_executor/layers/quantization/quark/quark.py
-@@ -32,14 +32,22 @@ from vllm.model_executor.layers.quantization.quark.schemes import (
+@@ -32,6 +32,7 @@ from vllm.model_executor.layers.quantization.quark.schemes import (
      QuarkOCP_MX,
      QuarkScheme,
      QuarkW4A8_MXFP4_FP8,
@@ -111,22 +118,26 @@ index 6c877b1..54c16df 100644
      QuarkW8A8Fp8,
      QuarkW8A8Fp8PerBlock,
      QuarkW8A8Int8,
- )
+@@ -39,6 +40,7 @@ from vllm.model_executor.layers.quantization.quark.schemes import (
  from vllm.model_executor.layers.quantization.quark.utils import (
+     QuarkQTensorHint,
      deep_compare,
 +    parse_w4a16_int4_weight_config,
      should_ignore_layer,
  )
-+from vllm.model_executor.layers.quantization.utils.quant_utils import (
+ from vllm.model_executor.layers.quantization.utils.ocp_mx_utils import (
+@@ -54,6 +56,10 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
+     kFp8Static128BlockSym,
+     kFp8StaticChannelSym,
+     kFp8StaticTensorSym,
 +    kInt4Static,
 +    kInt4Static32,
 +    kInt4Static32Asym,
 +    kInt4StaticAsym,
-+)
- from vllm.model_executor.models.utils import WeightsMapper
- from vllm.platforms import current_platform
- 
-@@ -138,8 +146,10 @@ class QuarkConfig(QuantizationConfig):
+     kInt4W4A8StaticChannelSym,
+     kInt8DynamicTensorAsym,
+     kInt8DynamicTensorSym,
+@@ -173,8 +179,10 @@ class QuarkConfig(QuantizationConfig):
          quant_config_with_hf_to_vllm_mapper: dict[str, Any] = {}
  
          for k, v in self.quant_config.items():
@@ -138,75 +149,110 @@ index 6c877b1..54c16df 100644
              elif isinstance(v, dict):
                  quant_config_with_hf_to_vllm_mapper[k] = hf_to_vllm_mapper.apply_dict(v)
              else:
-@@ -409,6 +419,39 @@ class QuarkConfig(QuantizationConfig):
-         # Only symmetric weight quantization supported.
-         return is_int8_dtype and is_tensor and is_weight_symmetric and is_static
+@@ -216,6 +224,9 @@ class QuarkConfig(QuantizationConfig):
+                 weight_quant_key=weight_quant_key,
+                 activation_quant_key=activation_quant_key,
+                 dynamic_mxfp4_quant=dynamic_mxfp4_quant,
++                weight_config=self._find_matched_config(prefix, type(layer)).get(
++                    "weight"
++                ),
+             )
+             layer.scheme = scheme
+             return QuarkLinearMethod(self)
+@@ -228,6 +239,7 @@ class QuarkConfig(QuantizationConfig):
+                 method_cls=method_cls,
+                 weight_quant_key=weight_quant_key,
+                 activation_quant_key=activation_quant_key,
++                layer_name=prefix,
+             )
+ 
+         return None
+@@ -573,6 +585,26 @@ class QuarkConfig(QuantizationConfig):
+             )
+         return QuantKeyMatch(True, activation_quant_key, weight_quant_key)
  
 +    def _is_w4a16_int4(
 +        self,
-+        weight_quant: dict[str, Any] | list[dict[str, Any]] | None,
-+        input_quant: dict[str, Any] | list[dict[str, Any]] | None,
-+    ) -> bool:
-+        # W4A16 weight-only: activations stay unquantized (input config None).
++        weight_quant: dict[str, Any] | None,
++        input_quant: dict[str, Any] | None,
++    ) -> QuantKeyMatch:
 +        if weight_quant is None or input_quant is not None:
-+            return False
++            return QuantKeyMatch(False, None, None)
 +
-+        normalized = self._unwrap_single_quant_config(weight_quant)
-+        if normalized is None:
-+            return False
-+
-+        is_int4 = normalized.get("dtype") in ("int4", "uint4")
++        is_int4 = weight_quant.get("dtype") in ("int4", "uint4")
 +        is_packed = self.pack_method in ("order", "reorder")
 +        if not (is_int4 and is_packed):
-+            return False
++            return QuantKeyMatch(False, None, None)
 +
-+        try:
-+            parse_w4a16_int4_weight_config(normalized)
-+        except ValueError:
-+            return False
-+        return True
-+
-+    @staticmethod
-+    def _unwrap_single_quant_config(
-+        quant_config: dict[str, Any] | list[dict[str, Any]],
-+    ) -> dict[str, Any] | None:
-+        """Unwrap one-entry quantization-config lists."""
-+        if isinstance(quant_config, list):
-+            return quant_config[0] if len(quant_config) == 1 else None
-+        return quant_config
++        group_size, is_symmetric = parse_w4a16_int4_weight_config(weight_quant)
++        if is_symmetric:
++            weight_key = kInt4Static32 if group_size == 32 else kInt4Static
++        else:
++            weight_key = kInt4Static32Asym if group_size == 32 else kInt4StaticAsym
++        return QuantKeyMatch(True, None, weight_key)
 +
      def _is_w4a8_mxfp4_fp8(
          self,
          weight_quant: dict[str, Any] | None,
-@@ -703,6 +746,24 @@ class QuarkConfig(QuantizationConfig):
-                 is_static_input_scheme=False,
-                 input_symmetric=input_config.get("symmetric"),
+@@ -892,6 +924,12 @@ class QuarkConfig(QuantizationConfig):
+                 match.activation_quant_key,
+                 QuarkW8A8Int8,
              )
-+        elif self._is_w4a16_int4(weight_config, input_config):
++        elif match := self._is_w4a16_int4(weight_config, input_config):
++            return (
++                match.weight_quant_key,
++                match.activation_quant_key,
++                QuarkW4A16Int4,
++            )
+         elif match := self._is_w4a8_mxfp4_fp8(weight_config, input_config):
+             return (
+                 match.weight_quant_key,
+@@ -921,6 +959,7 @@ class QuarkConfig(QuantizationConfig):
+         weight_quant_key: QuantKey | None,
+         activation_quant_key: QuantKey | None,
+         dynamic_mxfp4_quant: bool = False,
++        weight_config: dict[str, Any] | None = None,
+     ) -> "QuarkScheme":
+         """Construct a Quark scheme selected by get_scheme_cls."""
+         if scheme_cls not in (
+@@ -930,9 +969,24 @@ class QuarkConfig(QuantizationConfig):
+             QuarkOCP_MX,
+             QuarkNVFP4,
+             QuarkW4A8_MXFP4_FP8,
++            QuarkW4A16Int4,
+         ):
+             raise AssertionError(f"Unsupported Quark scheme class: {scheme_cls}")
+ 
++        scheme: QuarkScheme
++        if scheme_cls is QuarkW4A16Int4:
 +            normalized_weight_config = self._unwrap_single_quant_config(weight_config)
 +            assert normalized_weight_config is not None
-+            group_size, is_symmetric = parse_w4a16_int4_weight_config(
-+                normalized_weight_config
-+            )
-+            if is_symmetric:
-+                weight_key = kInt4Static32 if group_size == 32 else kInt4Static
-+            else:
-+                weight_key = (
-+                    kInt4Static32Asym if group_size == 32 else kInt4StaticAsym
-+                )
-+            return QuarkW4A16Int4(
-+                weight_quant_key=weight_key,
-+                activation_quant_key=None,
++            assert weight_quant_key is not None
++            scheme = QuarkW4A16Int4(
++                weight_quant_key=weight_quant_key,
++                activation_quant_key=activation_quant_key,
 +                pack_method=self.pack_method,
 +                weight_config=normalized_weight_config,
 +            )
-         elif self._is_w_ocp_mx_a_x(weight_config, input_config):
-             return QuarkOCP_MX(
-                 weight_config, input_config, dynamic_mxfp4_quant=dynamic_mxfp4_quant
++            self._check_scheme_supported(scheme.get_min_capability())
++            return scheme
++
+         kwargs: dict[str, Any] = {"activation_quant_key": activation_quant_key}
+ 
+         # These classes handle different possible `weight_quant_key`.
 diff --git a/vllm/model_executor/layers/quantization/quark/quark_moe.py b/vllm/model_executor/layers/quantization/quark/quark_moe.py
-index d2b286f..974c559 100644
+index 735499d..36ccb29 100644
 --- a/vllm/model_executor/layers/quantization/quark/quark_moe.py
 +++ b/vllm/model_executor/layers/quantization/quark/quark_moe.py
+@@ -1,7 +1,7 @@
+ # SPDX-License-Identifier: Apache-2.0
+ # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+ 
+-from typing import TYPE_CHECKING
++from typing import TYPE_CHECKING, Any
+ 
+ import torch
+ 
 @@ -40,6 +40,12 @@ from vllm.model_executor.layers.fused_moe.oracle.int8 import (
      make_int8_moe_quant_config,
      select_int8_moe_backend,
@@ -220,28 +266,30 @@ index d2b286f..974c559 100644
  from vllm.model_executor.layers.fused_moe.oracle.mxfp4 import (
      TRITON_BACKENDS,
      Mxfp4MoeBackend,
-@@ -56,6 +62,9 @@ from vllm.model_executor.layers.fused_moe.oracle.nvfp4 import (
+@@ -56,7 +62,10 @@ from vllm.model_executor.layers.fused_moe.oracle.nvfp4 import (
      make_nvfp4_moe_quant_config,
      select_nvfp4_moe_backend,
  )
+-from vllm.model_executor.layers.quantization.quark.utils import QuarkQTensorHint
 +from vllm.model_executor.layers.quantization.quark.utils import (
++    QuarkQTensorHint,
 +    parse_w4a16_int4_weight_config,
 +)
- from vllm.model_executor.layers.quantization.utils.ocp_mx_utils import (
-     OCP_MX_BLOCK_SIZE,
-     OCP_MX_Scheme,
-@@ -66,6 +75,10 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
-     kFp8DynamicTokenSym,
+ from vllm.model_executor.layers.quantization.utils.fp8_utils import (
+     validate_fp8_block_shape_moe,
+ )
+@@ -75,6 +84,10 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
+     kFp8Static128BlockSym,
      kFp8StaticChannelSym,
      kFp8StaticTensorSym,
 +    kInt4Static,
 +    kInt4Static32,
 +    kInt4Static32Asym,
 +    kInt4StaticAsym,
+     kInt4W4A8StaticChannelSym,
+     kInt8DynamicTensorAsym,
      kInt8DynamicTensorSym,
-     kInt8DynamicTokenSym,
-     kInt8StaticChannelSym,
-@@ -86,6 +99,7 @@ logger = init_logger(__name__)
+@@ -102,6 +115,7 @@ logger = init_logger(__name__)
  
  __all__ = [
      "QuarkMoEMethod",
@@ -249,28 +297,52 @@ index d2b286f..974c559 100644
      "QuarkW8A8Fp8MoEMethod",
      "QuarkOCP_MX_MoEMethod",
      "QuarkNvfp4MoEMethod",
-@@ -123,6 +137,20 @@ class QuarkMoEMethod(FusedMoEMethodBase):
+@@ -179,6 +193,12 @@ class QuarkMoEMethod(FusedMoEMethodBase):
+                 match.activation_quant_key,
+                 QuarkW8A8Fp8MoEMethod,
              )
-         elif quant_config._is_fp8_w8a8(weight_config, input_config):
-             return QuarkW8A8Fp8MoEMethod(weight_config, input_config, module.moe_config)
-+        elif quant_config._is_w4a16_int4(weight_config, input_config):
-+            unwrapped_weight_config = quant_config._unwrap_single_quant_config(
-+                weight_config
++        if match := quant_config._is_w4a16_int4(weight_config, input_config):
++            return (
++                match.weight_quant_key,
++                match.activation_quant_key,
++                QuarkW4A16Int4MoEMethod,
 +            )
-+            if unwrapped_weight_config is None:
+         if match := quant_config._is_w_ocp_mx_a_x(
+             weight_config, input_config, allow_static_fp8=True
+         ):
+@@ -202,6 +222,7 @@ class QuarkMoEMethod(FusedMoEMethodBase):
+         method_cls: type["QuarkMoEMethod"],
+         weight_quant_key: QuantKey | None,
+         activation_quant_key: QuantKey | None,
++        layer_name: str | None = None,
+     ) -> "QuarkMoEMethod":
+         if weight_quant_key is None:
+             raise RuntimeError("Unsupported FusedMoe scheme")
+@@ -226,10 +247,339 @@ class QuarkMoEMethod(FusedMoEMethodBase):
+             return QuarkW8A8Int8MoEMethod(
+                 module.moe_config, weight_quant_key, activation_quant_key
+             )
++        elif method_cls is QuarkW4A16Int4MoEMethod:
++            assert layer_name is not None
++            layer_quant_config = quant_config._find_matched_config(
++                layer_name, type(module)
++            )
++            weight_config = quant_config._unwrap_single_quant_config(
++                layer_quant_config.get("weight")
++            )
++            if weight_config is None:
 +                raise RuntimeError(
 +                    f"Missing weight quantization config for layer {layer_name}"
 +                )
 +            return QuarkW4A16Int4MoEMethod(
-+                unwrapped_weight_config,
++                weight_quant_key,
++                activation_quant_key,
++                weight_config,
 +                quant_config.pack_method,
 +                module.moe_config,
 +                quant_config=quant_config,
 +            )
-         elif quant_config._is_w_ocp_mx_a_x(weight_config, input_config):
-             # All OCP MX schemes (W4A16, W4A8, etc.) handled by QuarkOCP_MX_MoEMethod
-             # Backend selection happens inside via oracle
-@@ -137,6 +165,330 @@ class QuarkMoEMethod(FusedMoEMethodBase):
+         else:
              raise RuntimeError("Unsupported FusedMoe scheme")
  
  
@@ -287,44 +359,29 @@ index d2b286f..974c559 100644
 +
 +    def __init__(
 +        self,
++        weight_quant_key: QuantKey,
++        activation_quant_key: QuantKey | None,
 +        weight_config: dict[str, Any],
 +        pack_method: str,
 +        moe: FusedMoEConfig,
-+        input_config: dict[str, Any] | None = None,
 +        quant_config: "QuarkConfig | None" = None,  # type: ignore # noqa F821
 +    ):
-+        if input_config is not None:
-+            raise NotImplementedError(
-+                "QuarkW4A16Int4MoEMethod does not support activation "
-+                f"quantization; input_tensors must be None, got {input_config}."
-+            )
-+        if weight_config.get("qscheme", "per_group") != "per_group":
-+            raise NotImplementedError(
-+                "QuarkW4A16Int4MoEMethod only supports per_group weight "
-+                f"quantization, got {weight_config.get('qscheme')!r}."
-+            )
-+        if weight_config.get("is_dynamic"):
-+            raise NotImplementedError(
-+                "QuarkW4A16Int4MoEMethod only supports static weight quantization."
-+            )
-+        self.weight_quant = weight_config
++        super().__init__(moe, weight_quant_key, activation_quant_key)
++
 +        self.quant_config = quant_config
-+        self.group_size, self.is_symmetric = parse_w4a16_int4_weight_config(
-+            weight_config
-+        )
++        # group_size is read from the Quark config rather than weight_quant_key:
++        # the int4 QuantKeys only encode group_size 32 or -1, but Quark int4
++        # checkpoints commonly use group_size 128, which the QuantKey cannot
++        # represent. Symmetry is unambiguous, so it comes from the key.
++        self.group_size = parse_w4a16_int4_weight_config(weight_config)[0]
++        self.is_symmetric = weight_quant_key.symmetric
 +        self.bit8_pack_factor = 2
 +        self.pack_reorder = pack_method == "reorder"
-+
-+        if self.is_symmetric:
-+            weight_key = kInt4Static32 if self.group_size == 32 else kInt4Static
-+        else:
-+            weight_key = kInt4Static32Asym if self.group_size == 32 else kInt4StaticAsym
-+        super().__init__(moe)
 +
 +        self.use_wna16_backend = True
 +        self.wna16_backend, self.experts_cls = select_wna16_moe_backend(
 +            config=self.moe,
-+            weight_key=weight_key,
++            weight_key=weight_quant_key,
 +            quant_config=self.quant_config,
 +            may_have_zp=not self.is_symmetric,
 +            may_have_bias=False,
@@ -599,8 +656,8 @@ index d2b286f..974c559 100644
 +
 +
  class QuarkW8A8Fp8MoEMethod(QuarkMoEMethod):
-     def __init__(
-         self,
+     supported_activation_quant_keys = [
+         kFp8StaticTensorSym,
 diff --git a/vllm/model_executor/layers/quantization/quark/schemes/__init__.py b/vllm/model_executor/layers/quantization/quark/schemes/__init__.py
 index 4db1ba3..a5857a7 100644
 --- a/vllm/model_executor/layers/quantization/quark/schemes/__init__.py
@@ -623,10 +680,10 @@ index 4db1ba3..a5857a7 100644
  ]
 diff --git a/vllm/model_executor/layers/quantization/quark/schemes/quark_w4a16_int4.py b/vllm/model_executor/layers/quantization/quark/schemes/quark_w4a16_int4.py
 new file mode 100644
-index 0000000..33248d2
+index 0000000..cded0f8
 --- /dev/null
 +++ b/vllm/model_executor/layers/quantization/quark/schemes/quark_w4a16_int4.py
-@@ -0,0 +1,224 @@
+@@ -0,0 +1,212 @@
 +# SPDX-License-Identifier: Apache-2.0
 +# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 +
@@ -683,28 +740,19 @@ index 0000000..33248d2
 +        pack_method: str,
 +        weight_config: dict[str, Any],
 +    ):
-+        # v0.29.0 port: QuarkScheme is a bare ABC with no __init__ (the
-+        # PR-base call super().__init__(keys) raises TypeError here), so
-+        # store the keys as plain attributes instead.
-+        self.weight_quant_key = weight_quant_key
-+        self.activation_quant_key = activation_quant_key
++        super().__init__(weight_quant_key, activation_quant_key)
 +
-+        if weight_config.get("qscheme", "per_group") != "per_group":
-+            raise NotImplementedError(
-+                "QuarkW4A16Int4 only supports per_group weight "
-+                f"quantization, got {weight_config.get('qscheme')!r}."
-+            )
-+        if weight_config.get("is_dynamic"):
-+            raise NotImplementedError(
-+                "QuarkW4A16Int4 only supports static weight quantization."
-+            )
-+
-+        group_size, is_symmetric = parse_w4a16_int4_weight_config(weight_config)
-+        self.group_size = group_size
++        # group_size is read from the Quark config rather than weight_quant_key:
++        # the int4 QuantKeys only encode group_size 32 or -1, but Quark int4
++        # checkpoints commonly use group_size 128, which the QuantKey cannot
++        # represent. Symmetry is unambiguous, so it comes from the key.
++        self.group_size = parse_w4a16_int4_weight_config(weight_config)[0]
 +        self.pack_factor = 8
 +        self.pack_reorder = pack_method == "reorder"
-+        self.is_symmetric = is_symmetric
-+        self.quant_type = scalar_types.uint4b8 if is_symmetric else scalar_types.uint4
++        self.is_symmetric = weight_quant_key.symmetric
++        self.quant_type = (
++            scalar_types.uint4b8 if self.is_symmetric else scalar_types.uint4
++        )
 +        self.kernel: MPLinearKernel | None = None
 +
 +    @classmethod
@@ -750,9 +798,6 @@ index 0000000..33248d2
 +            act_type=params_dtype,
 +            group_size=group_size,
 +            zero_points=not self.is_symmetric,
-+            # v0.29.0 port: MPLinearLayerConfig gained a required has_g_idx
-+            # field (absent on the PR base). No activation reordering here.
-+            has_g_idx=False,
 +        )
 +        kernel_type = choose_mp_linear_kernel(mp_linear_kernel_config)
 +
@@ -852,11 +897,11 @@ index 0000000..33248d2
 +        assert self.kernel is not None
 +        return self.kernel.apply_weights(layer, x, bias)
 diff --git a/vllm/model_executor/layers/quantization/quark/utils.py b/vllm/model_executor/layers/quantization/quark/utils.py
-index 8f6ce4d..c41df1e 100644
+index 48c9782..ac455e3 100644
 --- a/vllm/model_executor/layers/quantization/quark/utils.py
 +++ b/vllm/model_executor/layers/quantization/quark/utils.py
-@@ -94,6 +94,63 @@ def should_ignore_layer(
-     return should_ignore_layer
+@@ -66,6 +66,63 @@ def should_ignore_layer(
+     return all(shards_ignored)
  
  
 +def parse_w4a16_int4_weight_config(
@@ -916,6 +961,9 @@ index 8f6ce4d..c41df1e 100644
 +    return packed.to(torch.int32)
 +
 +
- def check_equal_or_regex_match(layer_name: str, targets: Iterable[str]) -> bool:
-     """
-     Checks whether a layer_name is exactly equal or a regex match for
+ # utility for tensor dims > 2 cases
+ def quark_quantize_weight_to_mxfp4(w: torch.Tensor):
+     assert w.dtype == torch.bfloat16, (
+-- 
+2.53.0
+

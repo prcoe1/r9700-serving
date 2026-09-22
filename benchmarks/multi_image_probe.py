@@ -71,7 +71,7 @@ def main() -> int:
         payload = {
             "model": MODEL,
             "messages": [{"role": "user", "content": content}],
-            "max_tokens": 2048,
+            "max_tokens": 4096,
             "temperature": 0,
         }
         req = urllib.request.Request(

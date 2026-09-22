@@ -4,11 +4,12 @@ Date: Thu, 18 Sep 2026 00:00:00 +0000
 Subject: [PATCH] Fix scheduling deadlock in _mamba_block_aligned_split with
  large multimodal inputs (#40707)
 
-Version-locked to VLLM_REF=v0.29.0. Upstream PR #40709
-(https://github.com/vllm-project/vllm/pull/40709) open as of 2026-09-18,
+Version-locked to VLLM_REF=v0.30.0 (verified `git apply --check`
+clean on the v0.30.0 tag, 2026-09-22). Upstream PR #40709
+(https://github.com/vllm-project/vllm/pull/40709) open as of 2026-09-22,
 not in any tag. Drop when VLLM_REF contains the fix.
 
-Carried verbatim: applies cleanly on v0.29.0 (the hunk context and
+Carried verbatim: applies cleanly on v0.30.0 (the hunk context and
 request.has_encoder_inputs guard are unchanged from the PR base). When the
 encoder-compute budget caps a multimodal chunk below block_size, the
 block-align floor collapses aligned_end to start (0 new tokens) and the

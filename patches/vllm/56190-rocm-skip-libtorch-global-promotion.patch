@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: OpenCode <opencode@localhost>
+Date: Tue, 22 Sep 2026 00:00:00 +0000
+Subject: [PATCH] [ROCm] Skip libtorch_cpu RTLD_GLOBAL promotion when rocm_sdk
+ is installed
+
+Version-locked to VLLM_REF=v0.30.0 (`git apply --check` clean).
+Upstream #56190 ("[ROCm][Bugfix] Fix profiler in TheRock image", new in
+v0.30.0) preloads libtorch_cpu.so RTLD_GLOBAL at `import vllm` time so
+kineto can advertise itself to rocprofiler-sdk. On this stack (TheRock
+torch 2.13 + `rocm` pip package) that preload is fatal: libtorch_cpu
+statically links LLVM, and _rocm_sdk_core (loaded later via
+torch._rocm_init -> rocm_sdk) registers the same cl::opt options a
+second time -> "Option 'spirv-expand-step' registered more than once" ->
+LLVM ERROR -> abort during `import vllm` (exit 139; the server
+crash-loops before logging anything). Skipping the preload when
+rocm_sdk is present restores v0.29.0 behavior; it costs only the kineto
+GPU-profiling registration, which this stack does not use. Where
+rocm_sdk is absent the upstream fix stays active. Drop this patch when
+a pinned VLLM_REF guards or reverts #56190.
+---
+diff --git a/vllm/env_override.py b/vllm/env_override.py
+--- a/vllm/env_override.py
++++ b/vllm/env_override.py
+@@ -114,6 +114,18 @@ def _maybe_promote_torch_symbols_for_rocm():
+     if _get_torch_version_attr("hip") is None:
+         return
++    # Local: skip the RTLD_GLOBAL preload when rocm_sdk is installed
++    # (TheRock torch + `rocm` pip package). libtorch_cpu.so statically
++    # links LLVM; preloading it globally registers cl::opt options that
++    # _rocm_sdk_core (loaded later via torch._rocm_init -> rocm_sdk)
++    # registers a second time -> "Option 'spirv-expand-step' registered
++    # more than once" -> LLVM ERROR -> abort during `import vllm`
++    # (exit 139, server crash-loops before logging anything). Restores
++    # v0.29.0 behavior; costs only kineto GPU-profiling registration,
++    # which this stack does not use. Upstream #56190 has no fix yet;
++    # drop this hunk if a pinned VLLM_REF guards or reverts it.
++    if importlib.util.find_spec("rocm_sdk") is not None:
++        return
+     try:
+         import ctypes
+         import glob
+

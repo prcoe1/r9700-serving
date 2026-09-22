@@ -8,14 +8,14 @@ live in [`archive/benchmarks/`](archive/benchmarks/); older history in
 
 ## Setup (current)
 
-vLLM 0.29.0 + local patches (see README "Source-build patches"), torch 2.13,
+vLLM 0.30.0 + local patches (see README "Source-build patches"), torch 2.13,
 ROCm 10.0, AITER v0.1.20.post1 unified attention, froggeric chat template
 v22.5, MRV2 runner, `--no-async-scheduling` on MTP profiles. `-tp 2`,
-`--gpu-memory-utilization 0.95`, `GPU_MAX_HW_QUEUES=1`. KV cache is **fp8
-(calibrated) on qwen3.8-27b** (the live default profile) and **bf16 on the
-3.6 profiles** (3.6-27b carries a calibrated fp8 sidecar on disk for opt-in
-via `VLLM_KV_CACHE_DTYPE=fp8`); `--max-num-seqs 2` everywhere (the #35288
-cap); `--max-num-batched-tokens 2048` on qwen3.8-27b (concurrent-ITL A/B,
+`--gpu-memory-utilization 0.95`, `GPU_MAX_HW_QUEUES=1`. KV cache is **bf16
+on qwen3.8-27b** (the live default profile, per 2026-09-21 operator decision;
+block 832 at 128k max-len) and **bf16 on the 3.6 profiles** (3.6-27b carries
+a calibrated fp8 sidecar on disk for opt-in via `VLLM_KV_CACHE_DTYPE=fp8`);
+`--max-num-seqs 2` everywhere (the #35288 cap); `--max-num-batched-tokens 1024` on qwen3.8-27b (concurrent-ITL A/B,
 2026-09-03), `4096` on 35B-A3B (block-size forced).
 
 Single-request numbers are invariant to `--max-num-seqs`; long-context
@@ -26,6 +26,7 @@ concurrency degrades sharply (see the c1-vs-c2 head-to-head in
 
 | file | contents |
 |:-----|:---------|
+| [`benchmarks/2026-09-22_qwen3.8-27b_v0.30.0_bump.md`](benchmarks/2026-09-22_qwen3.8-27b_v0.30.0_bump.md) | **v0.30.0 bump validation** (live): 3 patch rebases + new #56190 import-abort fix, bench pp2048 ~3124 / tg32 ~67 / tg128 ~68 (bf16), prefix-cache still 0%, nan-probe inconclusive/no-hit, thinkoff/tool-truncation/multi-image PASS, conc-ITL choke 17.2x |
 | [`benchmarks/2026-09-19_qwen3.8-27b_stability_depth_conc.md`](benchmarks/2026-09-19_qwen3.8-27b_stability_depth_conc.md) | **release validation** (v0.29.0 + #40709 patch, live): stability 400/400 + 10/10 + 10/10, depth d0–d256K matches 08-27 shape, conc-ITL p50 880 ms / p99 1.38 s, coherence PASS everywhere — no regressions |
 | [`benchmarks/2026-09-19_qwen3.8-27b_40707_multi_image_probe.md`](benchmarks/2026-09-19_qwen3.8-27b_40707_multi_image_probe.md) | #40707 4-large-image probe: PASS on the patched build (1-image limit lifted) |
 | [`benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md`](benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md) | `--max-num-batched-tokens` 8192/4096/2048 A/B: big-prompt prefill stalled the co-decoder 150–200x (ITL p99 up to 9.8 s) at 8192; 2048 → ~1 s ITL, flat big-prompt TTFT, −3.4% pp2048 → **2048 adopted** on qwen3.8-27b |

@@ -77,16 +77,18 @@ host render group gid for `/dev/dri` access — check with `getent group render`
 |:-------------|:--------|
 | ROCm         | 10.0.0 (`rocm/dev-ubuntu-24.04:10.0.0-full`, Python 3.12) |
 | PyTorch      | 2.13.0+rocm10.0.0 (`stable.repo.amd.com/whl-next`, `torch[device-gfx1201]`) |
-| vLLM         | 0.29.0 |
+| vLLM         | 0.30.0 |
 | AITER        | v0.1.20.post1 |
 | Flash Attention | @ 1cc7ff67 (source; official guide uses `flash-attn==2.8.3` wheel) |
 
 ROCm 10.0 is the TheRock 10.0 stream (successor to the 7.9/7.13/7.14 previews); the
 production 7.2.x line lacks RDNA4/`gfx1201` support. AITER `v0.1.20.post1` is the
-`10.0` post-release (ROCm 10 hipcub fix #4883); vLLM is 0.29.0 (186 commits past
-v0.28.1rc0, including the dense `prefix_cache_retention_interval` default
-#55760/#55861 and the GDN decode fix #53877) since `gfx1201` requires source
-builds. Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2.13.0+rocm10.0.0`
+`10.0` post-release (ROCm 10 hipcub fix #4883); vLLM is 0.30.0, carrying the
+hybrid prefix-cache family (#54713, #55450), the draft-backend override
+(#54826), the trailing-block-drop opt-out (#53388), the last-block replay
+implementation (#53945), GDN warmup (#54251), W4A16 packed zero-points
+(#54965) and multimodal prefix-cache worker paths (#54994) since `gfx1201`
+requires source builds. Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2.13.0+rocm10.0.0`
 `torchvision[device-gfx1201]==0.28.0+rocm10.0.0` `torchaudio==2.11.0+rocm10.0.0` via
 `--index-url https://stable.repo.amd.com/rocm/whl-next/` and `flash-attn==2.8.3`
 `amd-aiter==0.1.20.post1` via `--extra-index-url https://rocm.frameworks.amd.com/whl-multi-arch/vllm/`.
@@ -199,22 +201,23 @@ Version-locked patches applied at runtime by read-only bind-mounts in
 `compose.yaml` (no image rebuild needed). Refresh the overlay files when bumping
 the pinned dependency.
 
-- **Tolerate empty `tools` arrays** (`patches/vllm/protocol.py`, pinned to
-  `VLLM_REF` v0.29.0): some clients send `{"tools": [], "tool_choice":
+- **Tolerate empty `tools` arrays** (`patches/vllm/protocol.py`, overlay of
+  upstream at `VLLM_REF` v0.30.0): some clients send `{"tools": [], "tool_choice":
   "none"}`, which upstream rejects with a 400. The overlay treats `tools: []`
   as a no-tools request when `tool_choice` is `"none"`/omitted, while still
   rejecting genuinely invalid combos.
 
 ### Source-build patches (applied at image build time)
 
-Local backports of upstream fixes not in `VLLM_REF` v0.29.0, applied by
+Local backports of upstream fixes not in `VLLM_REF` v0.30.0, applied by
 `Dockerfile.fullbuild` from `patches/vllm/*.patch` (mirrors the aiter patch
 loop). Re-verify each patch applies cleanly on the new ref when bumping
 `VLLM_REF` — and drop any whose fix has since landed (see
 AGENTS.md §4). (#51812/#51837 were carried as patches on v0.27.1, merged
 upstream 2026-08-11, and dropped with the v0.28.0 bump; #53877 was carried on
 v0.28.1rc0 and dropped with the v0.29.0 bump — GDN decode beta FP32 is now
-upstream.)
+upstream; the 47137 content half landed via #47562 and was dropped with the
+v0.30.0 bump.)
 
 - **Honor `drop_eagle_block` in `MambaManager`**
   (`patches/vllm/48375-mamba-drop-eagle-block.patch`,
@@ -223,7 +226,7 @@ upstream.)
   matched page holding recurrent state written over draft positions that
   verification later rejects — silent corruption spread to every later request
   sharing the prefix (#43559, #50188). The fix lowers the cache-hit search
-  ceiling by one page. Version-locked to v0.29.0 (applies cleanly; MambaManager
+  ceiling by one page. Version-locked to v0.30.0 (applies cleanly; MambaManager
   still ignores the flag).
 
 - **Seed align-mode Mamba `state_idx` in Mamba blocks**
@@ -235,7 +238,9 @@ upstream.)
   `cache_config.block_size` (scheduler block, 832/1600/2112 here) instead of
   `MambaSpec.block_size` (7168-scale after page unification), landing in a
   neighbour's row or past the table (IMA in
-  `precopy_mamba_align_fused_kernel`). Version-locked to v0.29.0.
+  `precopy_mamba_align_fused_kernel`). Version-locked to v0.30.0 (re-anchored:
+  v0.30.0 builds `ModelState` in `load_model`, so the bind hook runs after
+  `kv_cache_config` assignment in `initialize_kv_cache`).
 
 - **Fix `_mamba_block_aligned_split` deadlock on 2+ large images**
   (`patches/vllm/40707-mamba-block-aligned-split-deadlock.patch`,
@@ -244,16 +249,17 @@ upstream.)
   and a sub-`block_size` remainder floors to 0 new tokens — the scheduler
   skips the request forever (hang, engine never recovers). The patch keeps
   the unaligned chunk end for multimodal requests in that case (state simply
-  isn't block-cached that step). Version-locked to v0.29.0 (applies cleanly).
+  isn't block-cached that step). Version-locked to v0.30.0 (applies cleanly).
 
 - **Streaming/non-streaming tool-parser parity on truncated tool calls**
   (`patches/vllm/47137-tool-truncation-parity.patch`,
   [issue #47137](https://github.com/vllm-project/vllm/issues/47137);
-  content-leak half fixed upstream by #46875, args half still open as
+  content half fixed upstream by #46875 then #47562 (in v0.30.0 — local hunk
+  dropped on the v0.30.0 rebase), args half still open as
   [#48007](https://github.com/vllm-project/vllm/pull/48007)): without it, a
-  tool call cut short by `max_tokens`/`stop` returns raw markup or dropped
-  (`{}`) arguments non-streaming while streaming clients already received the
-  partial text/args. Adapted from magiccodingman/vllm-radiance
+  tool call cut short by `max_tokens`/`stop` returns dropped (`{}`)
+  arguments non-streaming while streaming clients already received the
+  partial args. Adapted from magiccodingman/vllm-radiance
   (`patch_qwen3_toolparse.py`); engine-parsers only (`qwen3_coder` here).
   Verified live 2026-09-18 (`benchmarks/tool_truncation_probe.py` PASS).
   Drop when a pinned `VLLM_REF` contains the #48007 equivalent.
@@ -269,6 +275,29 @@ upstream.)
   only. Verified live 2026-09-18 (`benchmarks/thinkoff_probe.py` PASS).
   Drop when a pinned `VLLM_REF` derives `thinking_enabled` from the same
   kwargs.
+
+- **Native Quark W4A16 INT4/UINT4 export loading**
+  (`patches/vllm/48606-quark-w4a16.patch`,
+  [#48606](https://github.com/vllm-project/vllm/pull/48606), merged to main
+  2026-09-18 but after the v0.30.0 branch cut — not in v0.30.0): without it
+  vLLM matches no scheme for `quant_method: quark` W4A16 checkpoints such as
+  `amd/Qwen3.8-27B-Quark-AWQ-INT4-W4A16`. Powers the `qwen3.8-27b-awq` trial
+  profile (kernel selects `RDNAHybridW4A16` on gfx1201). Version-locked to
+  v0.30.0 (rebased to mirror the merged upstream: key-tuple dispatch,
+  `init_scheme` weight-config path, keys-based MoE method). Drop when a
+  pinned `VLLM_REF` contains the merge (expected v0.31+), after verifying
+  ROCm/gfx1201 kernel coverage.
+
+- **Skip `libtorch_cpu` RTLD_GLOBAL promotion when `rocm_sdk` is installed**
+  (`patches/vllm/56190-rocm-skip-libtorch-global-promotion.patch`, upstream
+  #56190 new in v0.30.0, no fix yet): the upstream profiler fix preloads
+  `libtorch_cpu.so` globally at `import vllm` time, but the TheRock
+  `libtorch_cpu` statically links LLVM — `_rocm_sdk_core` (loaded later via
+  `torch._rocm_init`) then registers the same `cl::opt` options twice
+  (`Option 'spirv-expand-step' registered more than once` → LLVM ERROR →
+  abort, exit 139, crash-loop before logging). The skip restores v0.29.0
+  behavior where `rocm_sdk` is present and costs only kineto
+  GPU-profiling registration (unused here). Version-locked to v0.30.0.
 
 ### AITER source-build patches (applied at image build time)
 
@@ -398,10 +427,10 @@ stale triage snapshots live in
 
 ## Performance
 
-Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.29.0 +
+Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.30.0 +
 local patches, torch 2.13 (ROCm 10.0), tuned MoE/dense GEMM configs. The
-top Qwen3.8-27B row is the current default stack (**MTP3**, 256K context,
-**fp8 KV**), benched 2026-09-18 on the live image. Since 2026-08-27 the MTP profiles
+top Qwen3.8-27B row is the current default stack (**MTP3**, 128K context,
+**bf16 KV**), benched 2026-09-22 on the live image. Since 2026-08-27 the MTP profiles
 also pass `--no-async-scheduling` (vLLM turns async on by default for MTP,
 which is the open `#51571` accepted-count race + the `#54039`/`#32275` ROCm-CI
 hang combination); re-bench shows decode parity — see
@@ -410,13 +439,17 @@ Full methodology, per-run files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) a
 
 | model                     | MTP (draft #) | KV   | pp2048 t/s | tg32 t/s | tg128 t/s |
 |:--------------------------|:--------------|:-----|-----------:|---------:|----------:|
-| Qwen3.8-27B-FP8 (default, 2026-09-18)³ | **MTP3** | fp8 |  ~3275 |   ~68 |    ~71 |
+| Qwen3.8-27B (default, 2026-09-22)³ | **MTP3** | bf16 |  ~3124 |   ~67 |    ~68 |
+| Qwen3.8-27B-FP8 (2026-09-18, v0.29.0) | **MTP3** | fp8 |  ~3275 |   ~68 |    ~71 |
 | Qwen3.8-27B-FP8 (2026-08-28, pre-v0.29.0) | **MTP3** | fp8 |  ~3160 |   ~62 |    ~61 |
 | Qwen3.8-27B-FP8 (2026-08-25, pre-v0.29.0) | **MTP3** | bf16 |  ~3060 |   ~67 |    ~68 |
 | Qwen3.8-27B-AWQ-INT4 (trial, 2026-09-10)⁴ | **MTP3** | fp8 | ~2130–2310 | ~81–95 | ~85–87 |
 
-² no-async scheduling. ³ vLLM 0.29.0 + all local patches, current live
-profile (fp8 KV, MRV2); coherence PASSED.
+² no-async scheduling. ³ vLLM 0.30.0 + all local patches, current live
+profile (bf16 KV, MRV2, chunk 1024); coherence PASSED. Delta vs the 09-18
+fp8 row is the KV-dtype switch (09-21 operator decision), not a version
+regression — see
+[`benchmarks/2026-09-22_qwen3.8-27b_v0.30.0_bump.md`](benchmarks/2026-09-22_qwen3.8-27b_v0.30.0_bump.md).
 ⁴ AWQ trial profile (`qwen3.8-27b`, backported #48606 loader, RDNAHybrid
 kernel): decode-optimized alternative, not the default — prefill −26%, decode
 +30–50%, weights 10.3 GiB. Full record:

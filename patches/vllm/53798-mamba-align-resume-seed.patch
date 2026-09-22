@@ -4,37 +4,40 @@ Date: Fri, 04 Sep 2026 11:39:22 +0100
 Subject: [PATCH] [Bugfix] Seed align-mode Mamba state_idx in Mamba blocks
  (#53798)
 
-Version-locked to VLLM_REF=v0.29.0. Upstream PR #53798
-(https://github.com/vllm-project/vllm/pull/53798) open as of 2026-09-09,
-not in any tag (v0.29.0, v0.29.0rc6). Drop when VLLM_REF contains the fix.
+Version-locked to VLLM_REF=v0.30.0 (rebased 2026-09-22; `git apply
+--check` clean). Upstream PR #53798
+(https://github.com/vllm-project/vllm/pull/53798) still open, not in any
+tag (v0.29.0, v0.30.0). Drop when VLLM_REF contains the fix. Sibling
+variants #55507/#55601/#55688 also open — upstream unsettled, keep
+carrying this one.
 
-Adapted for v0.29.0: v0.29.0's MambaHybridModelState still seeds
-add_request with cache_config.block_size and lazily resolves Mamba groups
-via get_mamba_groups; this backport adds ModelState.set_kv_cache_config
-no-op hook, makes GPUModelRunner.initialize_kv_cache bind the config before
-any add_request, and refactors MambaHybridModelState to resolve Mamba groups
-once at init and seed add_request with MambaSpec.block_size instead of
-cache_config.block_size (align table is indexed in Mamba blocks; page
-unification can scale it past scheduler block -> wrong column or IMA in
-precopy_mamba_align_fused_kernel). Core runtime fix identical to upstream
-commit 243dfa6 on branch fix-mamba-align-resume-seed.
+v0.30.0 rebase: v0.30.0 moved ModelState construction out of
+initialize_kv_cache into load_model (init_model_state), so the bind hook
+is now called right after `self.kv_cache_config = kv_cache_config` in
+initialize_kv_cache instead of after construction. interface.py and
+mamba_hybrid.py hunks unchanged. Core runtime fix identical to upstream
+commit 243dfa6 on branch fix-mamba-align-resume-seed: seed add_request
+with MambaSpec.block_size instead of cache_config.block_size (align
+table is indexed in Mamba blocks; page unification can scale it past
+scheduler block -> wrong column or IMA in
+precopy_mamba_align_fused_kernel).
 
 Co-authored-by: Claude Fable 5.1 <noreply@anthropic.com>
 ---
 diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
-index 15005338d..ccca131bf 100644
+index b66d552..5ea1ff3 100644
 --- a/vllm/v1/worker/gpu/model_runner.py
 +++ b/vllm/v1/worker/gpu/model_runner.py
-@@ -595,6 +595,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
-             self.vllm_config,
-             self.device,
-         )
+@@ -583,6 +583,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+         self.cp_interleave = self.parallel_config.cp_kv_cache_interleave_size
+         kv_cache_config = deepcopy(kv_cache_config)
+         self.kv_cache_config = kv_cache_config
 +        self.model_state.set_kv_cache_config(self.kv_cache_config)
-         additional_attn_cg_support = self.model_state.get_additional_cg_support()
-         attn_cg_support = attn_cg_support.narrow(*additional_attn_cg_support)
-         # The speculator clears the flag at load time when the checkpoint has
+ 
+         block_table_max_model_len = self.max_model_len
+         if self.is_encoder_decoder:
 diff --git a/vllm/v1/worker/gpu/model_states/interface.py b/vllm/v1/worker/gpu/model_states/interface.py
-index cd1b5b64d..ab5b8333c 100644
+index a5c8d6f..60ac9d5 100644
 --- a/vllm/v1/worker/gpu/model_states/interface.py
 +++ b/vllm/v1/worker/gpu/model_states/interface.py
 @@ -126,6 +126,11 @@ class ModelState(ABC):
@@ -50,7 +53,7 @@ index cd1b5b64d..ab5b8333c 100644
          """Cudagraph support of attention groups this ModelState builds outside
          ``init_attn_backend`` (e.g. encoder-only layers).
 diff --git a/vllm/v1/worker/gpu/model_states/mamba_hybrid.py b/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
-index 9564120f2..7acae2de6 100644
+index 0ac3f2f..171c66e 100644
 --- a/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
 +++ b/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
 @@ -112,30 +112,35 @@ class MambaHybridModelState(DefaultModelState):
@@ -113,7 +116,7 @@ index 9564120f2..7acae2de6 100644
          ctx = self._ensure_align_ctx(kv_cache_config, mamba_group_ids, block_tables)
  
          # The state-advance + pre-copy kernels run every step; they fast-exit per
-@@ -286,7 +291,7 @@ class MambaHybridModelState(DefaultModelState):
+@@ -288,7 +293,7 @@ class MambaHybridModelState(DefaultModelState):
              num_decode_draft_tokens_cpu = torch.from_numpy(num_decode_draft_tokens_np)
  
          if self._align_mode:

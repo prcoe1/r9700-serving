@@ -1,5 +1,5 @@
-# Version-locked to VLLM_REF=v0.29.0 (anchor verified verbatim
-# against the v0.29.0 tag, 2026-09-18; `git apply --check` clean).
+# Version-locked to VLLM_REF=v0.30.0 (anchor verified verbatim
+# against the v0.30.0 tag, 2026-09-22; `git apply --check` clean).
 # Make Qwen3Parser agree with the chat template about whether thinking is
 # on. The froggeric template (chat-templates/qwen.jinja) pre-closes <think>
 # in the PROMPT for reasoning_effort in ('none', 'off') and for
