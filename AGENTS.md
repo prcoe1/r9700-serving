@@ -170,7 +170,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533 54713 55450 48007 57580 58020; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533 54713 55450 48007 57580 58020 50891; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -426,6 +426,17 @@ touches one of:
     GDN-state path, MTP3 + thinking is implicated too — run an MTP
      greedy-equivalence probe (target-only vs MTP3, temperature=0,
      thinking prompt) at that point.
+  - `#50891` (open, added 2026-09-24): AOT compile-cache key ignores
+    `limit_mm_per_prompt` (`ModelConfig.compute_hash()` lists it in
+    `ignored_factors`), so same-model runs with different image caps collide
+    and crash in `profile_run` (`AttributeError: 'NoneType' object has no
+    attribute 'size'`; can also flip attention-backend selection — wrong
+    twice over). Surfaced via dup `#58203` (Qwen3.8-27B-FP8 + images + MTP,
+    NVIDIA/B200). **Not exposed here today**: all qwen3.8-27b runs use
+    image-cap 1 and profile model names differ, so hashes don't collide.
+    Hygiene rule: never alternate image caps / `--language-model-only` for
+    the same model on a shared compile cache without clearing it first.
+    Monitor for a fix (key the cache on the multimodal config).
   - `#55894` (2026-09-08, open): hybrid Mamba + MTP silently corrupts
     requests (0.2–1% of a mixed workload, up to 7% targeted) when a
     request's first decode step is scheduled alongside a long chunked
