@@ -490,6 +490,29 @@ kernel): decode-optimized alternative, not the default — prefill −26%, decod
 +30–50%, weights 10.3 GiB. Full record:
 [`benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`](benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md).
 
+### Profile-following sweeps
+
+Depth and concurrency tests size themselves from the live profile
+(`benchmarks/profile_config.py` reads the same env-file stack compose hands
+the server), so a config change never silently invalidates the test grid:
+
+- `just bench-depth` — depth ladder = powers of two plus a top rung at the
+  largest 1024-aligned depth below `VLLM_MAX_MODEL_LEN − pp − tg − margin`
+  (e.g. `[0 … 65536, 125952]` at 131072); logs to
+  `observability/depth_history.jsonl`.
+- `just bench-conc` — concurrency ladder covers `1..VLLM_MAX_NUM_SEQS`
+  (powers of two plus the max: `[1, 2, 4]` at conc-4, `[1, 2, 4, 8]` at
+  conc-8) over the depth ladder; logs to
+  `observability/conc_history.jsonl`.
+- `benchmarks/conc_itl_probe.py` — the prefill-stall probe fills
+  `max_num_seqs − 1` victim slots plus one big-prefill bully, with the big
+  prompt capped to fit under `VLLM_MAX_MODEL_LEN`.
+
+The dashboard's depth/conc sweep buttons follow the same rules (ladder from
+its `VLLM_MAX_MODEL_LEN` env, concurrency from `VLLM_MAX_NUM_SEQS`). All
+three accept `--dry-run` (sweeps) or explicit overrides (`--depth`,
+`--levels`, probe argv) when a fixed grid is wanted instead.
+
 (The `qwen3.6-27b` / `qwen3.6-35b-a3b` profiles remain switchable via
 `MODEL_PROFILE` but are not bench-tracked — see `BENCHMARKS.md`.)
 

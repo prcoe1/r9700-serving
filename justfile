@@ -251,6 +251,18 @@ bench-json: check
     python3 tools/log_bench.py "$out" "$ts" "$served_name" >> observability/history.jsonl
     echo "Logged to observability/history.jsonl (use \`just bench\` for the md report)"
 
+# Depth sweep sized to the live profile (rungs fit under VLLM_MAX_MODEL_LEN;
+# logs to observability/depth_history.jsonl). Pass through extra args, e.g.
+# `just bench-depth --depth 0 65536 --dry-run`.
+bench-depth *args: check
+    @python3 benchmarks/depth_sweep.py {{args}}
+
+# Concurrency sweep sized to the live profile (levels cover 1..max_num_seqs
+# over the depth ladder; logs to observability/conc_history.jsonl), e.g.
+# `just bench-conc --depth 0 --dry-run`.
+bench-conc *args: check
+    @python3 benchmarks/conc_sweep.py {{args}}
+
 logs-dashboard:
     @{{compose}} --profile dashboard logs -f dashboard
 

@@ -1,23 +1,29 @@
 #!/usr/bin/env python3
 """Concurrent inter-token-latency (ITL) probe: how much does a big prefill
-stall a co-decoding request?
+stall co-decoding requests?
 
-Request A (small prompt, streaming decode) runs first; once A has delivered
+VICTIMS streaming decodes (small prompt each) start together and fill
+`max_num_seqs - 1` server slots; once the first victim has delivered
 `FIRE_AT` token batches, request B (huge prompt of unique random text,
-streaming) is fired in a background thread. The probe records A's
-inter-arrival times in three windows (before B fires, during B's prefill,
-after B completes), B's TTFT and total time, and samples server metrics
-(KV usage, running/waiting) throughout.
+streaming) is fired in a background thread to take the last slot. The probe
+records each victim's inter-arrival times in three windows (before B fires,
+during B's prefill, after B completes), B's TTFT and total time, and samples
+server metrics (KV usage, running/waiting) throughout.
+
+Victim count and prompt caps follow the live profile (`profile_config`):
+victims default to `VLLM_MAX_NUM_SEQS - 1`, the big prompt is capped to fit
+under `VLLM_MAX_MODEL_LEN` with headroom.
 
 MTP note: one streamed batch can carry >1 accepted token, so arrivals are
 token *batches*; tokens/arrival is reported from usage.
 
 Usage:
-    python3 benchmarks/conc_itl_probe.py [model] [big_prompt_tokens] [label]
+    python3 benchmarks/conc_itl_probe.py [model] [big_prompt_tokens] [label] [victims]
 
-Defaults: model=qwen3.8-27b, big_prompt_tokens=131072. Requires a reachable
-vLLM server (default http://localhost:8180, override with VLLM_BASE_URL).
-Runs from the host or inside the container.
+Defaults: model from the live profile, big_prompt_tokens capped to the live
+max-model-len, victims = max_num_seqs - 1. Requires a reachable vLLM server
+(default http://localhost:8180, override with VLLM_BASE_URL). Runs from the
+host or inside the container.
 """
 import json
 import os
@@ -28,15 +34,24 @@ import time
 
 import requests
 
-BASE = os.environ.get("VLLM_BASE_URL", "http://localhost:8180")
-MODEL = sys.argv[1] if len(sys.argv) > 1 else "qwen3.8-27b"
-BIG_TOKENS = int(sys.argv[2]) if len(sys.argv) > 2 else 131072
-LABEL = sys.argv[3] if len(sys.argv) > 3 else f"big={BIG_TOKENS}"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import profile_config as pc  # noqa: E402
 
-A_PROMPT_TOKENS = 16384   # request A's context (rough; ~4 chars/token)
+BASE = os.environ.get("VLLM_BASE_URL", "http://localhost:8180")
+MODEL = sys.argv[1] if len(sys.argv) > 1 else pc.served_name()
+CFG = pc.load_profile()
+MAX_SEQS = pc.max_num_seqs(CFG)
+MAX_LEN = pc.max_model_len(CFG)
+BIG_TOKENS = (int(sys.argv[2]) if len(sys.argv) > 2
+              else pc.fit_prompt(131072, MAX_LEN))
+LABEL = sys.argv[3] if len(sys.argv) > 3 else f"big={BIG_TOKENS}"
+VICTIMS = (int(sys.argv[4]) if len(sys.argv) > 4
+           else max(1, MAX_SEQS - 1))
+
+A_PROMPT_TOKENS = min(16384, pc.fit_prompt(16384, MAX_LEN))  # ~7 chars/token
 A_MAX_TOKENS = 512
 B_MAX_TOKENS = 16
-FIRE_AT = 32              # fire B after A has delivered this many batches
+FIRE_AT = 32              # fire B after a victim delivers this many batches
 METRICS_INTERVAL = 0.5
 
 WORDS = ("the quick brown fox jumps over lazy dog package manager kernel "
@@ -66,15 +81,39 @@ WORDS = ("the quick brown fox jumps over lazy dog package manager kernel "
          "checksum digest hash fingerprint signature verify trust anchor").split()
 
 
-def make_text(n_tokens_approx: int) -> str:
+def make_text_chars(n_chars: int) -> str:
     rng = random.Random()
-    chars_target = n_tokens_approx * 7  # this word list tokenizes ~7 chars/token
     parts, total = [], 0
-    while total < chars_target:
+    while total < n_chars:
         w = rng.choice(WORDS)
         parts.append(w)
         total += len(w) + 1
     return " ".join(parts)
+
+
+def make_text(n_tokens_approx: int, ratio: float = 7.0) -> str:
+    # this word list tokenizes ~7 chars/token; pass the calibrated ratio
+    # once known so near-ceiling prompts don't overshoot max-model-len.
+    return make_text_chars(int(n_tokens_approx * ratio))
+
+
+def calibrate_ratio() -> float:
+    """Measure chars-per-token for the word-list text on the live server
+    with one small request, so the bully prompt lands just under the
+    ceiling instead of 400-ing over it."""
+    sample = make_text_chars(30000)
+    body = {
+        "model": MODEL,
+        "messages": [{"role": "user", "content": sample}],
+        "max_tokens": 1,
+        "temperature": 0,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    r = requests.post(BASE + "/v1/chat/completions", json=body,
+                      timeout=(10, 120))
+    r.raise_for_status()
+    prompt_tokens = r.json()["usage"]["prompt_tokens"]
+    return len(sample) / max(1, prompt_tokens)
 
 
 def chat_stream(body: dict, read_timeout: int):
@@ -128,9 +167,16 @@ def print_window(name, xs):
 
 
 def main() -> None:
-    print(f"probe: model={MODEL} label={LABEL} A~{A_PROMPT_TOKENS}tok "
-          f"stream={A_MAX_TOKENS} B~{BIG_TOKENS}tok fire_at={FIRE_AT}",
+    slots = VICTIMS + 1
+    over = slots - MAX_SEQS
+    print(f"probe: model={MODEL} label={LABEL} victims={VICTIMS} "
+          f"A~{A_PROMPT_TOKENS}tok stream={A_MAX_TOKENS} B~{BIG_TOKENS}tok "
+          f"fire_at={FIRE_AT} slots={slots}/{MAX_SEQS} maxlen={MAX_LEN}",
           flush=True)
+    if over > 0:
+        print(f"probe: WARNING over-subscribes the server by {over} slot(s) "
+              f"(victims+B={slots} > max_num_seqs={MAX_SEQS}) — B may queue",
+              flush=True)
 
     metrics = {"kv": [], "running": [], "waiting": []}
     stop_metrics = threading.Event()
@@ -155,8 +201,16 @@ def main() -> None:
     mthread = threading.Thread(target=sample_metrics, daemon=True)
     mthread.start()
 
-    a_text = make_text(A_PROMPT_TOKENS)
-    b_text = make_text(BIG_TOKENS)
+    try:
+        ratio = calibrate_ratio()
+    except Exception as e:
+        print(f"probe: calibration failed ({e}); using fallback ratio 7.0",
+              flush=True)
+        ratio = 7.0
+    # 0.97 safety: land under the ceiling even if the sample ratio drifts.
+    a_text = make_text(A_PROMPT_TOKENS, ratio * 0.97)
+    b_text = make_text(BIG_TOKENS, ratio * 0.97)
+    print(f"probe: calibrated chars/token={ratio:.2f}", flush=True)
     a_body = {
         "model": MODEL,
         "messages": [{"role": "user", "content":
@@ -186,39 +240,66 @@ def main() -> None:
         except Exception as e:
             b_state["err"] = repr(e)
 
-    a_times = []
-    a_usage = []
-    ra = chat_stream(a_body, read_timeout=600)
+    states = [{"times": [], "usage": [], "done": False, "err": None}
+              for _ in range(VICTIMS)]
+    fire_lock = threading.Lock()
     bthread = None
-    try:
-        for line in ra.iter_lines(decode_unicode=True):
-            if not line or not line.startswith("data: "):
-                continue
-            data = line[6:]
-            if data == "[DONE]":
-                break
-            obj = json.loads(data)
-            if obj.get("usage"):
-                a_usage.append(obj["usage"])
-            choices = obj.get("choices") or []
-            if choices:
-                delta = choices[0].get("delta", {}).get("content")
-                if delta:
-                    a_times.append(time.time())
-                    if bthread is None and len(a_times) >= FIRE_AT:
-                        bthread = threading.Thread(target=run_b)
-                        bthread.start()
-    finally:
-        ra.close()
-        if bthread is not None:
-            bthread.join(timeout=1200)
-        stop_metrics.set()
 
-    if not a_usage:
-        raise SystemExit("no usage returned for A")
-    a_prompt, a_gen = a_usage[-1]["prompt_tokens"], a_usage[-1]["completion_tokens"]
+    def fire_b():
+        nonlocal bthread
+        with fire_lock:
+            if bthread is None and any(len(s["times"]) >= FIRE_AT
+                                       for s in states):
+                bthread = threading.Thread(target=run_b)
+                bthread.start()
+
+    def run_victim(idx):
+        st = states[idx]
+        try:
+            r = chat_stream(a_body, read_timeout=600)
+        except Exception as e:
+            st["err"] = repr(e)
+            return
+        try:
+            for line in r.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                data = line[6:]
+                if data == "[DONE]":
+                    break
+                obj = json.loads(data)
+                if obj.get("usage"):
+                    st["usage"].append(obj["usage"])
+                choices = obj.get("choices") or []
+                if choices:
+                    delta = choices[0].get("delta", {}).get("content")
+                    if delta:
+                        st["times"].append(time.time())
+                        fire_b()
+        except Exception as e:
+            st["err"] = repr(e)
+        finally:
+            r.close()
+            st["done"] = True
+
+    vthreads = [threading.Thread(target=run_victim, args=(i,))
+                for i in range(VICTIMS)]
+    for t in vthreads:
+        t.start()
+    for t in vthreads:
+        t.join(timeout=1200)
+    if bthread is not None:
+        bthread.join(timeout=1200)
+    stop_metrics.set()
+
+    for i, st in enumerate(states):
+        if st["err"] and not st["times"]:
+            raise SystemExit(f"victim {i} failed: {st['err']}")
+        if not st["usage"]:
+            raise SystemExit(f"no usage returned for victim {i}")
     if bthread is None:
-        raise SystemExit(f"B never fired (A delivered {len(a_times)} batches)")
+        got = max(len(s["times"]) for s in states)
+        raise SystemExit(f"B never fired (victims delivered <={got} batches)")
     if "done" not in b_state:
         raise SystemExit(f"B failed: {b_state.get('err', 'unknown')}")
     b_prompt, b_gen = (b_state["usage"][-1]["prompt_tokens"],
@@ -226,26 +307,31 @@ def main() -> None:
 
     fire_t, b_first, b_done = (b_state["fire"], b_state["times"][0],
                                b_state["done"])
-    intervals = [b - a for a, b in zip(a_times, a_times[1:])]
-    w1 = [iv for t, iv in zip(a_times[1:], intervals) if t < fire_t]
-    w2 = [iv for t, iv in zip(a_times[1:], intervals)
-          if fire_t <= t < b_done]
-    w3 = [iv for t, iv in zip(a_times[1:], intervals) if t >= b_done]
-
     b_ttfb = b_first - fire_t
-    print(f"A: prompt={a_prompt}tok gen={a_gen}tok "
-          f"batches={len(a_times)} tokens/batch={a_gen / len(a_times):.2f}",
-          flush=True)
     print(f"B: prompt={b_prompt}tok gen={b_gen}tok "
           f"TTFT={b_ttfb:7.1f}s total={b_done - fire_t:7.1f}s", flush=True)
-    print(f"A inter-arrival (ms per batch):", flush=True)
-    print_window("pre-B", w1)
-    print_window("B-prefill", w2)
-    print_window("post-B", w3)
-    if w1 and w2:
-        choke = pct(w2, 99) / pct(w1, 50)
-        print(f"choke ratio (p99 during / p50 before): {choke:8.1f}x",
-              flush=True)
+    pool_w1, pool_w2 = [], []
+    for i, st in enumerate(states):
+        times = st["times"]
+        a_prompt = st["usage"][-1]["prompt_tokens"]
+        a_gen = st["usage"][-1]["completion_tokens"]
+        intervals = [b - a for a, b in zip(times, times[1:])]
+        w1 = [iv for t, iv in zip(times[1:], intervals) if t < fire_t]
+        w2 = [iv for t, iv in zip(times[1:], intervals)
+              if fire_t <= t < b_done]
+        w3 = [iv for t, iv in zip(times[1:], intervals) if t >= b_done]
+        pool_w1.extend(w1)
+        pool_w2.extend(w2)
+        tpb = a_gen / len(times) if times else float("nan")
+        print(f"victim {i}: prompt={a_prompt}tok gen={a_gen}tok "
+              f"batches={len(times)} tokens/batch={tpb:.2f}", flush=True)
+        print_window(f"v{i} pre-B", w1)
+        print_window(f"v{i} B-prefill", w2)
+        print_window(f"v{i} post-B", w3)
+    if pool_w1 and pool_w2:
+        choke = pct(pool_w2, 99) / pct(pool_w1, 50)
+        print(f"pooled choke ratio (p99 during / p50 before, "
+              f"{VICTIMS} victim(s)): {choke:8.1f}x", flush=True)
     if metrics["kv"]:
         print(f"metrics: max_kv_usage={max(metrics['kv']):.3f} "
               f"max_running={max(metrics['running']):.0f} "

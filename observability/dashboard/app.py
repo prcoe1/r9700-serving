@@ -42,8 +42,39 @@ LOG_CAP = 16000
 # Tails kept for the history record: last N chars of stdout / all stderr tail.
 RAW_CAP = 8000
 STDERR_CAP = 4000
-# Depth sweep (full 0-200K corpus; 256K exceeds 262144 with overhead)
-DEPTHS = [0, 4096, 8192, 16384, 32768, 65536, 128000, 200000]
+# Depth-sweep ladder follows the live VLLM_MAX_MODEL_LEN (the dashboard
+# inherits the same env_file stack as vllm, so this is authoritative):
+# powers of two plus a top rung at the largest 1024-aligned depth below
+# max_len - pp - tg - margin. Legacy 256K-era ladder as fallback.
+LEGACY_DEPTHS = [0, 4096, 8192, 16384, 32768, 65536, 128000, 200000]
+
+
+def _get_max_model_len() -> int | None:
+    v = os.environ.get("VLLM_MAX_MODEL_LEN")
+    try:
+        return max(1, int(v)) if v else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_depths(pp: int = 2048, tg: int = 1024, margin: int = 2048) -> list[int]:
+    max_len = _get_max_model_len()
+    if max_len is None:
+        print("[warn] VLLM_MAX_MODEL_LEN not set; using legacy depth ladder",
+              file=sys.stderr)
+        return list(LEGACY_DEPTHS)
+    cap = max_len - pp - tg - margin
+    if cap < 4096:
+        return [0]
+    cap = (cap // 1024) * 1024
+    ladder = [0]
+    d = 4096
+    while d <= cap:
+        ladder.append(d)
+        d *= 2
+    if cap - ladder[-1] >= 4096:
+        ladder.append(cap)
+    return ladder
 
 app = FastAPI(title="r9700 dashboard")
 
@@ -640,7 +671,7 @@ def _depth_cmd(model: str, tokenizer: str) -> list[str]:
         "--tokenizer", tokenizer,
         "--pp", "2048",
         "--tg", "1024",
-        "--depth", *[str(d) for d in DEPTHS],
+        "--depth", *[str(d) for d in _get_depths()],
         "--runs", "2",
         "--no-cache",
         "--extra-body", '{"chat_template_kwargs":{"enable_thinking":false}}',
@@ -656,7 +687,7 @@ def _conc_cmd(model: str, tokenizer: str) -> list[str]:
         "--tokenizer", tokenizer,
         "--pp", "2048",
         "--tg", "1024",
-        "--depth", *[str(d) for d in DEPTHS],
+        "--depth", *[str(d) for d in _get_depths()],
         "--concurrency", str(_get_max_concurrency()),
         "--runs", "2",
         "--no-cache",
@@ -726,13 +757,13 @@ SWEEPS: dict[str, dict[str, Any]] = {
         "timeout": 3600,
         "cmd": _depth_cmd,
         "normalize": _normalize_depth,
-        "record_extra": lambda model, tokenizer: {"depths": DEPTHS},
+        "record_extra": lambda model, tokenizer: {"depths": _get_depths()},
     },
     "conc": {
         "timeout": 3600,
         "cmd": _conc_cmd,
         "normalize": _normalize_conc,
-        "record_extra": lambda model, tokenizer: {"depths": DEPTHS, "concurrency": _get_max_concurrency()},
+        "record_extra": lambda model, tokenizer: {"depths": _get_depths(), "concurrency": _get_max_concurrency()},
     },
 }
 
