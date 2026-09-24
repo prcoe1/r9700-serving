@@ -297,7 +297,42 @@ v0.30.0 bump.)
   (`Option 'spirv-expand-step' registered more than once` → LLVM ERROR →
   abort, exit 139, crash-loop before logging). The skip restores v0.29.0
   behavior where `rocm_sdk` is present and costs only kineto
-  GPU-profiling registration (unused here). Version-locked to v0.30.0.
+   GPU-profiling registration (unused here). Version-locked to v0.30.0.
+
+- **RDNA4 FlyDSL block-FP8 GEMM** (`patches/vllm/56005-rdna4-fp8-flydsl-gemm.patch`,
+  [#56005](https://github.com/vllm-project/vllm/pull/56005), not in v0.30.0):
+  a vLLM-owned FlyDSL WMMA kernel family (prefill / wave32 / packed-row and
+  split-K small-M variants) replacing the Triton block-scaled FP8 GEMM on
+  gfx1200/gfx1201 for 1x128-activation/128x128-weight OCP-FP8 linears.
+  Requires `flydsl 0.3.4.1` at runtime (pinned as `FLYDSL_VERSION` in
+  `.env`/`.env.example`, installed `--no-deps` in the `Dockerfile.fullbuild`
+  runtime stage; aiter's own 0.3.1 build-time dep is untouched). **Live since 2026-09-24** — server log selects
+  `RDNA4Fp8BlockScaledMMKernel` for `Fp8LinearMethod`. Drop when a pinned
+  `VLLM_REF` contains the merge (and still ships the gfx1201 kernel variants).
+
+- **Native HIP RDNA custom all-reduce** (`patches/vllm/57767-rdna-all-reduce.patch`
+  + `57767-v030-port.patch`,
+  [#57767](https://github.com/vllm-project/vllm/pull/57767), not in v0.30.0):
+  a HIP/C++ custom all-reduce for RDNA (`rdna_custom_all_reduce.cu`, built for
+  gfx1100/1200/1201, exposed as `torch.ops._rdna_custom_ar`) with a
+  `VLLM_ROCM_USE_RDNA_ALL_REDUCE` opt-in. **Compiled but dormant on this
+  hardware since 2026-09-24**: the 2× R9700 exposes no P2P
+  (`can_device_access_peer(0,1) == False`), so with the flag on the
+  communicators fall back to PYNCCL (`no visible P2P access to rank 1`); the
+  env flag stays unset. Re-enabling is one line if P2P ever appears. The
+  port patch adapts the `model_runner.py` hunk to v0.30.0's
+  `make_forward_batch_descriptor` API. Drop when a pinned `VLLM_REF`
+  contains the merge.
+
+- **RDNA4 SplitKV FlyDSL paged decode** (`patches/vllm/55996-rdna4-splitkv.patch`
+  + `55996-v030-port.patch`,
+  [#55996](https://github.com/vllm-project/vllm/pull/55996), not in v0.30.0):
+  a FlyDSL SplitKV paged-attention decode path for the `ROCM_ATTN` backend
+  under `VLLM_ROCM_USE_RDNA4_SPLITKV_FLYDSL`. **Dormant since 2026-09-24**:
+  this stack pins `ROCM_AITER_UNIFIED_ATTN`, whose impl overrides `forward`,
+  so the SplitKV path is unreachable; the flag stays off (default). Carried
+  for a future UA-backend backport. Drop when a pinned `VLLM_REF` contains
+  the merge.
 
 ### AITER source-build patches (applied at image build time)
 

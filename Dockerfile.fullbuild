@@ -217,6 +217,8 @@ RUN --mount=type=cache,target=/root/.cache/ccache \
 
 FROM framework-base AS runtime
 
+ARG FLYDSL_VERSION
+
 # Remove build-only packages to shrink runtime image; keep curl for healthcheck
 RUN apt-get update && apt-get purge -y --autoremove \
         build-essential rustc cargo mold ninja-build ccache \
@@ -227,10 +229,16 @@ COPY --from=aiter-builder /wheels/ /install/
 COPY --from=vllm-builder /wheels/ /install/
 COPY --from=vllm-builder /src/vllm/requirements/ /install/requirements/
 
+# flydsl runtime-only override: aiter v0.1.20.post1 is built against
+# flydsl==0.3.1 (its AOT precompile stage), but the #56005 RDNA4 FP8
+# block-scale FlyDSL GEMM needs the FlyDSL APIs validated at main@65e5d8e,
+# which first shipped in the 0.3.4.1 release. --no-deps: flydsl has no
+# runtime dependencies.
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -m pip install --no-deps /opt/rocm/share/amd_smi \
     && python -m pip install -r /install/requirements/rocm.txt \
     && python -m pip install /install/*.whl \
+    && python -m pip install --no-deps flydsl=="${FLYDSL_VERSION}" \
     && rm -rf /install
 
 ENV FLASH_ATTENTION_TRITON_AMD_ENABLE=TRUE

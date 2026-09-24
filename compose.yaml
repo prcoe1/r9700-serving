@@ -96,6 +96,7 @@ services:
         VLLM_VERSION: ${VLLM_VERSION}
         AITER_REF: ${AITER_REF}
         FLASH_ATTN_REF: ${FLASH_ATTN_REF}
+        FLYDSL_VERSION: ${FLYDSL_VERSION}
     container_name: vllm
     restart: unless-stopped
     ports:

@@ -1,0 +1,2896 @@
+From c2193933ba3d88ab7acb7f0a94419af4961be264 Mon Sep 17 00:00:00 2001
+From: opencode <opencode@localhost>
+Date: Thu, 24 Sep 2026 11:08:29 +0000
+Subject: [PATCH 3/5] [Perf][ROCm] RDNA4 FP8 block-scale FlyDSL GEMM (upstream
+ #56005)
+
+Version-locked to VLLM_REF=v0.30.0 (cherry-picked 2026-09-24; applies
+cleanly, no porting). Upstream PR #56005 (open): 1.786x geomean vs Triton
+(min 1.257x, 18/18 shapes) on Radeon AI PRO R9700 with Qwen3.8-27B-FP8
+shapes, validated against FlyDSL main@65e5d8e (contained in flydsl
+0.3.4.1, the PyPI release used by the image). RDNA4Fp8BlockScaledMMKernel
+is registered before the Aiter/Triton block-FP8 kernels, so it is
+auto-selected on gfx120x for OCP-FP8 1x128/128x128 block-scaled BF16
+layers when flydsl is importable.
+---
+ .../benchmark_rdna4_fp8_block_scaled_mm.py    | 148 +++++
+ tests/kernels/quantization/test_block_fp8.py  | 303 ++++++++-
+ .../model_executor/kernels/linear/__init__.py |   5 +
+ .../kernels/linear/scaled_mm/__init__.py      |   4 +
+ .../scaled_mm/flydsl_kernels/__init__.py      |   2 +
+ .../scaled_mm/flydsl_kernels/gfx12_sync.py    |  24 +
+ .../flydsl_kernels/rdna4_fp8_blockscale.py    | 143 ++++
+ .../rdna4_fp8_blockscale_common.py            |  57 ++
+ .../rdna4_fp8_blockscale_decode_split.py      | 238 +++++++
+ .../rdna4_fp8_blockscale_prefill.py           | 581 ++++++++++++++++
+ .../rdna4_fp8_blockscale_small_m.py           | 452 +++++++++++++
+ .../rdna4_fp8_blockscale_wave32.py            | 625 ++++++++++++++++++
+ .../scaled_mm/flydsl_kernels/runtime.py       |  24 +
+ .../kernels/linear/scaled_mm/rdna4.py         | 114 ++++
+ 14 files changed, 2717 insertions(+), 3 deletions(-)
+ create mode 100644 benchmarks/kernels/benchmark_rdna4_fp8_block_scaled_mm.py
+ create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/__init__.py
+ create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/gfx12_sync.py
+ create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale.py
+ create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_common.py
+ create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_decode_split.py
+ create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_prefill.py
+ create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_small_m.py
+ create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_wave32.py
+ create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/runtime.py
+ create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/rdna4.py
+
+diff --git a/benchmarks/kernels/benchmark_rdna4_fp8_block_scaled_mm.py b/benchmarks/kernels/benchmark_rdna4_fp8_block_scaled_mm.py
+new file mode 100644
+index 0000000..e548db9
+--- /dev/null
++++ b/benchmarks/kernels/benchmark_rdna4_fp8_block_scaled_mm.py
+@@ -0,0 +1,148 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++"""Compare FlyDSL and Triton RDNA4 block-scaled FP8 MM."""
++
++import argparse
++import statistics
++
++import flydsl  # noqa: F401 -- load compiler libraries before PyTorch
++import torch
++
++from vllm.model_executor.kernels.linear.scaled_mm.flydsl_kernels import (
++    rdna4_fp8_blockscale as rdna4_flydsl,
++)
++from vllm.model_executor.layers.quantization.utils.fp8_utils import (
++    w8a8_triton_block_scaled_mm,
++)
++
++rdna4_fp8_block_scaled_mm = rdna4_flydsl.rdna4_fp8_block_scaled_mm
++
++DEFAULT_SHAPES = [
++    (1, 5120, 3072),
++    (2, 5120, 8704),
++    (4, 5120, 3072),
++    (16, 8192, 5120),
++    (17, 5120, 3072),
++    (33, 17408, 5120),
++    (39, 16384, 8192),
++    (48, 17408, 5120),
++    (64, 5120, 3072),
++    (65, 128, 256),
++    (128, 1536, 2048),
++    (128, 1536, 4096),
++    (256, 8192, 5120),
++    (512, 1536, 4096),
++    (523, 5120, 8704),
++    (784, 7168, 5120),
++    (1024, 8192, 5120),
++    (8192, 8192, 28672),
++]
++
++
++def _parse_shape(value: str) -> tuple[int, int, int]:
++    try:
++        shape = tuple(int(item) for item in value.split(","))
++    except ValueError as exc:
++        raise argparse.ArgumentTypeError("shape must be M,N,K") from exc
++    if len(shape) != 3:
++        raise argparse.ArgumentTypeError("shape must be M,N,K")
++    return shape
++
++
++def _inputs(m: int, n: int, k: int):
++    generator = torch.Generator(device="cuda").manual_seed(m * 1_000_003 + n * 101 + k)
++    a = (torch.randn((m, k), device="cuda", generator=generator) * 0.25).to(
++        torch.float8_e4m3fn
++    )
++    weight = (torch.randn((n, k), device="cuda", generator=generator) * 0.25).to(
++        torch.float8_e4m3fn
++    )
++    a_scale = torch.rand(
++        (m, k // 128), device="cuda", generator=generator, dtype=torch.float32
++    )
++    weight_scale = torch.rand(
++        (n // 128, k // 128),
++        device="cuda",
++        generator=generator,
++        dtype=torch.float32,
++    )
++    return a, weight, a_scale, weight_scale
++
++
++def _triton_mm(a, weight, a_scale, weight_scale):
++    return w8a8_triton_block_scaled_mm(
++        a,
++        weight,
++        a_scale,
++        weight_scale,
++        block_size=[128, 128],
++        output_dtype=torch.bfloat16,
++    )
++
++
++def _graph_kernel_ms(fn, calls: int, replays: int) -> float:
++    graph = torch.cuda.CUDAGraph()
++    torch.accelerator.synchronize()
++    with torch.cuda.graph(graph):
++        for _ in range(calls):
++            fn()
++    torch.accelerator.synchronize()
++
++    elapsed = []
++    for _ in range(replays):
++        start = torch.cuda.Event(enable_timing=True)
++        end = torch.cuda.Event(enable_timing=True)
++        start.record()
++        graph.replay()
++        end.record()
++        torch.accelerator.synchronize()
++        elapsed.append(start.elapsed_time(end) / calls)
++    return statistics.median(elapsed)
++
++
++def _tflops(m: int, n: int, k: int, elapsed_ms: float) -> float:
++    return 2.0 * m * n * k / elapsed_ms / 1.0e9
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--shape", action="append", type=_parse_shape)
++    parser.add_argument("--calls", type=int, default=20)
++    parser.add_argument("--replays", type=int, default=9)
++    args = parser.parse_args()
++
++    properties = torch.cuda.get_device_properties(0)
++    arch = getattr(properties, "gcnArchName", "")
++    if not (arch.startswith("gfx1200") or arch.startswith("gfx1201")):
++        raise RuntimeError(f"benchmark requires gfx1200 or gfx1201, got {arch!r}")
++    print(f"device={properties.name},arch={arch}")
++    print(
++        "M,N,K,max_abs,mean_abs,flydsl_ms,triton_ms,triton_over_flydsl,"
++        "flydsl_tflops,triton_tflops"
++    )
++    for m, n, k in args.shape or DEFAULT_SHAPES:
++        inputs = _inputs(m, n, k)
++        fly_out = rdna4_fp8_block_scaled_mm(*inputs)
++        triton_out = _triton_mm(*inputs)
++        torch.accelerator.synchronize()
++        torch.testing.assert_close(fly_out, triton_out, atol=0.0625, rtol=0.02)
++        error = (fly_out.float() - triton_out.float()).abs()
++
++        fly_ms = _graph_kernel_ms(
++            lambda inputs=inputs: rdna4_fp8_block_scaled_mm(*inputs),
++            args.calls,
++            args.replays,
++        )
++        triton_ms = _graph_kernel_ms(
++            lambda inputs=inputs: _triton_mm(*inputs), args.calls, args.replays
++        )
++        print(
++            f"{m},{n},{k},{error.max().item():.6f},"
++            f"{error.mean().item():.6f},{fly_ms:.6f},{triton_ms:.6f},"
++            f"{triton_ms / fly_ms:.6f},{_tflops(m, n, k, fly_ms):.3f},"
++            f"{_tflops(m, n, k, triton_ms):.3f}"
++        )
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/kernels/quantization/test_block_fp8.py b/tests/kernels/quantization/test_block_fp8.py
+index d02527a..d7b899e 100644
+--- a/tests/kernels/quantization/test_block_fp8.py
++++ b/tests/kernels/quantization/test_block_fp8.py
+@@ -19,6 +19,9 @@ from vllm.model_executor.kernels.linear.scaled_mm.b12x import (
+     _run_b12x_fp8_block_scaled_mm,
+ )
+ from vllm.model_executor.kernels.linear.scaled_mm.cutlass import cutlass_scaled_mm
++from vllm.model_executor.kernels.linear.scaled_mm.rdna4 import (
++    RDNA4Fp8BlockScaledMMKernel,
++)
+ from vllm.model_executor.layers.quantization.utils.fp8_utils import (
+     per_token_group_quant_fp8,
+     w8a8_triton_block_scaled_mm,
+@@ -305,9 +308,10 @@ def test_w8a8_block_fp8_deep_gemm_matmul(M, N, K, block_size, out_dtype, seed):
+ 
+     out = torch.zeros((M, N), device="cuda", dtype=out_dtype)
+ 
+-    assert As_fp8.shape == (M, (K + 127) // 128), (
+-        f"{As_fp8.shape} != {(M, (K + 127) // 128)}"
+-    )
++    assert As_fp8.shape == (
++        M,
++        (K + 127) // 128,
++    ), f"{As_fp8.shape} != {(M, (K + 127) // 128)}"
+ 
+     fp8_gemm_nt((A_fp8, As_fp8), (B_fp8, Bs_fp8), out)
+ 
+@@ -415,3 +419,296 @@ def test_w8a8_block_fp8_b12x_matmul(M, N, K):
+     # ordering can flap an output between adjacent BF16 values one ULP apart.
+     assert rel_diff < 0.003
+     assert cosine >= 0.99999
++
++
++@pytest.mark.parametrize(
++    "m,n,k",
++    [
++        (1, 128, 128),
++        (2, 128, 128),
++        (4, 128, 256),
++        (16, 128, 384),
++        (17, 5120, 3072),
++        (33, 17408, 5120),
++        (39, 16384, 8192),
++        (48, 17408, 5120),
++        (64, 5120, 3072),
++        (65, 128, 256),
++        (72, 128, 256),
++        (129, 128, 256),
++        (249, 128, 256),
++        (256, 8192, 5120),
++        (523, 5120, 8704),
++        (784, 7168, 5120),
++        (1024, 8192, 5120),
++    ],
++)
++@torch.inference_mode()
++def test_rdna4_block_fp8_flydsl_matches_triton(m, n, k):
++    supported, reason = RDNA4Fp8BlockScaledMMKernel.is_supported()
++    if not supported:
++        pytest.skip(reason)
++
++    generator = torch.Generator(device="cuda").manual_seed(m + k)
++    a = (torch.randn((m, k), device="cuda", generator=generator) * 0.25).to(
++        torch.float8_e4m3fn
++    )
++    weight = (torch.randn((n, k), device="cuda", generator=generator) * 0.25).to(
++        torch.float8_e4m3fn
++    )
++    a_scale = (
++        torch.rand((m, k // 128), device="cuda", generator=generator) * 0.05 + 0.001
++    )
++    weight_scale = (
++        torch.rand((n // 128, k // 128), device="cuda", generator=generator) * 0.05
++        + 0.001
++    )
++
++    reference = w8a8_triton_block_scaled_mm(
++        a, weight, a_scale, weight_scale, [128, 128], torch.bfloat16
++    )
++    output = torch.ops.vllm.rdna4_fp8_block_scaled_mm(a, weight, a_scale, weight_scale)
++    torch.testing.assert_close(output, reference, rtol=0.01, atol=0.01)
++
++
++@pytest.mark.parametrize(
++    "m,n,k",
++    [
++        (2, 2560, 1280),
++        (1, 12288, 384),
++        (16, 12160, 640),
++        (16, 12288, 640),
++        (17, 4096, 1280),
++        (24, 4224, 640),
++        (31, 8192, 3072),
++        (32, 1792, 1280),
++        (39, 16384, 8192),
++        (48, 5376, 3840),
++        (64, 384, 384),
++        (65, 512, 1024),
++        (65, 1024, 1280),
++        (129, 768, 3840),
++        (256, 384, 1280),
++        (257, 1024, 1280),
++        (129, 1152, 1024),
++        (129, 3072, 512),
++        (129, 5376, 640),
++        # Full-B-prefetch K boundary and odd rotated K-block count.
++        (129, 2176, 896),
++        (129, 2176, 1024),
++        (129, 2176, 1152),
++        (513, 3072, 512),
++        (1025, 384, 1280),
++        (255, 1024, 512),
++        (256, 256, 1024),
++        (256, 512, 4096),
++        (256, 512, 4224),
++        (127, 1024, 1152),
++        (65, 2048, 128),
++        (512, 3072, 512),
++        (512, 3072, 640),
++        (32, 5120, 128),
++        (33, 5120, 640),
++        # Both M-tile sizes at the inclusive 64MiB boundary and above it.
++        (32, 8192, 8192),
++        (33, 8192, 8192),
++        (32, 8320, 8192),
++        (33, 8320, 8192),
++        # Split-K ownership and CTA-count boundaries, including rotation-free M.
++        (256, 1024, 2816),
++        (256, 1024, 3072),
++        (257, 1024, 3072),
++        (65, 2048, 3072),
++        (65, 2176, 3072),
++        (1024, 256, 2816),
++        (1024, 256, 3072),
++        (1025, 256, 3072),
++        # Wave32 CU tiles: 64-column scale ownership, split K and LDS lookahead.
++        (128, 1536, 2048),
++        (128, 1536, 4096),
++        (512, 1536, 4096),
++        (4097, 4096, 384),
++    ],
++)
++@torch.inference_mode()
++def test_rdna4_block_fp8_rotated_k_graph_replay(m, n, k):
++    """Every rotated K block must use current scales on each graph replay."""
++    supported, reason = RDNA4Fp8BlockScaledMMKernel.is_supported()
++    if not supported:
++        pytest.skip(reason)
++
++    generator = torch.Generator(device="cuda").manual_seed(934)
++    a = (torch.randn((m, k), device="cuda", generator=generator) * 0.25).to(
++        torch.float8_e4m3fn
++    )
++    weight = (torch.randn((n, k), device="cuda", generator=generator) * 0.25).to(
++        torch.float8_e4m3fn
++    )
++    a_scale = torch.ones((m, k // 128), device="cuda", dtype=torch.float32)
++    weight_scale = torch.ones((n // 128, k // 128), device="cuda", dtype=torch.float32)
++    for _ in range(2):
++        torch.ops.vllm.rdna4_fp8_block_scaled_mm(a, weight, a_scale, weight_scale)
++    torch.accelerator.synchronize()
++    graph = torch.cuda.CUDAGraph()
++    with torch.cuda.graph(graph):
++        output = torch.ops.vllm.rdna4_fp8_block_scaled_mm(
++            a, weight, a_scale, weight_scale
++        )
++
++    scale_blocks = k // 128
++    for kb in dict.fromkeys(
++        (0, min(1, scale_blocks - 1), scale_blocks // 2, scale_blocks - 1)
++    ):
++        a_scale.zero_()
++        a_scale[:, kb] = 1.0
++        weight_scale.fill_(0.5)
++        output.fill_(float("nan"))
++        graph.replay()
++        reference = (
++            a[:, kb * 128 : (kb + 1) * 128].float()
++            @ weight[:, kb * 128 : (kb + 1) * 128].float().t()
++        ) * 0.5
++        torch.testing.assert_close(
++            output, reference.to(torch.bfloat16), rtol=0.01, atol=0.0005
++        )
++
++
++@pytest.mark.parametrize(
++    "m,n,k,padding",
++    [
++        (1, 384, 384, 128),
++        (3, 12160, 384, 128),
++        (15, 12288, 640, 256),
++        (17, 4096, 640, 128),
++        (24, 4224, 1280, 256),
++        (31, 1792, 1280, 128),
++        (31, 8192, 384, 128),
++        (33, 5120, 3072, 256),
++        (49, 5376, 3840, 128),
++        (63, 3584, 5120, 256),
++        (65, 384, 384, 128),
++        (65, 1024, 512, 128),
++        (96, 1024, 1280, 128),
++        (129, 768, 1152, 128),
++        (129, 768, 768, 128),
++        (255, 384, 5376, 128),
++        (127, 1792, 1280, 128),
++        (129, 1024, 1024, 128),
++        (255, 256, 1024, 256),
++        (257, 128, 1024, 128),
++        (257, 5376, 3840, 128),
++        (129, 5376, 1280, 128),
++        (512, 10752, 5376, 128),
++        (1025, 384, 640, 128),
++        (255, 512, 4096, 128),
++        (255, 512, 4224, 128),
++        (127, 1024, 1152, 256),
++        (127, 384, 128, 4),
++        (512, 3072, 512, 128),
++        (513, 3072, 512, 128),
++        (129, 5376, 640, 4),
++        (129, 2176, 1152, 4),
++        (127, 1536, 4096, 4),
++        (513, 1536, 4224, 128),
++        (4097, 4096, 384, 4),
++    ],
++)
++@torch.inference_mode()
++def test_rdna4_block_fp8_ragged_routes_with_padded_weight_rows(m, n, k, padding):
++    """Routing must preserve actual weight strides and partial M-tile masks."""
++    supported, reason = RDNA4Fp8BlockScaledMMKernel.is_supported()
++    if not supported:
++        pytest.skip(reason)
++
++    generator = torch.Generator(device="cuda").manual_seed(m + n + k)
++    a = (torch.randn((m, k), device="cuda", generator=generator) * 0.25).to(
++        torch.float8_e4m3fn
++    )
++    backing = (
++        torch.randn((n, k + padding), device="cuda", generator=generator) * 0.25
++    ).to(torch.float8_e4m3fn)
++    weight = backing[:, :k]
++    a_scale = torch.rand((m, k // 128), device="cuda", generator=generator)
++    weight_scale = torch.rand((n // 128, k // 128), device="cuda", generator=generator)
++    reference = w8a8_triton_block_scaled_mm(
++        a, weight, a_scale, weight_scale, [128, 128], torch.bfloat16
++    )
++    output = torch.ops.vllm.rdna4_fp8_block_scaled_mm(a, weight, a_scale, weight_scale)
++    torch.testing.assert_close(output, reference, rtol=0.02, atol=0.0625)
++
++
++@pytest.mark.parametrize("row_stride", [0, 124, 129])
++@torch.inference_mode()
++def test_rdna4_block_fp8_rejects_unsupported_weight_row_strides(row_stride):
++    """Overlapping or unaligned weight rows must fail before kernel execution."""
++    supported, reason = RDNA4Fp8BlockScaledMMKernel.is_supported()
++    if not supported:
++        pytest.skip(reason)
++
++    m, n, k = 65, 128, 128
++    a = torch.empty((m, k), device="cuda", dtype=torch.float8_e4m3fn)
++    backing = torch.empty(
++        (n - 1) * row_stride + k, device="cuda", dtype=torch.float8_e4m3fn
++    )
++    weight = backing.as_strided((n, k), (row_stride, 1))
++    a_scale = torch.ones((m, 1), device="cuda", dtype=torch.float32)
++    weight_scale = torch.ones((1, 1), device="cuda", dtype=torch.float32)
++    with pytest.raises(
++        ValueError, match="row stride must be at least K and divisible by 4"
++    ):
++        torch.ops.vllm.rdna4_fp8_block_scaled_mm(a, weight, a_scale, weight_scale)
++
++
++@pytest.mark.parametrize(
++    "m,n,k,row_stride,accepted",
++    [
++        pytest.param(8388607, 128, 512, 512, True, id="a-below-4gib"),
++        pytest.param(8388608, 128, 512, 512, False, id="a-at-4gib"),
++        pytest.param(8388609, 128, 512, 512, False, id="a-above-4gib"),
++        pytest.param(1, 128, 128, 33554428, True, id="weight-below-4gib"),
++        pytest.param(1, 128, 128, 33554432, False, id="weight-at-4gib"),
++        pytest.param(1, 128, 128, 33554436, False, id="weight-above-4gib"),
++        pytest.param(65535, 32768, 128, 128, True, id="output-below-4gib"),
++        pytest.param(65536, 32768, 128, 128, False, id="output-at-4gib"),
++        pytest.param(65537, 32768, 128, 128, False, id="output-above-4gib"),
++        pytest.param(65, 128, 128, 132, True, id="weight-padding4"),
++        pytest.param(65, 128, 128, 148, True, id="weight-padding20"),
++    ],
++)
++def test_rdna4_block_fp8_buffer_byte_span_contract(
++    monkeypatch, m, n, k, row_stride, accepted
++):
++    """Reject descriptor wraparound without allocating multi-GiB tensors."""
++    pytest.importorskip("flydsl")
++    from vllm.model_executor.kernels.linear.scaled_mm.flydsl_kernels import (
++        rdna4_fp8_blockscale,
++    )
++
++    monkeypatch.setattr(
++        torch.cuda,
++        "get_device_properties",
++        lambda device: types.SimpleNamespace(gcnArchName="gfx1201"),
++    )
++
++    def metadata(shape, dtype, stride=None):
++        strides = stride or (shape[1], 1)
++        return types.SimpleNamespace(
++            shape=shape,
++            ndim=2,
++            dtype=dtype,
++            device=torch.device("cuda:0"),
++            is_contiguous=lambda: strides == (shape[1], 1),
++            stride=lambda dim: strides[dim],
++        )
++
++    a = metadata((m, k), torch.float8_e4m3fn)
++    weight = metadata((n, k), torch.float8_e4m3fn, (row_stride, 1))
++    a_scale = metadata((m, k // 128), torch.float32)
++    weight_scale = metadata((n // 128, k // 128), torch.float32)
++    if accepted:
++        assert rdna4_fp8_blockscale.validate_tensors(
++            a, weight, a_scale, weight_scale
++        ) == (m, n, k)
++    else:
++        with pytest.raises(ValueError, match="smaller than 4 GiB"):
++            rdna4_fp8_blockscale.validate_tensors(a, weight, a_scale, weight_scale)
+diff --git a/vllm/model_executor/kernels/linear/__init__.py b/vllm/model_executor/kernels/linear/__init__.py
+index d3c41f9..37356b3 100644
+--- a/vllm/model_executor/kernels/linear/__init__.py
++++ b/vllm/model_executor/kernels/linear/__init__.py
+@@ -214,6 +214,9 @@ from vllm.model_executor.kernels.linear.scaled_mm.pytorch import (
+     PerTensorTorchFP8ScaledMMLinearKernel,
+     RowWiseTorchFP8ScaledMMLinearKernel,
+ )
++from vllm.model_executor.kernels.linear.scaled_mm.rdna4 import (
++    RDNA4Fp8BlockScaledMMKernel,
++)
+ from vllm.model_executor.kernels.linear.scaled_mm.rocm import (
+     ROCmFP8ScaledMMLinearKernel,
+ )
+@@ -465,6 +468,7 @@ _POSSIBLE_FP8_BLOCK_KERNELS: dict[
+         BlockWiseTorchFP8ScaledMMLinearKernel,
+     ],
+     PlatformEnum.ROCM: [
++        RDNA4Fp8BlockScaledMMKernel,
+         AiterPreshuffledFp8BlockScaledMMKernel,
+         AiterFp8BlockScaledMMKernel,
+         TritonFp8BlockScaledMMKernel,
+@@ -1263,6 +1267,7 @@ __all__ = [
+     "PerTensorTorchFP8ScaledMMLinearKernel",
+     "RowWiseTorchFP8ScaledMMLinearKernel",
+     "ROCmFP8ScaledMMLinearKernel",
++    "RDNA4Fp8BlockScaledMMKernel",
+     "TritonInt8ScaledMMLinearKernel",
+     "ZentorchInt8ScaledMMLinearKernel",
+     "ZentorchWNA16LinearKernel",
+diff --git a/vllm/model_executor/kernels/linear/scaled_mm/__init__.py b/vllm/model_executor/kernels/linear/scaled_mm/__init__.py
+index 39f9abd..4ef7e31 100644
+--- a/vllm/model_executor/kernels/linear/scaled_mm/__init__.py
++++ b/vllm/model_executor/kernels/linear/scaled_mm/__init__.py
+@@ -26,6 +26,9 @@ from vllm.model_executor.kernels.linear.scaled_mm.pytorch import (
+     PerTensorTorchFP8ScaledMMLinearKernel,
+     RowWiseTorchFP8ScaledMMLinearKernel,
+ )
++from vllm.model_executor.kernels.linear.scaled_mm.rdna4 import (
++    RDNA4Fp8BlockScaledMMKernel,
++)
+ from vllm.model_executor.kernels.linear.scaled_mm.rocm import (
+     ROCmFP8ScaledMMLinearKernel,
+ )
+@@ -62,6 +65,7 @@ __all__ = [
+     "ChannelWiseTorchFP8ScaledMMLinearKernel",
+     "PerTensorTorchFP8ScaledMMLinearKernel",
+     "RowWiseTorchFP8ScaledMMLinearKernel",
++    "RDNA4Fp8BlockScaledMMKernel",
+     "ROCmFP8ScaledMMLinearKernel",
+     "TritonInt8ScaledMMLinearKernel",
+     "ZentorchInt8ScaledMMLinearKernel",
+diff --git a/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/__init__.py b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/__init__.py
+new file mode 100644
+index 0000000..208f01a
+--- /dev/null
++++ b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/__init__.py
+@@ -0,0 +1,2 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+diff --git a/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/gfx12_sync.py b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/gfx12_sync.py
+new file mode 100644
+index 0000000..cf059a8
+--- /dev/null
++++ b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/gfx12_sync.py
+@@ -0,0 +1,24 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++"""Fine-grained LDS synchronization helpers for gfx12+ kernels."""
++
++from flydsl.expr import rocdl
++
++WORKGROUP_BARRIER_ID = -1
++
++
++def lds_wait(outstanding=0):
++    """Wait until no more than ``outstanding`` DS operations remain."""
++    rocdl.s_wait_dscnt(outstanding)
++
++
++def lds_fence_signal(outstanding=0):
++    """Make this wave's required LDS writes visible, then signal peers."""
++    lds_wait(outstanding)
++    rocdl.s_barrier_signal(WORKGROUP_BARRIER_ID)
++
++
++def lds_fence_wait():
++    """Wait until every wave has signaled the matching LDS fence."""
++    rocdl.s_barrier_wait(WORKGROUP_BARRIER_ID)
+diff --git a/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale.py b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale.py
+new file mode 100644
+index 0000000..f0b256a
+--- /dev/null
++++ b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale.py
+@@ -0,0 +1,143 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++"""Public router for the complete RDNA4 block-scaled FP8 GEMM family."""
++
++import torch
++
++from .rdna4_fp8_blockscale_common import SCALE_K
++from .rdna4_fp8_blockscale_prefill import (
++    PrefillConfig,
++    _get_prefill_module,
++)
++from .rdna4_fp8_blockscale_small_m import _run_small_m, _use_tiled_decode_split
++from .rdna4_fp8_blockscale_wave32 import (
++    Wave32Config,
++    _get_wave32_module,
++    select_wave32_config,
++)
++from .runtime import run_compiled
++
++
++def validate_tensors(
++    a: torch.Tensor,
++    weight: torch.Tensor,
++    a_scale: torch.Tensor,
++    weight_scale: torch.Tensor,
++) -> tuple[int, int, int]:
++    """Validate the tensor contract shared by every RDNA4 implementation."""
++    tensors = (a, weight, a_scale, weight_scale)
++    if any(t.device.type != "cuda" for t in tensors):
++        raise ValueError("RDNA4 block-FP8 inputs must be on the GPU")
++    if any(t.ndim != 2 for t in tensors):
++        raise ValueError("RDNA4 block-FP8 inputs must be rank two")
++    if a.dtype != torch.float8_e4m3fn or weight.dtype != torch.float8_e4m3fn:
++        raise TypeError("RDNA4 block-FP8 operands must use torch.float8_e4m3fn")
++    if a_scale.dtype != torch.float32 or weight_scale.dtype != torch.float32:
++        raise TypeError("RDNA4 block-FP8 scales must use torch.float32")
++    if any(t.device != a.device for t in tensors):
++        raise ValueError("RDNA4 block-FP8 inputs must share a device")
++    arch = getattr(torch.cuda.get_device_properties(a.device), "gcnArchName", "")
++    if not (arch.startswith("gfx1200") or arch.startswith("gfx1201")):
++        raise ValueError(
++            f"RDNA4 block-FP8 route requires gfx1200 or gfx1201, got {arch!r}"
++        )
++
++    m, k = a.shape
++    n, weight_k = weight.shape
++    if m <= 0:
++        raise ValueError(f"RDNA4 block-FP8 requires positive M, got {m}")
++    if n <= 0 or n % SCALE_K:
++        raise ValueError(
++            f"RDNA4 block-FP8 requires positive N divisible by 128, got {n}"
++        )
++    if k <= 0 or k % SCALE_K:
++        raise ValueError(
++            f"RDNA4 block-FP8 requires positive K divisible by 128, got {k}"
++        )
++    if weight_k != k:
++        raise ValueError(f"weight K mismatch: A has K={k}, weight has K={weight_k}")
++    if (
++        not a.is_contiguous()
++        or not a_scale.is_contiguous()
++        or not weight_scale.is_contiguous()
++    ):
++        raise ValueError("A and both scale tensors must be contiguous")
++    if weight.stride(1) != 1:
++        raise ValueError("weight must have contiguous K rows (weight.stride(1) == 1)")
++    if weight.stride(0) < k or weight.stride(0) % 4:
++        raise ValueError("weight row stride must be at least K and divisible by 4")
++    if tuple(a_scale.shape) != (m, k // SCALE_K):
++        raise ValueError(
++            f"activation scale shape must be {(m, k // SCALE_K)}, "
++            f"got {tuple(a_scale.shape)}"
++        )
++    if tuple(weight_scale.shape) != (n // SCALE_K, k // SCALE_K):
++        raise ValueError(
++            f"weight scale shape must be {(n // SCALE_K, k // SCALE_K)}, "
++            f"got {tuple(weight_scale.shape)}"
++        )
++    # Raw-buffer descriptors hold a 32-bit byte count; scale spans are smaller.
++    if max(m * k, n * weight.stride(0), 2 * m * n) >= 1 << 32:
++        raise ValueError("RDNA4 block-FP8 buffer spans must be smaller than 4 GiB")
++    return m, n, k
++
++
++def rdna4_fp8_block_scaled_mm(
++    a: torch.Tensor,
++    weight: torch.Tensor,
++    a_scale: torch.Tensor,
++    weight_scale: torch.Tensor,
++) -> torch.Tensor:
++    """Run the complete RDNA4 block-scaled FP8 stack for any positive M."""
++    m, n, k = validate_tensors(a, weight, a_scale, weight_scale)
++    out = torch.empty((m, n), dtype=torch.bfloat16, device=a.device)
++    stream = torch.cuda.current_stream(a.device)
++    config: PrefillConfig | Wave32Config
++    if m <= 16 and n >= 12288:
++        config = PrefillConfig(32, 128, 1, 2, 4, k_rotate=2)
++        module = _get_prefill_module(n, k, weight.stride(0), config)
++        run_compiled(module, a, weight, a_scale, weight_scale, out, m, stream)
++        return out
++    if 17 <= m <= 64 and n > 4096:
++        # Reuse weights across the short-prefill rows and stagger K traversal
++        # across N tiles. Runtime M avoids one compiled kernel per token count.
++        if n * k <= 64 * 1024 * 1024:
++            config = Wave32Config(
++                tile_m=32 if m <= 32 else 64,
++                group_m=1,
++                a_prefetch=2,
++                b_prefetch=2,
++                k_rotate=2,
++                reg_m=1 if m <= 32 else 2,
++            )
++            module = _get_wave32_module(n, k, weight.stride(0), config)
++        else:
++            config = PrefillConfig(32 if m <= 32 else 64, 128, 1, 2, 2, k_rotate=2)
++            module = _get_prefill_module(n, k, weight.stride(0), config)
++        run_compiled(module, a, weight, a_scale, weight_scale, out, m, stream)
++        return out
++    if m <= 64 or _use_tiled_decode_split(m, n, k):
++        return _run_small_m(a, weight, a_scale, weight_scale, out, stream, m, n, k)
++
++    if m <= 512 and k <= 512:
++        config = Wave32Config(
++            tile_m=64,
++            group_m=8,
++            a_prefetch=2,
++            b_prefetch=2,
++            k_rotate=2,
++        )
++        module = _get_wave32_module(n, k, weight.stride(0), config)
++        run_compiled(module, a, weight, a_scale, weight_scale, out, m, stream)
++        return out
++
++    config = select_wave32_config(m, n, k)
++    module = _get_wave32_module(n, k, weight.stride(0), config)
++    run_compiled(module, a, weight, a_scale, weight_scale, out, m, stream)
++    return out
++
++
++__all__ = [
++    "rdna4_fp8_block_scaled_mm",
++]
+diff --git a/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_common.py b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_common.py
+new file mode 100644
+index 0000000..8b4c20b
+--- /dev/null
++++ b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_common.py
+@@ -0,0 +1,57 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++"""Shared host validation and gfx120x helpers for block-scaled FP8 GEMM."""
++
++import flydsl.expr as fx
++from flydsl.expr.typing import Vector as Vec
++
++WMMA_M = 16
++WMMA_N = 16
++WMMA_K = 16
++SCALE_K = 128
++WAVE_SIZE = 32
++
++
++def _make_buffer(tensor, elem_ty, width: int, num_records_bytes):
++    """Build a flat raw-buffer view addressable by an element offset."""
++    alignment = max(1, elem_ty.width * width // 8)
++    ptr_ty = fx.PointerType.get(elem_ty.ir_type, fx.AddressSpace.Global, alignment)
++    base = fx.inttoptr(ptr_ty, fx.Int64(fx.ptrtoint(fx.get_iter(tensor))))
++    view = fx.Tensor(fx.make_view(base, fx.make_layout((width, 1), (1, 1))))
++    return fx.rocdl.make_buffer_tensor(
++        view,
++        max_size=False,
++        num_records_bytes=num_records_bytes,
++    )
++
++
++def _load_f32(buffer, index):
++    atom = fx.make_copy_atom(fx.rocdl.BufferCopy32b(), fx.Float32)
++    fragment = fx.make_rmem_tensor(1, fx.Float32)
++    fx.copy(atom, fx.slice(buffer, (None, index)), fragment)
++    return Vec(fragment.load())[0]
++
++
++def _load_fp8_fragment_buffer(buffer, index, fragment):
++    atom = fx.make_copy_atom(fx.rocdl.BufferCopy64b(), fx.Float8E4M3FN)
++    fx.copy(atom, fx.slice(buffer, (None, index)), fragment)
++
++
++def _load_fp8_fragment_ptr(ptr, index, fragment):
++    packed = fx.ptr_load(ptr + index, result_type=fx.Vector.make_type(8, fx.Uint8))
++    fragment.store(Vec(packed.bitcast(fx.Float8E4M3FN)))
++
++
++def _store_bf16(buffer, index, value):
++    atom = fx.make_copy_atom(fx.rocdl.BufferCopy16b(), fx.BFloat16)
++    fragment = fx.make_rmem_tensor(1, fx.BFloat16)
++    fragment.store(Vec.from_elements([value], fx.BFloat16))
++    fx.copy(atom, fragment, fx.slice(buffer, (None, index)))
++
++
++def _f32_to_bf16_rne(value):
++    """Round FP32 to BF16 without gfx120x NaN-classification lowering."""
++    bits = fx.Float32(value).bitcast(fx.Uint32)
++    rounded = bits + fx.Uint32(0x7FFF) + ((bits >> fx.Uint32(16)) & fx.Uint32(1))
++    return fx.Uint16(rounded >> fx.Uint32(16)).bitcast(fx.BFloat16)
+diff --git a/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_decode_split.py b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_decode_split.py
+new file mode 100644
+index 0000000..73f310b
+--- /dev/null
++++ b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_decode_split.py
+@@ -0,0 +1,238 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# ruff: noqa: B008 -- FlyDSL launch signatures require typed stream defaults
++# ruff: noqa: SIM114 -- Keep compile-time and device predicates separate
++"""Single-launch wave-split K reduction for underfilled decode grids."""
++
++from functools import lru_cache
++
++import flydsl.compiler as flyc
++import flydsl.expr as fx
++from flydsl.expr import const_expr, range_constexpr
++from flydsl.expr.typing import Vector as Vec
++
++from .gfx12_sync import (
++    lds_fence_signal,
++    lds_fence_wait,
++)
++from .rdna4_fp8_blockscale_common import (
++    _f32_to_bf16_rne,
++    _load_f32,
++    _load_fp8_fragment_buffer,
++    _make_buffer,
++    _store_bf16,
++)
++
++
++def _cap_split_occupancy():
++    """Avoid the full-occupancy scheduling cliff without adding empty CTAs."""
++    from flydsl._mlir import ir
++
++    owner = ir.InsertionPoint.current.block.owner
++    owner.attributes["llvm.passthrough"] = ir.ArrayAttr.get(
++        [
++            ir.ArrayAttr.get(
++                [ir.StringAttr.get("amdgpu-waves-per-eu"), ir.StringAttr.get("1,12")]
++            )
++        ]
++    )
++
++
++@lru_cache(maxsize=256)
++def create_decode_split(
++    m,
++    n,
++    k,
++    stride_b,
++    block_n=16,
++    splits=4,
++    batch=8,
++    rotate=0,
++    balanced=False,
++    lean=False,
++    capped=False,
++):
++    assert 1 <= m <= 256 and block_n in (4, 8, 16, 32, 64)
++    assert splits in (2, 4, 8) and k // 128 >= splits
++    assert not capped or (m > 64 and splits == 4 and block_n == 16)
++    valid_rows = min(m, 16)
++    grid_m = (m + 15) // 16
++    nk = k // 128
++    chunk = (nk + splits - 1) // splits
++    threads = splits * 32
++    nfrags = (block_n + 15) // 16
++    fp8, f32 = fx.Float8E4M3FN, fx.Float32
++    signature = (
++        m,
++        n,
++        k,
++        stride_b,
++        block_n,
++        splits,
++        batch,
++        rotate,
++        balanced,
++        lean,
++        capped,
++    )
++
++    @fx.struct
++    class SharedStorage:
++        data: fx.Array[f32, splits * valid_rows * block_n, 16]
++
++    @flyc.kernel
++    def kernel(
++        a: fx.Tensor, b: fx.Tensor, asc: fx.Tensor, bsc: fx.Tensor, out: fx.Tensor
++    ):
++        if const_expr(capped):
++            _cap_split_occupancy()
++        tid = fx.thread_idx.x
++        lane = tid % fx.Int32(32)
++        wave = tid // fx.Int32(32)
++        lane16 = lane % fx.Int32(16)
++        half = lane // fx.Int32(16)
++        pid_n = fx.block_idx.x
++        m0 = fx.Int32(0)
++        if const_expr(m > 16):
++            pid_n = fx.block_idx.x // fx.Int32(grid_m)
++            m0 = (fx.block_idx.x % fx.Int32(grid_m)) * fx.Int32(16)
++        n0 = pid_n * fx.Int32(block_n)
++        begin = wave * fx.Int32(chunk)
++        end = fx.min(begin + fx.Int32(chunk), fx.Int32(nk))
++        if const_expr(balanced):
++            begin = wave * fx.Int32(nk // splits) + fx.min(wave, fx.Int32(nk % splits))
++            end = (
++                begin
++                + fx.Int32(nk // splits)
++                + (wave < fx.Int32(nk % splits)).select(fx.Int32(1), fx.Int32(0))
++            )
++        ab = _make_buffer(a, fp8, 8, m * k)
++        bb = _make_buffer(b, fp8, 8, n * stride_b)
++        asb = _make_buffer(asc, f32, 1, m * nk * 4)
++        bsp = fx.recast_iter(f32, fx.get_iter(bsc))
++        ob = _make_buffer(out, fx.BFloat16, 1, m * n * 2)
++        shared = (
++            fx.SharedAllocator()
++            .allocate(SharedStorage)
++            .peek()
++            .data.view(fx.make_layout(splits * valid_rows * block_n, 1))
++        )
++        mma = fx.make_mma_atom(fx.rocdl.WMMA(16, 16, 16, fp8, f32))
++        totals = [fx.make_rmem_tensor(8, f32) for _ in range_constexpr(nfrags)]
++        for j in range_constexpr(nfrags):
++            totals[j].fill(0)
++        for k_iter in range(begin, end, 1):
++            kb = k_iter
++            if const_expr(rotate):
++                kb = (k_iter + pid_n * fx.Int32(rotate)) % fx.Int32(nk)
++            partials = [fx.make_rmem_tensor(8, f32) for _ in range_constexpr(nfrags)]
++            for j in range_constexpr(nfrags):
++                partials[j].fill(0)
++            for group in range_constexpr(8 // batch):
++                af = [fx.make_rmem_tensor(8, fp8) for _ in range_constexpr(batch)]
++                bf = [
++                    [fx.make_rmem_tensor(8, fp8) for _ in range_constexpr(nfrags)]
++                    for _ in range_constexpr(batch)
++                ]
++                for q in range_constexpr(batch):
++                    ko = (
++                        kb * fx.Int32(128)
++                        + fx.Int32(0 if capped else (group * batch + q) * 16)
++                        + half * fx.Int32(8)
++                    )
++                    af[q].fill(0)
++                    if const_expr(lean or m > 16):
++                        if const_expr(capped):
++                            _load_fp8_fragment_buffer(
++                                ab,
++                                (m0 + lane16) * fx.Int32(k)
++                                + ko
++                                + fx.Int32((group * batch + q) * 16),
++                                af[q],
++                            )
++                        else:
++                            _load_fp8_fragment_buffer(
++                                ab, (m0 + lane16) * fx.Int32(k) + ko, af[q]
++                            )
++                    elif lane16 < fx.Int32(m):
++                        _load_fp8_fragment_buffer(
++                            ab, (m0 + lane16) * fx.Int32(k) + ko, af[q]
++                        )
++                    for j in range_constexpr(nfrags):
++                        col = n0 + lane16 + fx.Int32(j * 16)
++                        if const_expr(block_n < 16):
++                            bf[q][j].fill(0)
++                            if lane16 < fx.Int32(block_n):
++                                _load_fp8_fragment_buffer(
++                                    bb, col * fx.Int32(stride_b) + ko, bf[q][j]
++                                )
++                        elif const_expr(capped):
++                            _load_fp8_fragment_buffer(
++                                bb,
++                                col * fx.Int32(stride_b)
++                                + ko
++                                + fx.Int32((group * batch + q) * 16),
++                                bf[q][j],
++                            )
++                        else:
++                            _load_fp8_fragment_buffer(
++                                bb, col * fx.Int32(stride_b) + ko, bf[q][j]
++                            )
++                for q in range_constexpr(batch):
++                    for j in range_constexpr(nfrags):
++                        fx.gemm(mma, partials[j], af[q], bf[q][j], partials[j])
++            bs = f32(fx.ptr_load(bsp + n0 // fx.Int32(128) * fx.Int32(nk) + kb))
++            for j in range_constexpr(nfrags):
++                tv, pv = Vec(totals[j].load()), Vec(partials[j].load())
++                vals = []
++                for r in range_constexpr(8):
++                    if const_expr(lean and r >= m):
++                        vals.append(f32(0.0))
++                    else:
++                        row = m0 + half * fx.Int32(8) + fx.Int32(r)
++                        scale = _load_f32(asb, row * fx.Int32(nk) + kb) * bs
++                        vals.append(tv[r] + pv[r] * scale)
++                totals[j].store(Vec.from_elements(vals, f32))
++        for r in range_constexpr(8):
++            row = half * fx.Int32(8) + fx.Int32(r)
++            valid = row < fx.Int32(valid_rows)
++            if const_expr(block_n < 16):
++                valid = valid & (lane16 < fx.Int32(block_n))
++            if valid:
++                for j in range_constexpr(nfrags):
++                    idx = (
++                        wave * fx.Int32(valid_rows * block_n)
++                        + row * fx.Int32(block_n)
++                        + lane16
++                        + fx.Int32(j * 16)
++                    )
++                    fx.memref_store(Vec(totals[j].load())[r], shared, idx)
++        lds_fence_signal()
++        lds_fence_wait()
++        for q in range_constexpr((valid_rows * block_n + threads - 1) // threads):
++            idx = tid + fx.Int32(q * threads)
++            if idx < fx.Int32(valid_rows * block_n):
++                val = f32(0.0)
++                for s in range_constexpr(splits):
++                    val = val + f32(
++                        fx.memref_load(shared, fx.Int32(s * valid_rows * block_n) + idx)
++                    )
++                row = m0 + idx // fx.Int32(block_n)
++                col = n0 + idx % fx.Int32(block_n)
++                _store_bf16(ob, row * fx.Int32(n) + col, _f32_to_bf16_rne(val))
++
++    @flyc.jit
++    def launch(
++        a: fx.Tensor,
++        b: fx.Tensor,
++        asc: fx.Tensor,
++        bsc: fx.Tensor,
++        out: fx.Tensor,
++        stream: fx.Stream = fx.Stream(None),
++    ):
++        _ = signature
++        kernel(a, b, asc, bsc, out).launch(
++            grid=((n // block_n) * grid_m, 1, 1), block=(threads, 1, 1), stream=stream
++        )
++
++    return launch
+diff --git a/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_prefill.py b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_prefill.py
+new file mode 100644
+index 0000000..8e5b56e
+--- /dev/null
++++ b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_prefill.py
+@@ -0,0 +1,581 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# ruff: noqa: B008 -- FlyDSL launch signatures require typed stream defaults
++
++"""LDS-tiled RDNA4 block-scaled FP8 GEMM for broad prefill shapes.
++
++Provides wave32 tiles for wide decode and short prefill. A and raw row-major B
++are staged in LDS for cross-wave reuse. Every K=128 partial is completed in FP32
++before its independent activation and weight scales are applied.
++"""
++
++from dataclasses import dataclass
++from functools import lru_cache
++
++import flydsl.compiler as flyc
++import flydsl.expr as fx
++from flydsl.expr import const_expr, gpu, range_constexpr
++from flydsl.expr.typing import Vector as Vec
++
++from .gfx12_sync import lds_fence_signal, lds_fence_wait
++from .rdna4_fp8_blockscale_common import (
++    SCALE_K,
++    WAVE_SIZE,
++    WMMA_K,
++    WMMA_M,
++    WMMA_N,
++    _f32_to_bf16_rne,
++    _load_f32,
++    _load_fp8_fragment_ptr,
++    _make_buffer,
++)
++from .runtime import run_compiled
++
++LDA = SCALE_K + 8
++LDB = SCALE_K
++
++
++@dataclass(frozen=True)
++class PrefillConfig:
++    tile_m: int
++    tile_n: int
++    group_m: int
++    a_prefetch: int
++    b_prefetch: int
++    static_m: int = 0
++    k_rotate: int = 0
++
++    @property
++    def threads(self) -> int:
++        return (self.tile_m // 32) * (self.tile_n // 64) * WAVE_SIZE
++
++
++def select_prefill_config(m: int, n: int, k: int, stride_b: int) -> PrefillConfig:
++    """Select broad-M tiles and measured short-prefill specializations."""
++    if (m, n, k, stride_b) == (39, 16384, 8192, 8192):
++        return PrefillConfig(64, 128, 1, 2, 2, static_m=39, k_rotate=2)
++    if m <= 64:
++        raise ValueError(f"RDNA4 prefill route requires M > 64, got {m}")
++    if n <= 0 or n % SCALE_K:
++        raise ValueError(
++            f"RDNA4 prefill route requires positive N divisible by 128, got {n}"
++        )
++    if k <= 0 or k % SCALE_K:
++        raise ValueError(
++            f"RDNA4 prefill route requires positive K divisible by 128, got {k}"
++        )
++
++    balanced_reuse = m >= 128 and (
++        (n >= 16384 and k >= 4096)
++        or (n >= 10240 and k >= 6144)
++        or (n >= 7168 and k >= 10240)
++        or (m >= 4096 and n >= 5120)
++        or (m >= 896 and n >= 12288 and k >= 3072)
++        or (m >= 768 and n >= 6144 and k >= 6144)
++        or (384 <= m <= 640 and 5120 <= n < 8192)
++    )
++    short_m_weight_reuse = 96 <= m < 384 and (m & 127) != 0 and n >= 10240 and k >= 6144
++    small_n_long_k = 128 <= m < 4096 and n <= 4096 and k >= 6144
++
++    if (
++        n % 256
++        or short_m_weight_reuse
++        or small_n_long_k
++        or (192 <= m <= 384 and 4096 <= n <= 7168 and k >= 6144)
++    ):
++        return PrefillConfig(
++            tile_m=32 if n == 128 else 64,
++            tile_n=128,
++            group_m=1 if n == 128 else 32,
++            a_prefetch=2,
++            b_prefetch=5,
++        )
++    if (m, n, k, stride_b) == (256, 8192, 5120, 5376):
++        return PrefillConfig(
++            tile_m=64,
++            tile_n=256,
++            group_m=2,
++            a_prefetch=2,
++            b_prefetch=2,
++            static_m=256,
++        )
++    if balanced_reuse and n >= 16384:
++        # The native HIP compiler favors its 128x128/256-thread geometry here,
++        # but current FlyDSL gfx120x lowering pays a large occupancy cost for
++        # that shape. Use the measured narrow tile for very wide N.
++        return PrefillConfig(
++            tile_m=128,
++            tile_n=128,
++            group_m=8,
++            a_prefetch=4,
++            b_prefetch=4,
++        )
++    return PrefillConfig(
++        tile_m=64,
++        tile_n=256,
++        group_m=8,
++        a_prefetch=2,
++        b_prefetch=2,
++    )
++
++
++def _load_fp8x16(buffer, index, fragment):
++    atom = fx.make_copy_atom(fx.rocdl.BufferCopy128b(), fx.Float8E4M3FN)
++    fx.copy(atom, fx.slice(buffer, (None, index)), fragment)
++
++
++def _store_fp8x16(shared, index, fragment):
++    atom = fx.make_copy_atom(fx.UniversalCopy128b(), fx.Float8E4M3FN)
++    fx.copy(atom, fragment, fx.slice(shared, (None, index)))
++
++
++def _store_bf16x8(buffer, index, values):
++    atom = fx.make_copy_atom(fx.rocdl.BufferCopy128b(), fx.BFloat16)
++    fragment = fx.make_rmem_tensor(8, fx.BFloat16)
++    fragment.store(Vec.from_elements(values, fx.BFloat16))
++    fx.copy(atom, fragment, fx.slice(buffer, (None, index)))
++
++
++def _create_prefill_module(
++    n: int,
++    k: int,
++    stride_b: int,
++    config: PrefillConfig,
++):
++    """Create a single-stage LDS/WMMA prefill kernel."""
++    bm = config.tile_m
++    bn = config.tile_n
++    static_m = config.static_m
++    threads = config.threads
++    a_waves = bn // 64
++    a_loads = (bm * SCALE_K) // (16 * threads)
++    b_loads = (bn * SCALE_K) // (16 * threads)
++    scale_blocks = k // SCALE_K
++    grid_n = n // bn
++    lds_a_elems = bm * LDA
++    lds_b_elems = bn * LDB
++    lds_elems = lds_a_elems + lds_b_elems
++    # FlyDSL fingerprints scalar/tuple closures, but not dataclass fields.
++    cache_tag = (
++        bm,
++        bn,
++        config.group_m,
++        config.a_prefetch,
++        config.b_prefetch,
++        static_m,
++        config.k_rotate,
++    )
++
++    assert threads in (64, 128, 256)
++    assert n % bn == 0
++    assert config.a_prefetch <= a_loads
++    assert config.b_prefetch <= b_loads
++
++    fp8 = fx.Float8E4M3FN
++    f32 = fx.Float32
++    bf16 = fx.BFloat16
++    kernel_attrs = {
++        "rocdl.waves_per_eu": 1,
++        "rocdl.flat_work_group_size": f"{threads},{threads}",
++    }
++
++    @fx.struct
++    class SharedStorage:
++        data: fx.Array[fp8, lds_elems, 16]
++
++    if config.group_m == 1:
++
++        def map_pid(pid, grid_m):
++            del grid_m
++            return pid // fx.Int32(grid_n), pid % fx.Int32(grid_n)
++
++    else:
++
++        def map_pid(pid, grid_m):
++            num_pid_in_group = fx.Int32(config.group_m * grid_n)
++            group_id = pid // num_pid_in_group
++            first_pid_m = group_id * fx.Int32(config.group_m)
++            remaining_pid_m = grid_m - first_pid_m
++            group_size_m = (remaining_pid_m < fx.Int32(config.group_m)).select(
++                remaining_pid_m, fx.Int32(config.group_m)
++            )
++            pid_in_group = pid % num_pid_in_group
++            pid_m = first_pid_m + pid_in_group % group_size_m
++            pid_n = pid_in_group // group_size_m
++            return pid_m, pid_n
++
++    @flyc.kernel
++    def prefill_kernel(
++        arg_a: fx.Tensor,
++        arg_b: fx.Tensor,
++        arg_as: fx.Tensor,
++        arg_bs: fx.Tensor,
++        arg_out: fx.Tensor,
++        arg_m: fx.Int32,
++    ):
++        m_extent = fx.Int32(static_m) if static_m else arg_m
++        grid_m = (m_extent + fx.Int32(bm - 1)) // fx.Int32(bm)
++        tid = fx.thread_idx.x
++        wave = tid // fx.Int32(WAVE_SIZE)
++        wave_m = wave // fx.Int32(a_waves)
++        wave_n = wave % fx.Int32(a_waves)
++        lane = tid % fx.Int32(WAVE_SIZE)
++        lane16 = lane % fx.Int32(WMMA_N)
++        lane_half = lane // fx.Int32(WMMA_N)
++
++        pid = fx.block_idx.x
++        # A grouped mapping with one M tile is just row-major. Specialize it
++        # before tracing so gfx120x lowering sees only division/remainder by
++        # the compile-time grid_n. The generic formulation computes a dynamic
++        # group_size_m and currently lowers even its always-one remainder and
++        # division through an FP32 reciprocal correction chain.
++        pid_m, pid_n = map_pid(pid, grid_m)
++        m0 = pid_m * fx.Int32(bm)
++        n0 = pid_n * fx.Int32(bn)
++        # Stagger strided weight reads across N tiles; visit every K block once.
++        first_kb = (pid_n * fx.Int32(config.k_rotate)) % fx.Int32(scale_blocks)
++
++        a_buf = _make_buffer(
++            arg_a,
++            fp8,
++            16,
++            m_extent * fx.Int32(k),
++        )
++        b_buf = _make_buffer(arg_b, fp8, 16, n * stride_b)
++        as_buf = _make_buffer(
++            arg_as,
++            f32,
++            1,
++            m_extent * fx.Int32(scale_blocks * 4),
++        )
++        bs_ptr = fx.recast_iter(f32, fx.get_iter(arg_bs))
++        out_buf = _make_buffer(arg_out, bf16, 8, m_extent * fx.Int32(n * 2))
++
++        shared = fx.SharedAllocator().allocate(SharedStorage).peek().data
++        lds_a_ptr = shared.ptr
++        lds_b_ptr = shared.ptr + fx.Int32(lds_a_elems)
++        lds_a = fx.make_view(lds_a_ptr, fx.make_layout((16, 1), (1, 1)))
++        lds_b = fx.make_view(lds_b_ptr, fx.make_layout((16, 1), (1, 1)))
++
++        mma = fx.make_mma_atom(fx.rocdl.WMMA(WMMA_M, WMMA_N, WMMA_K, fp8, f32))
++        totals = [fx.make_rmem_tensor(8, f32) for _ in range_constexpr(8)]
++        for ni in range_constexpr(8):
++            totals[ni].fill(0)
++
++        staged_a = [
++            fx.make_rmem_tensor(16, fp8) for _ in range_constexpr(config.a_prefetch)
++        ]
++        for q in range_constexpr(config.a_prefetch):
++            v = tid + fx.Int32(q * threads)
++            row = v // fx.Int32(8)
++            ko = (v % fx.Int32(8)) * fx.Int32(16)
++            global_row = m0 + row
++            _load_fp8x16(
++                a_buf,
++                global_row * fx.Int32(k) + first_kb * fx.Int32(SCALE_K) + ko,
++                staged_a[q],
++            )
++
++        staged_b = [
++            fx.make_rmem_tensor(16, fp8) for _ in range_constexpr(config.b_prefetch)
++        ]
++        for q in range_constexpr(config.b_prefetch):
++            v = tid + fx.Int32(q * threads)
++            row = v // fx.Int32(8)
++            ko = (v % fx.Int32(8)) * fx.Int32(16)
++            _load_fp8x16(
++                b_buf,
++                (n0 + row) * fx.Int32(stride_b) + first_kb * fx.Int32(SCALE_K) + ko,
++                staged_b[q],
++            )
++
++        for k_iter in range(0, scale_blocks, 1):
++            kb = fx.Int32(k_iter)
++            if const_expr(config.k_rotate != 0):
++                kb = (kb + first_kb) % fx.Int32(scale_blocks)
++            if k_iter != 0:
++                gpu.barrier()
++
++            for q in range_constexpr(config.a_prefetch):
++                v = tid + fx.Int32(q * threads)
++                row = v // fx.Int32(8)
++                ko = (v % fx.Int32(8)) * fx.Int32(16)
++                _store_fp8x16(lds_a, row * fx.Int32(LDA) + ko, staged_a[q])
++            for q in range_constexpr(config.a_prefetch, a_loads):
++                v = tid + fx.Int32(q * threads)
++                row = v // fx.Int32(8)
++                ko = (v % fx.Int32(8)) * fx.Int32(16)
++                fragment = fx.make_rmem_tensor(16, fp8)
++                global_row = m0 + row
++                _load_fp8x16(
++                    a_buf,
++                    global_row * fx.Int32(k) + fx.Int32(kb * SCALE_K) + ko,
++                    fragment,
++                )
++                _store_fp8x16(lds_a, row * fx.Int32(LDA) + ko, fragment)
++
++            for q in range_constexpr(config.b_prefetch):
++                v = tid + fx.Int32(q * threads)
++                row = v // fx.Int32(8)
++                ko = (v % fx.Int32(8)) * fx.Int32(16)
++                swizzled_ko = ((ko // fx.Int32(16)) ^ (row % fx.Int32(8))) * fx.Int32(
++                    16
++                )
++                _store_fp8x16(lds_b, row * fx.Int32(LDB) + swizzled_ko, staged_b[q])
++            for q in range_constexpr(config.b_prefetch, b_loads):
++                v = tid + fx.Int32(q * threads)
++                row = v // fx.Int32(8)
++                ko = (v % fx.Int32(8)) * fx.Int32(16)
++                fragment = fx.make_rmem_tensor(16, fp8)
++                _load_fp8x16(
++                    b_buf,
++                    (n0 + row) * fx.Int32(stride_b) + fx.Int32(kb * SCALE_K) + ko,
++                    fragment,
++                )
++                swizzled_ko = ((ko // fx.Int32(16)) ^ (row % fx.Int32(8))) * fx.Int32(
++                    16
++                )
++                _store_fp8x16(lds_b, row * fx.Int32(LDB) + swizzled_ko, fragment)
++
++            lds_fence_signal()
++
++            # Do not issue an unused next-tile vector load after the final
++            # K128 block. In vLLM the graph-pool activation can end exactly at
++            # a page boundary; relying on raw-buffer OOB suppression for that
++            # speculative load caused a gfx1201 page fault at M1568.
++            if k_iter + 1 < scale_blocks:
++                next_k0 = (kb + fx.Int32(1)) * fx.Int32(SCALE_K)
++                if const_expr(config.k_rotate != 0):
++                    next_k0 = ((kb + fx.Int32(1)) % fx.Int32(scale_blocks)) * fx.Int32(
++                        SCALE_K
++                    )
++                for q in range_constexpr(config.a_prefetch):
++                    v = tid + fx.Int32(q * threads)
++                    row = v // fx.Int32(8)
++                    ko = (v % fx.Int32(8)) * fx.Int32(16)
++                    global_row = m0 + row
++                    _load_fp8x16(
++                        a_buf,
++                        global_row * fx.Int32(k) + next_k0 + ko,
++                        staged_a[q],
++                    )
++                for q in range_constexpr(config.b_prefetch):
++                    v = tid + fx.Int32(q * threads)
++                    row = v // fx.Int32(8)
++                    ko = (v % fx.Int32(8)) * fx.Int32(16)
++                    _load_fp8x16(
++                        b_buf,
++                        (n0 + row) * fx.Int32(stride_b) + next_k0 + ko,
++                        staged_b[q],
++                    )
++
++            lds_fence_wait()
++            b_group = (n0 + wave_n * fx.Int32(64)) // fx.Int32(SCALE_K)
++            b_scale = f32(
++                fx.ptr_load(bs_ptr + b_group * fx.Int32(scale_blocks) + fx.Int32(kb))
++            )
++            row_scales = []
++            for mi in range_constexpr(2):
++                scales = []
++                for ri in range_constexpr(8):
++                    row = (
++                        m0
++                        + wave_m * fx.Int32(32)
++                        + fx.Int32(mi * WMMA_M)
++                        + lane_half * fx.Int32(8)
++                        + fx.Int32(ri)
++                    )
++                    scales.append(
++                        _load_f32(
++                            as_buf,
++                            row * fx.Int32(scale_blocks) + fx.Int32(kb),
++                        )
++                        * b_scale
++                    )
++                row_scales.append(scales)
++
++            partials = [fx.make_rmem_tensor(8, f32) for _ in range_constexpr(8)]
++            for ni in range_constexpr(8):
++                partials[ni].fill(0)
++
++            # Keep the lane-varying LDS row bases explicit and express each
++            # unrolled matrix slice as a static offset from them. This gives
++            # LLVM the base+immediate form it needs to combine paired 64-bit
++            # reads into gfx12 ds_read2/ds_read2st64 instructions.
++            a_lane_base = (wave_m * fx.Int32(32) + lane16) * fx.Int32(
++                LDA
++            ) + lane_half * fx.Int32(8)
++            b_row_base = wave_n * fx.Int32(64) + lane16
++            b_lane_base = b_row_base * fx.Int32(LDB)
++            for ki in range_constexpr(SCALE_K // WMMA_K):
++                a_frags = [fx.make_rmem_tensor(8, fp8) for _ in range_constexpr(2)]
++                for mi in range_constexpr(2):
++                    _load_fp8_fragment_ptr(
++                        lds_a_ptr,
++                        a_lane_base + fx.Int32(mi * WMMA_M * LDA + ki * WMMA_K),
++                        a_frags[mi],
++                    )
++
++                b_frags = [fx.make_rmem_tensor(8, fp8) for _ in range_constexpr(4)]
++                swizzled_k = (fx.Int32(ki) ^ (b_row_base % fx.Int32(8))) * fx.Int32(
++                    16
++                ) + lane_half * fx.Int32(8)
++                for ni in range_constexpr(4):
++                    _load_fp8_fragment_ptr(
++                        lds_b_ptr,
++                        b_lane_base + fx.Int32(ni * WMMA_N * LDB) + swizzled_k,
++                        b_frags[ni],
++                    )
++
++                for mi in range_constexpr(2):
++                    for ni in range_constexpr(4):
++                        idx = mi * 4 + ni
++                        fx.gemm(
++                            mma, partials[idx], a_frags[mi], b_frags[ni], partials[idx]
++                        )
++
++            for mi in range_constexpr(2):
++                for ni in range_constexpr(4):
++                    idx = mi * 4 + ni
++                    total_v = Vec(totals[idx].load())
++                    partial_v = Vec(partials[idx].load())
++                    totals[idx].store(
++                        Vec.from_elements(
++                            [
++                                total_v[ri] + partial_v[ri] * row_scales[mi][ri]
++                                for ri in range_constexpr(8)
++                            ],
++                            f32,
++                        )
++                    )
++
++        # Reuse the dead input stage as a row-major FP32 exchange. This turns
++        # the WMMA fragment layout into aligned 16-byte BF16 global stores.
++        gpu.barrier()
++        lds_out_ptr = fx.recast_iter(f32, lds_a_ptr)
++        output_rows = 32 if bm <= 64 else 64
++        output_wave_rows = output_rows // 32
++        for group in range_constexpr(bm // output_rows):
++            if wave_m // fx.Int32(output_wave_rows) == fx.Int32(group):
++                local_wave_m = wave_m % fx.Int32(output_wave_rows)
++                for mi in range_constexpr(2):
++                    for ni in range_constexpr(4):
++                        idx = mi * 4 + ni
++                        total_v = Vec(totals[idx].load())
++                        for ri in range_constexpr(8):
++                            local_row = (
++                                local_wave_m * fx.Int32(32)
++                                + fx.Int32(mi * WMMA_M)
++                                + lane_half * fx.Int32(8)
++                                + fx.Int32(ri)
++                            )
++                            local_col = (
++                                wave_n * fx.Int32(64) + fx.Int32(ni * WMMA_N) + lane16
++                            )
++                            fx.ptr_store(
++                                total_v[ri],
++                                lds_out_ptr + local_row * fx.Int32(bn) + local_col,
++                            )
++            gpu.barrier()
++
++            for q in range_constexpr((output_rows * bn // 8) // threads):
++                v = tid + fx.Int32(q * threads)
++                local_row = v // fx.Int32(bn // 8)
++                col = (v % fx.Int32(bn // 8)) * fx.Int32(8)
++                row = m0 + fx.Int32(group * output_rows) + local_row
++                if row < m_extent:
++                    values = fx.ptr_load(
++                        lds_out_ptr + local_row * fx.Int32(bn) + col,
++                        result_type=fx.Vector.make_type(8, f32),
++                    )
++                    values_v = Vec(values)
++                    _store_bf16x8(
++                        out_buf,
++                        row * fx.Int32(n) + n0 + col,
++                        [_f32_to_bf16_rne(values_v[i]) for i in range_constexpr(8)],
++                    )
++            gpu.barrier()
++
++    @flyc.jit
++    def launch(
++        arg_a: fx.Tensor,
++        arg_b: fx.Tensor,
++        arg_as: fx.Tensor,
++        arg_bs: fx.Tensor,
++        arg_out: fx.Tensor,
++        arg_m: fx.Int32,
++        stream: fx.Stream = fx.Stream(None),
++    ):
++        _ = cache_tag
++        launch_m = fx.Int32(static_m) if static_m else arg_m
++        total_blocks = ((launch_m + fx.Int32(bm - 1)) // fx.Int32(bm)) * fx.Int32(
++            grid_n
++        )
++        prefill_kernel(
++            arg_a,
++            arg_b,
++            arg_as,
++            arg_bs,
++            arg_out,
++            arg_m,
++            value_attrs=kernel_attrs,
++        ).launch(grid=(total_blocks, 1, 1), block=(threads, 1, 1), stream=stream)
++
++    return launch
++
++
++@lru_cache(maxsize=128)
++def _get_prefill_module_cached(
++    n: int,
++    k: int,
++    stride_b: int,
++    tile_m: int,
++    tile_n: int,
++    group_m: int,
++    a_prefetch: int,
++    b_prefetch: int,
++    static_m: int,
++    k_rotate: int = 0,
++):
++    config = PrefillConfig(
++        tile_m,
++        tile_n,
++        group_m,
++        a_prefetch,
++        b_prefetch,
++        static_m,
++        k_rotate,
++    )
++    return _create_prefill_module(n, k, stride_b, config)
++
++
++def _get_prefill_module(
++    n: int,
++    k: int,
++    stride_b: int,
++    config: PrefillConfig,
++):
++    # Only lowering-affecting geometry and specialization belong in the cache
++    # key. The M=8192 startup profile can therefore populate the executable
++    # reused by ragged prompt sizes, while the static-M256 specialization stays
++    # cache-isolated.
++    return _get_prefill_module_cached(
++        n,
++        k,
++        stride_b,
++        config.tile_m,
++        config.tile_n,
++        config.group_m,
++        config.a_prefetch,
++        config.b_prefetch,
++        config.static_m,
++        config.k_rotate,
++    )
++
++
++def _run_prefill(a, weight, a_scale, weight_scale, out, stream, m, n, k):
++    """Select and launch the broad-M implementation."""
++    config = select_prefill_config(m, n, k, weight.stride(0))
++    module = _get_prefill_module(n, k, weight.stride(0), config)
++    run_compiled(module, a, weight, a_scale, weight_scale, out, m, stream)
++    return out
+diff --git a/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_small_m.py b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_small_m.py
+new file mode 100644
+index 0000000..6b0384a
+--- /dev/null
++++ b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_small_m.py
+@@ -0,0 +1,452 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# ruff: noqa: B008 -- FlyDSL launch signatures require typed stream defaults
++# ruff: noqa: SIM114 -- Keep compile-time and device predicates separate
++
++"""RDNA4 block-scaled FP8 GEMM for decode and narrow short-prefill shapes.
++
++This is a raw-weight kernel: ``weight`` is the ordinary row-major ``[N, K]``
++tensor consumed by vLLM.  No preshuffle or persistent workspace is part of the
++interface.  The numerical contract is intentionally identical to
++the public RDNA4 block-scaled operator in vLLM::
++
++    out[m, n] = sum_kb(
++        dot_fp32(a[m, kb * 128 : (kb + 1) * 128], weight[n, kb * 128 : (kb + 1) * 128])
++        * a_scale[m, kb]
++        * weight_scale[n // 128, kb]
++    )
++
++Each K=128 dot product is completed in FP32 before its two scales are applied.
++The scaled blocks are accumulated in FP32 and converted to BF16 once.
++"""
++
++from dataclasses import dataclass
++from functools import lru_cache
++
++import flydsl.compiler as flyc
++import flydsl.expr as fx
++from flydsl.expr import const_expr, range_constexpr
++from flydsl.expr.typing import Vector as Vec
++
++from .rdna4_fp8_blockscale_common import (
++    SCALE_K,
++    WAVE_SIZE,
++    WMMA_K,
++    WMMA_M,
++    WMMA_N,
++    _f32_to_bf16_rne,
++    _load_f32,
++    _load_fp8_fragment_buffer,
++    _make_buffer,
++    _store_bf16,
++)
++from .runtime import run_compiled
++
++
++@dataclass(frozen=True)
++class KernelConfig:
++    block_n: int
++    row_tiles: int
++    threads: int
++    split_k: int = 1
++    rotate_k: int = 0
++    load_batch: int = 0
++    m_fast: bool = False
++    hardware_bounds: bool = False
++    capped_split: bool = False
++
++
++def _use_tiled_decode_split(m: int, n: int, k: int) -> bool:
++    """Keep larger split grids within their measured low-K reuse regime."""
++    tiles = ((m + 15) // 16) * (n // 16)
++    return (
++        16 < m <= 256
++        and n <= 1024
++        and k >= 1024
++        and (tiles <= 256 or (m > 64 and tiles <= 512 and k <= 4096))
++    )
++
++
++def select_kernel_config(m: int, n: int, k: int) -> KernelConfig:
++    """Select packed rows or a single-launch split for underfilled grids."""
++    if not 1 <= m <= 256:
++        raise ValueError(f"RDNA4 small-M route requires 1 <= M <= 256, got {m}")
++    if n <= 0 or n % 128:
++        raise ValueError(
++            f"RDNA4 small-M route requires positive N divisible by 128, got {n}"
++        )
++    if k <= 0 or k % SCALE_K:
++        raise ValueError(
++            f"RDNA4 small-M route requires positive K divisible by 128, got {k}"
++        )
++
++    if m <= 16:
++        if n <= 3072 and k >= 1024:
++            splits = 8 if n <= 1024 else 4
++            return KernelConfig(
++                16, 1, splits * WAVE_SIZE, split_k=splits, rotate_k=2, load_batch=8
++            )
++        return KernelConfig(64, 1, 64, rotate_k=2, load_batch=8)
++    if _use_tiled_decode_split(m, n, k):
++        return KernelConfig(
++            16,
++            1,
++            4 * WAVE_SIZE,
++            split_k=4,
++            rotate_k=2,
++            load_batch=8,
++            capped_split=((m + 15) // 16) * (n // 16) > 256,
++        )
++    if m > 64:
++        raise ValueError(
++            "RDNA4 M > 64 split route requires N <= 1024, K >= 1024, "
++            "and at most 256 output tiles (512 when K <= 4096)"
++        )
++    return KernelConfig(64, 2, 64, rotate_k=2, load_batch=8, m_fast=True)
++
++
++def _create_packed_module(m: int, n: int, k: int, stride_b: int, config: KernelConfig):
++    """Create the shared packed-row implementation for all non-split-K routes."""
++    assert config.split_k == 1
++    assert config.block_n == config.threads
++    assert config.block_n in (64, 128)
++    assert config.row_tiles in (1, 2, 4)
++    assert config.load_batch in (0, 1, 2, 4, 8)
++    config_signature = (
++        config.block_n,
++        config.row_tiles,
++        config.threads,
++        config.rotate_k,
++        config.load_batch,
++        config.m_fast,
++        config.hardware_bounds,
++    )
++
++    fp8 = fx.Float8E4M3FN
++    f32 = fx.Float32
++    bf16 = fx.BFloat16
++    scale_blocks = k // SCALE_K
++    grid_m = (
++        1
++        if m <= 16
++        else (m + config.row_tiles * WMMA_M - 1) // (config.row_tiles * WMMA_M)
++    )
++
++    @flyc.kernel
++    def packed_kernel(
++        arg_a: fx.Tensor,
++        arg_b: fx.Tensor,
++        arg_as: fx.Tensor,
++        arg_bs: fx.Tensor,
++        arg_out: fx.Tensor,
++    ):
++        tid = fx.thread_idx.x
++        lane = tid % fx.Int32(WAVE_SIZE)
++        wave = tid // fx.Int32(WAVE_SIZE)
++        lane_col = lane % fx.Int32(WMMA_N)
++        lane_row_base = (lane // fx.Int32(WMMA_N)) * fx.Int32(8)
++        pid_n, pid_m = fx.block_idx.x, fx.block_idx.y
++        if const_expr(config.m_fast):
++            pid_n = fx.block_idx.x // fx.Int32(grid_m)
++            pid_m = fx.block_idx.x % fx.Int32(grid_m)
++        block_row = pid_m * fx.Int32(config.row_tiles * WMMA_M)
++        n0 = pid_n * fx.Int32(config.block_n) + wave * fx.Int32(2 * WMMA_N)
++
++        a_buf = _make_buffer(arg_a, fp8, 8, m * k)
++        b_buf = _make_buffer(arg_b, fp8, 8, n * stride_b)
++        as_buf = _make_buffer(arg_as, f32, 1, m * scale_blocks * 4)
++        bs_ptr = fx.recast_iter(f32, fx.get_iter(arg_bs))
++        out_buf = _make_buffer(arg_out, bf16, 1, m * n * 2)
++
++        mma = fx.make_mma_atom(fx.rocdl.WMMA(WMMA_M, WMMA_N, WMMA_K, fp8, f32))
++        totals = [
++            [fx.make_rmem_tensor(8, f32) for _ in range_constexpr(2)]
++            for _ in range_constexpr(config.row_tiles)
++        ]
++        for rt in range_constexpr(config.row_tiles):
++            for j in range_constexpr(2):
++                totals[rt][j].fill(0)
++
++        for iteration in range(0, scale_blocks, 1):
++            kb = iteration
++            if const_expr(config.rotate_k):
++                kb = (iteration + pid_n * fx.Int32(config.rotate_k)) % fx.Int32(
++                    scale_blocks
++                )
++            partials = [
++                [fx.make_rmem_tensor(8, f32) for _ in range_constexpr(2)]
++                for _ in range_constexpr(config.row_tiles)
++            ]
++            for rt in range_constexpr(config.row_tiles):
++                for j in range_constexpr(2):
++                    partials[rt][j].fill(0)
++
++            if const_expr(config.load_batch or (m == 1 and n >= 16384)):
++                batch = const_expr(config.load_batch or 4)
++                for ks_group in range_constexpr(8 // batch):
++                    a_frags = [
++                        [fx.make_rmem_tensor(8, fp8) for _ in range_constexpr(batch)]
++                        for _ in range_constexpr(config.row_tiles)
++                    ]
++                    b_frags = [
++                        [fx.make_rmem_tensor(8, fp8) for _ in range_constexpr(2)]
++                        for _ in range_constexpr(batch)
++                    ]
++                    if const_expr(config.row_tiles == 1):
++                        for ks_local in range_constexpr(batch):
++                            ks = ks_group * batch + ks_local
++                            k_lane = kb * fx.Int32(SCALE_K) + (
++                                lane // fx.Int32(16)
++                            ) * fx.Int32(8)
++                            for rt in range_constexpr(config.row_tiles):
++                                a_frags[rt][ks_local].fill(0)
++                                global_row = (
++                                    block_row
++                                    + fx.Int32(rt * WMMA_M)
++                                    + (lane % fx.Int32(WMMA_M))
++                                )
++                                if const_expr(config.hardware_bounds):
++                                    _load_fp8_fragment_buffer(
++                                        a_buf,
++                                        global_row * fx.Int32(k)
++                                        + k_lane
++                                        + fx.Int32(ks * WMMA_K),
++                                        a_frags[rt][ks_local],
++                                    )
++                                elif global_row < fx.Int32(m):
++                                    _load_fp8_fragment_buffer(
++                                        a_buf,
++                                        global_row * fx.Int32(k)
++                                        + k_lane
++                                        + fx.Int32(ks * WMMA_K),
++                                        a_frags[rt][ks_local],
++                                    )
++                        for ks_local in range_constexpr(batch):
++                            ks = ks_group * batch + ks_local
++                            k_lane = kb * fx.Int32(SCALE_K) + (
++                                lane // fx.Int32(16)
++                            ) * fx.Int32(8)
++                            for j in range_constexpr(2):
++                                b_row = n0 + fx.Int32(j * WMMA_N) + lane_col
++                                _load_fp8_fragment_buffer(
++                                    b_buf,
++                                    b_row * fx.Int32(stride_b)
++                                    + k_lane
++                                    + fx.Int32(ks * WMMA_K),
++                                    b_frags[ks_local][j],
++                                )
++                    else:
++                        for ks_local in range_constexpr(batch):
++                            ks = ks_group * batch + ks_local
++                            k_lane = (
++                                kb * fx.Int32(SCALE_K)
++                                + fx.Int32(ks * WMMA_K)
++                                + (lane // fx.Int32(16)) * fx.Int32(8)
++                            )
++                            for j in range_constexpr(2):
++                                b_row = n0 + fx.Int32(j * WMMA_N) + lane_col
++                                _load_fp8_fragment_buffer(
++                                    b_buf,
++                                    b_row * fx.Int32(stride_b) + k_lane,
++                                    b_frags[ks_local][j],
++                                )
++                            for rt in range_constexpr(config.row_tiles):
++                                a_frags[rt][ks_local].fill(0)
++                                global_row = (
++                                    block_row
++                                    + fx.Int32(rt * WMMA_M)
++                                    + (lane % fx.Int32(WMMA_M))
++                                )
++                                if const_expr(config.hardware_bounds):
++                                    _load_fp8_fragment_buffer(
++                                        a_buf,
++                                        global_row * fx.Int32(k) + k_lane,
++                                        a_frags[rt][ks_local],
++                                    )
++                                elif global_row < fx.Int32(m):
++                                    _load_fp8_fragment_buffer(
++                                        a_buf,
++                                        global_row * fx.Int32(k) + k_lane,
++                                        a_frags[rt][ks_local],
++                                    )
++                    for ks_local in range_constexpr(batch):
++                        for rt in range_constexpr(config.row_tiles):
++                            for j in range_constexpr(2):
++                                fx.gemm(
++                                    mma,
++                                    partials[rt][j],
++                                    a_frags[rt][ks_local],
++                                    b_frags[ks_local][j],
++                                    partials[rt][j],
++                                )
++                    if const_expr(config.row_tiles > 1):
++                        fx.rocdl.sched_vmem((2 + config.row_tiles) * batch)
++                        fx.rocdl.sched_mfma(2 * config.row_tiles * batch)
++                        fx.rocdl.sched_barrier(0)
++            else:
++                for ks in range_constexpr(SCALE_K // WMMA_K):
++                    b_frags = [fx.make_rmem_tensor(8, fp8) for _ in range_constexpr(2)]
++                    k_lane = (
++                        kb * fx.Int32(SCALE_K)
++                        + fx.Int32(ks * WMMA_K)
++                        + (lane // fx.Int32(16)) * fx.Int32(8)
++                    )
++                    for j in range_constexpr(2):
++                        b_row = n0 + fx.Int32(j * WMMA_N) + lane_col
++                        _load_fp8_fragment_buffer(
++                            b_buf,
++                            b_row * fx.Int32(stride_b) + k_lane,
++                            b_frags[j],
++                        )
++
++                    for rt in range_constexpr(config.row_tiles):
++                        a_frag = fx.make_rmem_tensor(8, fp8)
++                        a_frag.fill(0)
++                        local_row = fx.Int32(rt * WMMA_M) + (lane % fx.Int32(WMMA_M))
++                        global_row = block_row + local_row
++                        if const_expr(config.hardware_bounds):
++                            _load_fp8_fragment_buffer(
++                                a_buf,
++                                global_row * fx.Int32(k) + k_lane,
++                                a_frag,
++                            )
++                        elif global_row < fx.Int32(m):
++                            _load_fp8_fragment_buffer(
++                                a_buf,
++                                global_row * fx.Int32(k) + k_lane,
++                                a_frag,
++                            )
++                        for j in range_constexpr(2):
++                            fx.gemm(
++                                mma,
++                                partials[rt][j],
++                                a_frag,
++                                b_frags[j],
++                                partials[rt][j],
++                            )
++
++            b_group = n0 // fx.Int32(SCALE_K)
++            b_scale = f32(fx.ptr_load(bs_ptr + b_group * fx.Int32(scale_blocks) + kb))
++            for rt in range_constexpr(config.row_tiles):
++                if const_expr(m == 1):
++                    a_scale = _load_f32(as_buf, kb)
++                    scales = [
++                        (
++                            (lane < fx.Int32(16)).select(a_scale * b_scale, f32(0.0))
++                            if value_idx == 0
++                            else f32(0.0)
++                        )
++                        for value_idx in range_constexpr(8)
++                    ]
++                else:
++                    scales = []
++                    for value_idx in range_constexpr(8):
++                        global_row = (
++                            block_row
++                            + fx.Int32(rt * WMMA_M)
++                            + lane_row_base
++                            + fx.Int32(value_idx)
++                        )
++                        if const_expr(value_idx >= m):
++                            scales.append(f32(0.0))
++                        elif const_expr(config.hardware_bounds):
++                            a_scale = _load_f32(
++                                as_buf, global_row * fx.Int32(scale_blocks) + kb
++                            )
++                            scales.append(a_scale * b_scale)
++                        else:
++                            valid = global_row < fx.Int32(m)
++                            safe_row = valid.select(global_row, fx.Int32(0))
++                            a_scale = _load_f32(
++                                as_buf, safe_row * fx.Int32(scale_blocks) + kb
++                            )
++                            scales.append(valid.select(a_scale * b_scale, f32(0.0)))
++                for j in range_constexpr(2):
++                    total_v = Vec(totals[rt][j].load())
++                    partial_v = Vec(partials[rt][j].load())
++                    updated = [
++                        total_v[x] + partial_v[x] * scales[x]
++                        for x in range_constexpr(8)
++                    ]
++                    totals[rt][j].store(Vec.from_elements(updated, f32))
++
++        if const_expr(m == 1):
++            if lane < fx.Int32(16):
++                for j in range_constexpr(2):
++                    col = n0 + fx.Int32(j * WMMA_N) + lane_col
++                    value = _f32_to_bf16_rne(Vec(totals[0][j].load())[0])
++                    _store_bf16(out_buf, col, value)
++        else:
++            for rt in range_constexpr(config.row_tiles):
++                for value_idx in range_constexpr(min(8, m)):
++                    global_row = (
++                        block_row
++                        + fx.Int32(rt * WMMA_M)
++                        + lane_row_base
++                        + fx.Int32(value_idx)
++                    )
++                    for j in range_constexpr(2):
++                        col = n0 + fx.Int32(j * WMMA_N) + lane_col
++                        value = _f32_to_bf16_rne(Vec(totals[rt][j].load())[value_idx])
++                        if const_expr(config.hardware_bounds):
++                            _store_bf16(out_buf, global_row * fx.Int32(n) + col, value)
++                        elif global_row < fx.Int32(m):
++                            _store_bf16(out_buf, global_row * fx.Int32(n) + col, value)
++
++    @flyc.jit
++    def launch(
++        arg_a: fx.Tensor,
++        arg_b: fx.Tensor,
++        arg_as: fx.Tensor,
++        arg_bs: fx.Tensor,
++        arg_out: fx.Tensor,
++        stream: fx.Stream = fx.Stream(None),
++    ):
++        assert const_expr(
++            config_signature
++            == (
++                config.block_n,
++                config.row_tiles,
++                config.threads,
++                config.rotate_k,
++                config.load_batch,
++                config.m_fast,
++                config.hardware_bounds,
++            )
++        )
++        packed_kernel(arg_a, arg_b, arg_as, arg_bs, arg_out).launch(
++            grid=((n // config.block_n) * grid_m, 1, 1)
++            if config.m_fast
++            else (n // config.block_n, grid_m, 1),
++            block=(config.threads, 1, 1),
++            stream=stream,
++        )
++
++    return launch
++
++
++@lru_cache(maxsize=128)
++def _get_module(m: int, n: int, k: int, stride_b: int, config: KernelConfig):
++    if config.split_k in (4, 8):
++        from .rdna4_fp8_blockscale_decode_split import create_decode_split
++
++        return create_decode_split(
++            m,
++            n,
++            k,
++            stride_b,
++            config.block_n,
++            config.split_k,
++            config.load_batch,
++            config.rotate_k,
++            capped=config.capped_split,
++        )
++    return _create_packed_module(m, n, k, stride_b, config)
++
++
++def _run_small_m(a, weight, a_scale, weight_scale, out, stream, m, n, k):
++    """Launch an already validated packed-row or narrow split input."""
++    config = select_kernel_config(m, n, k)
++    module = _get_module(m, n, k, weight.stride(0), config)
++    run_compiled(module, a, weight, a_scale, weight_scale, out, stream)
++    return out
+diff --git a/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_wave32.py b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_wave32.py
+new file mode 100644
+index 0000000..d5aace9
+--- /dev/null
++++ b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_wave32.py
+@@ -0,0 +1,625 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++# ruff: noqa: B008 -- FlyDSL stream defaults are typed launch arguments
++"""Bank-balanced wave32 FP8 GEMM for RDNA4.
++
++Raw row-major operands are staged in LDS. Every K128 partial is completed in
++FP32 before its independent block scales are applied.
++"""
++
++from dataclasses import dataclass
++from functools import lru_cache
++
++import flydsl.compiler as flyc
++import flydsl.expr as fx
++from flydsl.expr import const_expr, gpu, range_constexpr
++from flydsl.expr.typing import Vector as Vec
++
++from .gfx12_sync import lds_fence_signal, lds_fence_wait
++from .rdna4_fp8_blockscale_common import (
++    SCALE_K,
++    WMMA_K,
++    WMMA_M,
++    WMMA_N,
++    _f32_to_bf16_rne,
++    _load_f32,
++    _load_fp8_fragment_ptr,
++    _make_buffer,
++)
++
++
++@dataclass(frozen=True)
++class Wave32Config:
++    tile_m: int
++    group_m: int
++    a_prefetch: int
++    b_prefetch: int
++    k_rotate: int = 0
++    reg_m: int = 2
++    split_k: int = 1
++    tile_n: int = 128
++    reg_n: int = 4
++    uniform_barrier: bool = False
++    lds_lookahead: bool = False
++    cu_mode: bool = False
++    n_major: bool = False
++
++
++def select_wave32_config(m: int, n: int, k: int) -> Wave32Config:
++    """Choose CU-local tiles without requiring a compiler wave-size override."""
++    thin_ctas = ((m + 63) // 64) * (n // 128)
++    if thin_ctas <= 32 and k >= 1024:
++        # More, smaller tiles fill the CUs on narrow grids. Rotate K to spread
++        # concurrent weight reads; each 64-column tile shares one scale row.
++        return Wave32Config(
++            tile_m=32,
++            tile_n=64,
++            reg_m=2,
++            reg_n=2,
++            group_m=8,
++            a_prefetch=4,
++            b_prefetch=8,
++            k_rotate=2,
++            split_k=2 if k >= 4096 and k % 256 == 0 else 1,
++            uniform_barrier=True,
++            cu_mode=True,
++            lds_lookahead=True,
++        )
++    if n < 4096:
++        return Wave32Config(
++            tile_m=64,
++            tile_n=64,
++            reg_m=2,
++            group_m=8,
++            a_prefetch=2,
++            b_prefetch=8,
++            k_rotate=2,
++            uniform_barrier=True,
++            cu_mode=True,
++        )
++    tile_m = 128 if m >= 1024 or m % 128 == 0 else 64
++    return Wave32Config(
++        tile_m=tile_m,
++        group_m=8,
++        a_prefetch=0,
++        b_prefetch=1 if tile_m == 128 else 0,
++        k_rotate=0 if m >= 1024 else 2,
++        reg_m=4 if m >= 4096 else 2,
++        reg_n=2 if m >= 4096 else 4,
++        uniform_barrier=True,
++        cu_mode=True,
++        lds_lookahead=m >= 1024,
++        n_major=1024 <= m < 4096,
++    )
++
++
++def _row_swizzle(row):
++    return (row // fx.Int32(2)) % fx.Int32(8)
++
++
++def _store_fp8x16(shared, index, fragment):
++    words = Vec(fragment.load())
++    fx.ptr_store(
++        words, fx.recast_iter(fx.Uint32, fx.get_iter(shared)) + index // fx.Int32(4)
++    )
++
++
++def _load_wordsx4(buffer, index, fragment):
++    atom = fx.make_copy_atom(fx.rocdl.BufferCopy128b(), fx.Uint32)
++    fx.copy(atom, fx.slice(buffer, (None, index // fx.Int32(4))), fragment)
++
++
++def _store_bf16x8(buffer, index, values):
++    atom = fx.make_copy_atom(fx.rocdl.BufferCopy128b(), fx.BFloat16)
++    fragment = fx.make_rmem_tensor(8, fx.BFloat16)
++    fragment.store(Vec.from_elements(values, fx.BFloat16))
++    fx.copy(atom, fragment, fx.slice(buffer, (None, index)))
++
++
++def _create_wave32_module(n: int, k: int, stride_b: int, config: Wave32Config):
++    """Create a single-stage LDS/WMMA prefill kernel."""
++    bm = config.tile_m
++    rm = config.reg_m
++    rn = config.reg_n
++    bn = config.tile_n
++    wn = rn * 16
++    nwaves = bn // wn
++    assert bn % wn == 0 and rn in (2, 4)
++    wm = rm * 16
++    accs = rm * rn
++    wave_size = 32
++    assert bm % (rm * 16) == 0
++    fragment_size = 8
++    threads = (bm // (rm * 16)) * nwaves * wave_size
++    load_fragment = _load_fp8_fragment_ptr
++    assert bm in (32, 64, 128) and rm in (1, 2, 4)
++    assert k % 128 == 0
++    assert config.group_m > 0
++    a_loads = bm * 128 // (16 * threads)
++    b_loads = bn * 128 // (16 * threads)
++    scale_blocks = k // SCALE_K
++    splits = config.split_k
++
++    assert splits in (1, 2)
++    assert scale_blocks % splits == 0
++    partition_blocks = scale_blocks // splits
++    grid_n = n // bn
++    lds_a_elems = bm * 128
++    lds_b_elems = bn * 128
++    output_rows = wm
++    lds_partition_elems = max(lds_a_elems + lds_b_elems, output_rows * bn * 4)
++    lds_elems = lds_partition_elems * splits
++    assert lds_elems <= 65536
++    cache_tag = (
++        bm,
++        bn,
++        rn,
++        config.group_m,
++        config.a_prefetch,
++        config.b_prefetch,
++        config.k_rotate,
++        rm,
++        splits,
++        wave_size,
++        config.uniform_barrier,
++        config.lds_lookahead,
++        config.cu_mode,
++        config.n_major,
++    )
++    assert n % bn == 0
++    assert 0 <= config.a_prefetch <= a_loads
++    assert 0 <= config.b_prefetch <= b_loads
++    fp8 = fx.Float8E4M3FN
++    f32 = fx.Float32
++    bf16 = fx.BFloat16
++    kernel_attrs = {
++        "rocdl.waves_per_eu": 1,
++        "rocdl.flat_work_group_size": f"{threads * splits},{threads * splits}",
++    }
++
++    if config.cu_mode:
++        # Keep each workgroup local to a CU and overlap independent LDS/WMMA
++        # instructions. These kernel attributes also work on FlyDSL main.
++        kernel_attrs["llvm.passthrough"] = [
++            ["target-features", "+cumode,+wavefrontsize32,-wavefrontsize64"],
++            ["amdgpu-sched-strategy", "max-ilp"],
++        ]
++
++    @fx.struct
++    class SharedStorage:
++        data: fx.Array[fp8, lds_elems, 16]
++
++    if config.group_m == 1:
++
++        def map_pid(pid, grid_m):
++            del grid_m
++            return (pid // fx.Int32(grid_n), pid % fx.Int32(grid_n))
++    else:
++
++        def map_pid(pid, grid_m):
++            num_pid_in_group = fx.Int32(config.group_m * grid_n)
++            group_id = pid // num_pid_in_group
++            first_pid_m = group_id * fx.Int32(config.group_m)
++            remaining_pid_m = grid_m - first_pid_m
++            group_size_m = (remaining_pid_m < fx.Int32(config.group_m)).select(
++                remaining_pid_m, fx.Int32(config.group_m)
++            )
++            pid_in_group = pid % num_pid_in_group
++            pid_m = first_pid_m + pid_in_group % group_size_m
++            pid_n = pid_in_group // group_size_m
++            return (pid_m, pid_n)
++
++    @flyc.kernel
++    def wave32_kernel(
++        arg_a: fx.Tensor,
++        arg_b: fx.Tensor,
++        arg_as: fx.Tensor,
++        arg_bs: fx.Tensor,
++        arg_out: fx.Tensor,
++        arg_m: fx.Int32,
++    ):
++        m_extent = arg_m
++        grid_m = (m_extent + fx.Int32(bm - 1)) // fx.Int32(bm)
++        tid = fx.thread_idx.x % fx.Int32(threads)
++        partition_id = fx.thread_idx.x // fx.Int32(threads)
++        wave = tid // fx.Int32(wave_size)
++        wave_m = wave // fx.Int32(nwaves)
++        wave_n = wave % fx.Int32(nwaves)
++        lane = tid % fx.Int32(wave_size)
++        lane16 = lane % fx.Int32(WMMA_N)
++        lane_half = lane // fx.Int32(WMMA_N)
++        lane_offset = lane_half * fx.Int32(8)
++        pid = fx.block_idx.x
++        pid_m, pid_n = map_pid(pid, grid_m)
++        m0 = pid_m * fx.Int32(bm)
++        n0 = pid_n * fx.Int32(bn)
++        partition_start = partition_id * fx.Int32(partition_blocks)
++        first_local_kb = pid_n * fx.Int32(config.k_rotate) % fx.Int32(partition_blocks)
++        first_kb = partition_start + first_local_kb
++        a_buf = _make_buffer(arg_a, fx.Uint32, 4, m_extent * fx.Int32(k))
++        b_buf = _make_buffer(arg_b, fx.Uint32, 4, n * stride_b)
++        as_buf = _make_buffer(arg_as, f32, 1, m_extent * fx.Int32(scale_blocks * 4))
++        bs_ptr = fx.recast_iter(f32, fx.get_iter(arg_bs))
++        out_buf = _make_buffer(
++            arg_out,
++            bf16,
++            fragment_size if splits == 1 else 8,
++            m_extent * fx.Int32(n * 2),
++        )
++        shared = fx.SharedAllocator().allocate(SharedStorage).peek().data
++        aligned_lds_ty = fx.PointerType.get(fp8.ir_type, fx.AddressSpace.Shared, 16)
++        lds_a_ptr = fx.recast_iter(
++            aligned_lds_ty, shared.ptr + partition_id * fx.Int32(lds_partition_elems)
++        )
++        lds_b_ptr = lds_a_ptr + fx.Int32(lds_a_elems)
++        lds_a = fx.make_view(lds_a_ptr, fx.make_layout((16, 1), (1, 1)))
++        lds_b = fx.make_view(lds_b_ptr, fx.make_layout((16, 1), (1, 1)))
++        mma = fx.make_mma_atom(fx.rocdl.WMMA(WMMA_M, WMMA_N, WMMA_K, fp8, f32))
++        totals = [
++            fx.make_rmem_tensor(fragment_size, f32) for _ in range_constexpr(accs)
++        ]
++        for ni in range_constexpr(accs):
++            totals[ni].fill(0)
++        staged_a = [
++            fx.make_rmem_tensor(4, fx.Uint32)
++            for _ in range_constexpr(config.a_prefetch)
++        ]
++        v = row = ko = global_row = fx.Int32(0)
++        for q in range_constexpr(config.a_prefetch):
++            v = tid + fx.Int32(q * threads)
++            row = v // fx.Int32(128 // 16)
++            ko = v % fx.Int32(128 // 16) * fx.Int32(16)
++            global_row = m0 + row
++            _load_wordsx4(
++                a_buf,
++                global_row * fx.Int32(k) + first_kb * fx.Int32(SCALE_K) + ko,
++                staged_a[q],
++            )
++        staged_b = [
++            fx.make_rmem_tensor(4, fx.Uint32)
++            for _ in range_constexpr(config.b_prefetch)
++        ]
++        for q in range_constexpr(config.b_prefetch):
++            v = tid + fx.Int32(q * threads)
++            row = v // fx.Int32(128 // 16)
++            ko = v % fx.Int32(128 // 16) * fx.Int32(16)
++            _load_wordsx4(
++                b_buf,
++                (n0 + row) * fx.Int32(stride_b) + first_kb * fx.Int32(SCALE_K) + ko,
++                staged_b[q],
++            )
++        for k_iter in range(0, partition_blocks, 1):
++            local_kb = fx.Int32(k_iter)
++            if const_expr(config.k_rotate != 0):
++                local_kb = (local_kb + first_local_kb) % fx.Int32(partition_blocks)
++            kb = partition_start + local_kb
++            # Uniform startup avoids loop peeling on fully prefetched thin tiles.
++            if const_expr(config.uniform_barrier):
++                lds_fence_signal()
++                lds_fence_wait()
++            else:
++                if k_iter != 0:
++                    lds_fence_signal()
++                    lds_fence_wait()
++            for q in range_constexpr(config.a_prefetch):
++                v = tid + fx.Int32(q * threads)
++                row = v // fx.Int32(128 // 16)
++                ko = v % fx.Int32(128 // 16) * fx.Int32(16)
++                sw_ko = (ko // fx.Int32(16) ^ _row_swizzle(row)) * fx.Int32(16)
++                _store_fp8x16(lds_a, row * fx.Int32(128) + sw_ko, staged_a[q])
++            for q in range_constexpr(config.a_prefetch, a_loads):
++                v = tid + fx.Int32(q * threads)
++                row = v // fx.Int32(128 // 16)
++                ko = v % fx.Int32(128 // 16) * fx.Int32(16)
++                fragment = fx.make_rmem_tensor(4, fx.Uint32)
++                global_row = m0 + row
++                _load_wordsx4(
++                    a_buf,
++                    global_row * fx.Int32(k) + fx.Int32(kb * SCALE_K) + ko,
++                    fragment,
++                )
++                sw_ko = (ko // fx.Int32(16) ^ _row_swizzle(row)) * fx.Int32(16)
++                _store_fp8x16(lds_a, row * fx.Int32(128) + sw_ko, fragment)
++            for q in range_constexpr(config.b_prefetch):
++                v = tid + fx.Int32(q * threads)
++                row = v // fx.Int32(128 // 16)
++                ko = v % fx.Int32(128 // 16) * fx.Int32(16)
++                swizzled_ko = (ko // fx.Int32(16) ^ _row_swizzle(row)) * fx.Int32(16)
++                _store_fp8x16(lds_b, row * fx.Int32(128) + swizzled_ko, staged_b[q])
++            for q in range_constexpr(config.b_prefetch, b_loads):
++                v = tid + fx.Int32(q * threads)
++                row = v // fx.Int32(128 // 16)
++                ko = v % fx.Int32(128 // 16) * fx.Int32(16)
++                fragment = fx.make_rmem_tensor(4, fx.Uint32)
++                _load_wordsx4(
++                    b_buf,
++                    (n0 + row) * fx.Int32(stride_b) + fx.Int32(kb * SCALE_K) + ko,
++                    fragment,
++                )
++                swizzled_ko = (ko // fx.Int32(16) ^ _row_swizzle(row)) * fx.Int32(16)
++                _store_fp8x16(lds_b, row * fx.Int32(128) + swizzled_ko, fragment)
++            lds_fence_signal()
++            if k_iter + 1 < partition_blocks:
++                next_local = local_kb + fx.Int32(1)
++                if const_expr(config.k_rotate != 0):
++                    next_local = next_local % fx.Int32(partition_blocks)
++                next_k0 = (partition_start + next_local) * fx.Int32(SCALE_K)
++                for q in range_constexpr(config.a_prefetch):
++                    v = tid + fx.Int32(q * threads)
++                    row = v // fx.Int32(128 // 16)
++                    ko = v % fx.Int32(128 // 16) * fx.Int32(16)
++                    global_row = m0 + row
++                    _load_wordsx4(
++                        a_buf, global_row * fx.Int32(k) + next_k0 + ko, staged_a[q]
++                    )
++                for q in range_constexpr(config.b_prefetch):
++                    v = tid + fx.Int32(q * threads)
++                    row = v // fx.Int32(128 // 16)
++                    ko = v % fx.Int32(128 // 16) * fx.Int32(16)
++                    _load_wordsx4(
++                        b_buf,
++                        (n0 + row) * fx.Int32(stride_b) + next_k0 + ko,
++                        staged_b[q],
++                    )
++            lds_fence_wait()
++            for bi in range_constexpr(1):
++                b_group = (n0 + wave_n * fx.Int32(wn)) // fx.Int32(SCALE_K)
++                if const_expr(bn <= SCALE_K):
++                    b_group = n0 // fx.Int32(SCALE_K)
++                b_scale = f32(
++                    fx.ptr_load(
++                        bs_ptr + b_group * fx.Int32(scale_blocks) + fx.Int32(kb + bi)
++                    )
++                )
++                row_scales = []
++                for mi in range_constexpr(rm):
++                    scales = []
++                    for ri in range_constexpr(fragment_size):
++                        row = (
++                            m0
++                            + wave_m * fx.Int32(wm)
++                            + fx.Int32(mi * WMMA_M)
++                            + lane_offset
++                            + fx.Int32(ri)
++                        )
++                        row = (
++                            m0 + wave_m * fx.Int32(wm) + fx.Int32(mi * WMMA_M) + lane16
++                        )
++                        scales.append(
++                            _load_f32(
++                                as_buf, row * fx.Int32(scale_blocks) + fx.Int32(kb + bi)
++                            )
++                            * f32(1.0)
++                        )
++                    row_scales.append(scales)
++                for mg in range_constexpr(rm // rm):
++                    partials = [
++                        fx.make_rmem_tensor(fragment_size, f32)
++                        for _ in range_constexpr(rm * rn)
++                    ]
++                    for ni in range_constexpr(rm * rn):
++                        partials[ni].fill(0)
++                    a_row_base = wave_m * fx.Int32(wm) + lane16
++                    b_row_base = wave_n * fx.Int32(wn) + lane16
++                    b_lane_base = b_row_base * fx.Int32(128)
++                    word_flip = fx.Int32(0)
++                    if const_expr(config.lds_lookahead):
++                        staged_a_lds = [
++                            fx.make_rmem_tensor(fragment_size, fp8)
++                            for _ in range_constexpr(rm)
++                        ]
++                        for mi in range_constexpr(rm):
++                            a_sw_k = (
++                                fx.Int32(bi * 8) ^ _row_swizzle(a_row_base)
++                            ) * fx.Int32(16) + lane_offset ^ word_flip
++                            a_index = (
++                                a_row_base * fx.Int32(128)
++                                + fx.Int32((mg * rm + mi) * WMMA_M * 128)
++                                + a_sw_k
++                            )
++                            load_fragment(lds_a_ptr, a_index, staged_a_lds[mi])
++                        staged_b_lds = [
++                            fx.make_rmem_tensor(fragment_size, fp8)
++                            for _ in range_constexpr(rn)
++                        ]
++                        swizzled_k = (
++                            fx.Int32(bi * 8) ^ _row_swizzle(b_row_base)
++                        ) * fx.Int32(16) + lane_offset
++                        swizzled_k = swizzled_k ^ word_flip
++                        for ni in range_constexpr(rn):
++                            load_fragment(
++                                lds_b_ptr,
++                                b_lane_base + fx.Int32(ni * WMMA_N * 128) + swizzled_k,
++                                staged_b_lds[ni],
++                            )
++                    for ki in range_constexpr(SCALE_K // WMMA_K):
++                        a_frags = [
++                            fx.make_rmem_tensor(fragment_size, fp8)
++                            for _ in range_constexpr(rm)
++                        ]
++                        b_frags = [
++                            fx.make_rmem_tensor(fragment_size, fp8)
++                            for _ in range_constexpr(rn)
++                        ]
++                        if const_expr(config.lds_lookahead):
++                            for mi in range_constexpr(rm):
++                                a_frags[mi].store(staged_a_lds[mi].load())
++                            for ni in range_constexpr(rn):
++                                b_frags[ni].store(staged_b_lds[ni].load())
++                            if const_expr(ki + 1 < SCALE_K // WMMA_K):
++                                staged_a_lds = [
++                                    fx.make_rmem_tensor(fragment_size, fp8)
++                                    for _ in range_constexpr(rm)
++                                ]
++                                for mi in range_constexpr(rm):
++                                    a_sw_k = (
++                                        fx.Int32(bi * 8 + ki + 1)
++                                        ^ _row_swizzle(a_row_base)
++                                    ) * fx.Int32(16) + lane_offset ^ word_flip
++                                    a_index = (
++                                        a_row_base * fx.Int32(128)
++                                        + fx.Int32((mg * rm + mi) * WMMA_M * 128)
++                                        + a_sw_k
++                                    )
++                                    load_fragment(lds_a_ptr, a_index, staged_a_lds[mi])
++                                staged_b_lds = [
++                                    fx.make_rmem_tensor(fragment_size, fp8)
++                                    for _ in range_constexpr(rn)
++                                ]
++                                swizzled_k = (
++                                    fx.Int32(bi * 8 + ki + 1) ^ _row_swizzle(b_row_base)
++                                ) * fx.Int32(16) + lane_offset ^ word_flip
++                                for ni in range_constexpr(rn):
++                                    load_fragment(
++                                        lds_b_ptr,
++                                        b_lane_base
++                                        + fx.Int32(ni * WMMA_N * 128)
++                                        + swizzled_k,
++                                        staged_b_lds[ni],
++                                    )
++                        else:
++                            for mi in range_constexpr(rm):
++                                a_sw_k = (
++                                    fx.Int32(bi * 8 + ki) ^ _row_swizzle(a_row_base)
++                                ) * fx.Int32(16) + lane_offset ^ word_flip
++                                a_index = (
++                                    a_row_base * fx.Int32(128)
++                                    + fx.Int32((mg * rm + mi) * WMMA_M * 128)
++                                    + a_sw_k
++                                )
++                                load_fragment(lds_a_ptr, a_index, a_frags[mi])
++                            swizzled_k = (
++                                fx.Int32(bi * 8 + ki) ^ _row_swizzle(b_row_base)
++                            ) * fx.Int32(16) + lane_offset
++                            swizzled_k = swizzled_k ^ word_flip
++                            for ni in range_constexpr(rn):
++                                load_fragment(
++                                    lds_b_ptr,
++                                    b_lane_base
++                                    + fx.Int32(ni * WMMA_N * 128)
++                                    + swizzled_k,
++                                    b_frags[ni],
++                                )
++                        for outer in range_constexpr(rn if config.n_major else rm):
++                            for inner in range_constexpr(rm if config.n_major else rn):
++                                mi = inner if const_expr(config.n_major) else outer
++                                ni = outer if const_expr(config.n_major) else inner
++                                idx = mi * rn + ni
++                                fx.gemm(
++                                    mma,
++                                    partials[idx],
++                                    b_frags[ni],
++                                    a_frags[mi],
++                                    partials[idx],
++                                )
++                        fx.rocdl.sched_barrier(0)
++                    for mi in range_constexpr(rm):
++                        for ni in range_constexpr(rn):
++                            idx = mi * rn + ni
++                            total_idx = (mg * rm + mi) * rn + ni
++                            total_v = Vec(totals[total_idx].load())
++                            partial_v = Vec(partials[idx].load())
++                            totals[total_idx].store(
++                                Vec.from_elements(
++                                    [
++                                        fx.fma(
++                                            partial_v[ri],
++                                            row_scales[mg * rm + mi][ri] * b_scale,
++                                            total_v[ri],
++                                        )
++                                        for ri in range_constexpr(fragment_size)
++                                    ],
++                                    f32,
++                                )
++                            )
++        if const_expr(splits == 1):
++            for mi in range_constexpr(rm):
++                row = m0 + wave_m * fx.Int32(wm) + fx.Int32(mi * 16) + lane16
++                if row < m_extent:
++                    for ni in range_constexpr(rn):
++                        values = Vec(totals[mi * rn + ni].load())
++                        col = (
++                            n0 + wave_n * fx.Int32(wn) + fx.Int32(ni * 16) + lane_offset
++                        )
++                        converted = [
++                            _f32_to_bf16_rne(values[ri])
++                            for ri in range_constexpr(fragment_size)
++                        ]
++                        _store_bf16x8(out_buf, row * fx.Int32(n) + col, converted)
++        else:
++            gpu.barrier()
++            lds_out_ptr = fx.recast_iter(f32, lds_a_ptr)
++            output_wave_rows = output_rows // wm
++            for group in range_constexpr(bm // output_rows):
++                if wave_m // fx.Int32(output_wave_rows) == fx.Int32(group):
++                    local_wave_m = wave_m % fx.Int32(output_wave_rows)
++                    for mi in range_constexpr(rm):
++                        for ni in range_constexpr(rn):
++                            idx = mi * rn + ni
++                            local_row = (
++                                local_wave_m * fx.Int32(wm)
++                                + fx.Int32(mi * WMMA_M)
++                                + lane16
++                            )
++                            local_col = (
++                                wave_n * fx.Int32(wn)
++                                + fx.Int32(ni * WMMA_N)
++                                + lane_offset
++                            )
++                            fx.ptr_store(
++                                Vec(totals[idx].load()),
++                                lds_out_ptr + local_row * fx.Int32(bn) + local_col,
++                            )
++                gpu.barrier()
++                for q in range_constexpr(output_rows * bn // 8 // threads):
++                    v = tid + fx.Int32(q * threads)
++                    local_row = v // fx.Int32(bn // 8)
++                    col = v % fx.Int32(bn // 8) * fx.Int32(8)
++                    row = m0 + fx.Int32(group * output_rows) + local_row
++                    if (row < m_extent) & (partition_id == fx.Int32(0)):
++                        values = fx.ptr_load(
++                            lds_out_ptr + local_row * fx.Int32(bn) + col,
++                            result_type=fx.Vector.make_type(8, f32),
++                        )
++                        values_v = Vec(values)
++                        if const_expr(splits > 1):
++                            other_values = fx.ptr_load(
++                                lds_out_ptr
++                                + fx.Int32(lds_partition_elems // 4)
++                                + local_row * fx.Int32(bn)
++                                + col,
++                                result_type=fx.Vector.make_type(8, f32),
++                            )
++                            values_v = values_v + Vec(other_values)
++                        _store_bf16x8(
++                            out_buf,
++                            row * fx.Int32(n) + n0 + col,
++                            [_f32_to_bf16_rne(values_v[i]) for i in range_constexpr(8)],
++                        )
++                gpu.barrier()
++
++    @flyc.jit
++    def launch(
++        arg_a: fx.Tensor,
++        arg_b: fx.Tensor,
++        arg_as: fx.Tensor,
++        arg_bs: fx.Tensor,
++        arg_out: fx.Tensor,
++        arg_m: fx.Int32,
++        stream: fx.Stream = fx.Stream(None),
++    ):
++        _ = cache_tag
++        launch_m = arg_m
++        total_blocks = (launch_m + fx.Int32(bm - 1)) // fx.Int32(bm) * fx.Int32(grid_n)
++        wave32_kernel(
++            arg_a, arg_b, arg_as, arg_bs, arg_out, arg_m, value_attrs=kernel_attrs
++        ).launch(
++            grid=(total_blocks, 1, 1), block=(threads * splits, 1, 1), stream=stream
++        )
++
++    return launch
++
++
++@lru_cache(maxsize=128)
++def _get_wave32_module(n, k, stride_b, config):
++    return _create_wave32_module(n, k, stride_b, config)
+diff --git a/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/runtime.py b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/runtime.py
+new file mode 100644
+index 0000000..eb6e5e7
+--- /dev/null
++++ b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/runtime.py
+@@ -0,0 +1,24 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++"""Minimal FlyDSL compilation and dispatch helper."""
++
++import flydsl.compiler as flyc
++from flydsl._mlir import ir
++
++
++def run_compiled(executable, *args):
++    """Compile on first use and dispatch the cached function thereafter."""
++    compiled = getattr(executable, "_vllm_compiled", None)
++    if compiled is not None:
++        compiled(*args)
++        return
++    try:
++        executable._vllm_compiled = flyc.compile(executable, *args)
++    except Exception:
++        try:
++            while ir.Context.current is not None:
++                ir.Context.current.__exit__(None, None, None)
++        except Exception:
++            pass
++        raise
+diff --git a/vllm/model_executor/kernels/linear/scaled_mm/rdna4.py b/vllm/model_executor/kernels/linear/scaled_mm/rdna4.py
+new file mode 100644
+index 0000000..84a2e56
+--- /dev/null
++++ b/vllm/model_executor/kernels/linear/scaled_mm/rdna4.py
+@@ -0,0 +1,114 @@
++# SPDX-License-Identifier: Apache-2.0
++# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
++
++from __future__ import annotations
++
++from functools import lru_cache
++
++import torch
++
++from vllm.model_executor.layers.quantization.utils.quant_utils import GroupShape
++from vllm.platforms import current_platform
++from vllm.utils.torch_utils import direct_register_custom_op
++
++from .BlockScaledMMLinearKernel import (
++    Fp8BlockScaledMMLinearKernel,
++    FP8ScaledMMLinearLayerConfig,
++)
++
++
++@lru_cache(maxsize=1)
++def _load_rdna4_flydsl_mm():
++    """Load the vLLM-owned FlyDSL kernel lazily."""
++    from .flydsl_kernels.rdna4_fp8_blockscale import (
++        rdna4_fp8_block_scaled_mm,
++    )
++
++    return rdna4_fp8_block_scaled_mm
++
++
++def _rdna4_fp8_block_scaled_mm_impl(
++    a: torch.Tensor,
++    weight: torch.Tensor,
++    a_scale: torch.Tensor,
++    weight_scale: torch.Tensor,
++) -> torch.Tensor:
++    return _load_rdna4_flydsl_mm()(a, weight, a_scale, weight_scale)
++
++
++def _rdna4_fp8_block_scaled_mm_fake(
++    a: torch.Tensor,
++    weight: torch.Tensor,
++    a_scale: torch.Tensor,
++    weight_scale: torch.Tensor,
++) -> torch.Tensor:
++    del a_scale, weight_scale
++    return torch.empty(
++        (a.size(0), weight.size(0)), dtype=torch.bfloat16, device=a.device
++    )
++
++
++direct_register_custom_op(
++    op_name="rdna4_fp8_block_scaled_mm",
++    op_func=_rdna4_fp8_block_scaled_mm_impl,
++    mutates_args=[],
++    fake_impl=_rdna4_fp8_block_scaled_mm_fake,
++)
++
++
++class RDNA4Fp8BlockScaledMMKernel(Fp8BlockScaledMMLinearKernel):
++    """FlyDSL block-FP8 kernel family for RDNA4."""
++
++    @classmethod
++    def is_supported(
++        cls, compute_capability: int | None = None
++    ) -> tuple[bool, str | None]:
++        del compute_capability
++        if not current_platform.is_rocm():
++            return False, "RDNA4 block-FP8 kernels require ROCm"
++        from vllm.platforms.rocm import on_rdna4
++
++        if not on_rdna4():
++            return False, "RDNA4 block-FP8 kernels require gfx1200 or gfx1201"
++        try:
++            _load_rdna4_flydsl_mm()
++        except (ImportError, OSError) as exc:
++            return False, f"patched RDNA4 FlyDSL stack is unavailable: {exc}"
++        return True, None
++
++    @classmethod
++    def can_implement(
++        cls, config: FP8ScaledMMLinearLayerConfig
++    ) -> tuple[bool, str | None]:
++        can_implement, reason = super().can_implement(config)
++        if not can_implement:
++            return can_implement, reason
++        if config.input_dtype != torch.bfloat16:
++            return False, "RDNA4 block-FP8 supports only BF16 input"
++        if config.out_dtype != torch.bfloat16:
++            return False, "RDNA4 block-FP8 supports only BF16 output"
++        if config.activation_quant_key.dtype != torch.float8_e4m3fn:
++            return False, "RDNA4 block-FP8 requires OCP FP8 activations"
++        if config.weight_quant_key.dtype != torch.float8_e4m3fn:
++            return False, "RDNA4 block-FP8 requires OCP FP8 weights"
++        if config.activation_quant_key.scale.dtype != torch.float32:
++            return False, "RDNA4 block-FP8 requires FP32 activation scales"
++        if config.weight_quant_key.scale.dtype != torch.float32:
++            return False, "RDNA4 block-FP8 requires FP32 weight scales"
++        if config.activation_quant_key.scale.group_shape != GroupShape(1, 128):
++            return False, "RDNA4 block-FP8 requires 1x128 activation scales"
++        if config.weight_quant_key.scale.group_shape != GroupShape(128, 128):
++            return False, "RDNA4 block-FP8 requires 128x128 weight scales"
++        n, k = config.weight_shape
++        if n <= 0 or n % 128 != 0 or k <= 0 or k % 128 != 0:
++            return False, "RDNA4 block-FP8 requires N and K divisible by 128"
++        return True, None
++
++    def apply_block_scaled_mm(
++        self,
++        A: torch.Tensor,
++        B: torch.Tensor,
++        As: torch.Tensor,
++        Bs: torch.Tensor,
++    ) -> torch.Tensor:
++        return torch.ops.vllm.rdna4_fp8_block_scaled_mm(A, B, As, Bs)
+-- 
+2.53.0
+

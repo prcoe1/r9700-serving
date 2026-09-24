@@ -1,0 +1,57 @@
+From 0d4a1334f41fbd47b0b13865c5c0762e09d94182 Mon Sep 17 00:00:00 2001
+From: opencode <opencode@localhost>
+Date: Thu, 24 Sep 2026 11:08:29 +0000
+Subject: [PATCH 5/5] [Perf][ROCm] Port #57767 model_runner.py hunk to v0.30.0
+
+v0.30.0 still constructs BatchDescriptor directly in execute_model (the
+main-base uses make_forward_batch_descriptor). Port the switch: drop the
+now-unused BatchDescriptor import, add make_forward_batch_descriptor to
+the cudagraph_utils import (function added by the 57767 patch), and call
+it with num_reqs/uniform_token_count/num_ubatches + fallback=True.
+BatchDescriptor in v0.30.0 already carries the num_reqs/uniform fields.
+---
+ vllm/v1/worker/gpu/model_runner.py | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
+index 806abc0..e25ad40 100644
+--- a/vllm/v1/worker/gpu/model_runner.py
++++ b/vllm/v1/worker/gpu/model_runner.py
+@@ -37,7 +37,7 @@ from vllm.distributed.parallel_state import (
+     get_dcp_group,
+     get_pp_group,
+ )
+-from vllm.forward_context import BatchDescriptor, set_forward_context
++from vllm.forward_context import set_forward_context
+ from vllm.logger import init_logger
+ from vllm.model_executor.layers.fused_moe.all2all_utils import get_ep_all2all_manager
+ from vllm.model_executor.layers.fused_moe.routed_experts_capturer import (
+@@ -106,6 +106,7 @@ from vllm.v1.worker.gpu.cudagraph_utils import (
+     ModelCudaGraphManager,
+     has_compiled_submodule,
+     make_cudagraph_stats,
++    make_forward_batch_descriptor,
+ )
+ from vllm.v1.worker.gpu.cudagraph_utils import (
+     profile_cudagraph_memory as _profile_cudagraph_memory,
+@@ -1910,11 +1911,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+             model_output = self.cudagraph_manager.run_fullgraph(batch_desc)
+         else:
+             # For piecewise and eager mode, just call model().
+-            batch_descriptor = BatchDescriptor(
++            batch_descriptor = make_forward_batch_descriptor(
+                 num_tokens=input_batch.num_tokens_after_padding,
++                num_reqs=input_batch.num_reqs_after_padding,
++                uniform_token_count=uniform_tok_count,
++                num_ubatches=len(ubatch_slices) if ubatch_slices is not None else 1,
+                 has_lora=self.lora_config is not None,
+                 num_active_loras=batch_desc.num_active_loras,
++                fallback=True,
+             )
++            assert batch_descriptor is not None
+ 
+             with set_forward_context(
+                 attn_metadata,
+-- 
+2.53.0
+

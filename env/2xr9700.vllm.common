@@ -15,3 +15,8 @@ PYTORCH_NVML_BASED_CUDA_CHECK=1
 NCCL_MIN_NCHANNELS=4
 NCCL_MAX_NCHANNELS=4
 NCCL_P2P_DISABLE=1
+# RDNA custom all-reduce (vLLM #57767, built into the image) needs
+# inter-GPU P2P, which this 2x R9700 board does not expose
+# (torch.cuda.can_device_access_peer == False); left disabled, would
+# fall back to PYNCCL with a startup warning.
+# VLLM_ROCM_USE_RDNA_ALL_REDUCE=1

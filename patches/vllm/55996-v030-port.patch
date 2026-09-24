@@ -1,0 +1,69 @@
+From 4defa67c46f521d87a4112fedddb63791eb9bd78 Mon Sep 17 00:00:00 2001
+From: opencode <opencode@localhost>
+Date: Thu, 24 Sep 2026 11:07:55 +0000
+Subject: [PATCH 2/5] [Perf][ROCm] Port #55996 envs.py + model_runner.py hunks
+ to v0.30.0
+
+v0.30.0 drift: envs.py resolver comment line and initialize_kv_cache
+context differ from the PR base. Env entry placed next to
+VLLM_ROCM_USE_AITER in both the type and resolver dicts; set_attn in
+initialize_kv_cache wrapped in use_workspace_lane (already imported and
+used at the other set_attn call sites in v0.30.0).
+---
+ vllm/envs.py                       |  6 ++++++
+ vllm/v1/worker/gpu/model_runner.py | 15 ++++++++-------
+ 2 files changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/vllm/envs.py b/vllm/envs.py
+index 6158f86..727f6b5 100755
+--- a/vllm/envs.py
++++ b/vllm/envs.py
+@@ -132,6 +132,7 @@ if TYPE_CHECKING:
+     VLLM_USE_OINK_OPS: bool = False
+     VLLM_MXFP8_EMULATION_DEQUANT_AT_LOAD: bool = True
+     VLLM_ROCM_USE_AITER: bool = False
++    VLLM_ROCM_USE_RDNA4_SPLITKV_FLYDSL: bool = False
+     VLLM_ROCM_USE_AITER_CUSTOM_AR: bool = True
+     VLLM_ROCM_USE_AITER_LINEAR: bool = True
+     VLLM_ROCM_USE_AITER_LINEAR_HIPBMM: bool = False
+@@ -1231,6 +1232,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
+     "VLLM_ROCM_USE_AITER": lambda: (
+         os.getenv("VLLM_ROCM_USE_AITER", "False").lower() in ("true", "1")
+     ),
++    # Enable the vLLM-owned RDNA4 FlyDSL SplitKV paged-attention backend.
++    "VLLM_ROCM_USE_RDNA4_SPLITKV_FLYDSL": lambda: (
++        os.getenv("VLLM_ROCM_USE_RDNA4_SPLITKV_FLYDSL", "False").lower()
++        in ("true", "1")
++    ),
+     # Use AITER's CustomAllreduce as the custom-allreduce backend inside vLLM's
+     # CudaCommunicator on ROCm. Also enables AITER AG/RS for DP communication.
+     "VLLM_ROCM_USE_AITER_CUSTOM_AR": lambda: (
+diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
+index b66d552..806abc0 100644
+--- a/vllm/v1/worker/gpu/model_runner.py
++++ b/vllm/v1/worker/gpu/model_runner.py
+@@ -729,13 +729,14 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+         check_attention_cp_compatibility(self.vllm_config, target_attn_layer_names)
+         if isinstance(self.speculator, DraftModelSpeculator):
+             # HACK(woosuk)
+-            self.speculator.set_attn(
+-                self.model_state,
+-                self.kv_cache_config,
+-                self.block_tables,
+-                self.input_buffers,
+-                self.attn_groups,
+-            )
++            with use_workspace_lane(self._draft_workspace_lane):
++                self.speculator.set_attn(
++                    self.model_state,
++                    self.kv_cache_config,
++                    self.block_tables,
++                    self.input_buffers,
++                    self.attn_groups,
++                )
+         if self.speculator is not None:
+             # After set_attn, so the speculator can size its cudagraph mode
+             # to its own attention support.
+-- 
+2.53.0
+
