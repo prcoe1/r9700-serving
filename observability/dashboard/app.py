@@ -42,8 +42,8 @@ LOG_CAP = 16000
 # Tails kept for the history record: last N chars of stdout / all stderr tail.
 RAW_CAP = 8000
 STDERR_CAP = 4000
-# Depth-sweep ladder follows the live VLLM_MAX_MODEL_LEN (the dashboard
-# inherits the same env_file stack as vllm, so this is authoritative):
+# Depth-sweep ladder follows the running server's --max-model-len (live
+# GET /v1/models, VLLM_MAX_MODEL_LEN env as fallback):
 # powers of two plus a top rung at the largest 1024-aligned depth below
 # max_len - pp - tg - margin. Legacy 256K-era ladder as fallback.
 LEGACY_DEPTHS = [0, 4096, 8192, 16384, 32768, 65536, 128000, 200000]
@@ -57,10 +57,39 @@ def _get_max_model_len() -> int | None:
         return None
 
 
+# Live `--max-model-len` from the running server (GET /v1/models exposes it
+# as data[0].max_model_len). The ladder must fit the *launched* window,
+# which can differ from this process's env (profile switch, CLI override),
+# so live wins when reachable; env is the fallback. Cached briefly — depths
+# are only (re)computed at sweep start, not per poll.
+_LIVE_MAX_LEN: dict[str, Any] = {"ts": 0.0, "value": None}
+_LIVE_MAX_LEN_TTL = 60.0
+
+
+def _get_live_max_model_len(timeout: float = 5.0) -> int | None:
+    now = time.time()
+    if now - _LIVE_MAX_LEN["ts"] < _LIVE_MAX_LEN_TTL and _LIVE_MAX_LEN["value"] is not None:
+        return _LIVE_MAX_LEN["value"]
+    try:
+        import urllib.request
+        url = VLLM_URL.rstrip("/") + "/v1/models"
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            payload = json.loads(r.read().decode("utf-8", "replace"))
+        data = payload.get("data") or []
+        v = int(data[0].get("max_model_len")) if data else 0
+        if v > 0:
+            _LIVE_MAX_LEN["ts"], _LIVE_MAX_LEN["value"] = now, v
+            return v
+    except Exception as e:
+        print(f"[warn] live max_model_len fetch failed ({e}); using env fallback",
+              file=sys.stderr)
+    return None
+
+
 def _get_depths(pp: int = 2048, tg: int = 1024, margin: int = 2048) -> list[int]:
-    max_len = _get_max_model_len()
+    max_len = _get_live_max_model_len() or _get_max_model_len()
     if max_len is None:
-        print("[warn] VLLM_MAX_MODEL_LEN not set; using legacy depth ladder",
+        print("[warn] VLLM_MAX_MODEL_LEN not set and live lookup failed; using legacy depth ladder",
               file=sys.stderr)
         return list(LEGACY_DEPTHS)
     cap = max_len - pp - tg - margin
@@ -586,6 +615,17 @@ async def api_info():
             pass
     return JSONResponse({"model": model, "kv_dtype": kv, "profile": profile, "vllm_url": VLLM_URL,
                            "max_conc": _get_max_concurrency()})
+
+
+@app.get("/api/sweep-config")
+async def api_sweep_config():
+    # Live sweep geometry for the UI labels (subtitles, run buttons,
+    # confirm prompts): depth ladder from the running server's
+    # --max-model-len, concurrency cap from env. The frontend falls back
+    # to its hardcoded text when this fetch fails.
+    depths = _get_depths()
+    return JSONResponse({"max_model_len": _get_live_max_model_len() or _get_max_model_len(),
+                         "depths": depths, "max_conc": _get_max_concurrency()})
 
 
 # ---------------------------------------------------------------------------

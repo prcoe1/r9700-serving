@@ -88,7 +88,7 @@
   </div>
 
   <div class="card" id="depthCard">
-    <h3><button class="collapse-btn" data-collapse="depthCard" aria-expanded="true" aria-label="Collapse depth sweep">▾</button> Depth sweep <span class="muted" style="text-transform:none;letter-spacing:0">full 0–200K corpus (pp2048/tg1024, TTFT in table) — est. 20min</span></h3>
+    <h3><button class="collapse-btn" data-collapse="depthCard" aria-expanded="true" aria-label="Collapse depth sweep">▾</button> Depth sweep <span id="depthSubtitle" class="muted" style="text-transform:none;letter-spacing:0">full 0–200K corpus (pp2048/tg1024, TTFT in table) — est. 20min</span></h3>
     <div class="row" style="margin-bottom:10px">
       <button id="runDepth" class="btn">▶ Run depth sweep (0–200K) — est. 20min</button>
       <button id="cancelDepth" class="btn secondary" disabled>Cancel</button>
@@ -100,12 +100,12 @@
     <div id="depthTableWrap" style="overflow:auto;max-height:320px;margin-top:12px">
       <table id="depthTable"><thead><tr><th>time</th><th>model</th><th>depth</th><th>pp</th><th>tg</th><th>TTFT (s)</th><th>elapsed</th><th>download results</th><th>modify</th></tr></thead><tbody></tbody></table>
     </div>
-    <div class="muted" style="margin-top:8px">History file: <code>observability/depth_history.jsonl</code> (limit 20, book corpus <code>--depth 0 4k…200k --tg 1024 --no-cache</code>).</div>
+    <div id="depthNote" class="muted" style="margin-top:8px">History file: <code>observability/depth_history.jsonl</code> (limit 20, book corpus <code>--depth 0 4k…200k --tg 1024 --no-cache</code>).</div>
     <div id="depthLog" class="log" style="display:none;margin-top:10px"></div>
   </div>
 
   <div class="card" id="concCard">
-    <h3><button class="collapse-btn" data-collapse="concCard" aria-expanded="true" aria-label="Collapse concurrency sweep">▾</button> Concurrency sweep <span class="muted" style="text-transform:none;letter-spacing:0">same depths 0–200K at max concurrency (x parallel, pp2048/tg1024) — est. 40min</span></h3>
+    <h3><button class="collapse-btn" data-collapse="concCard" aria-expanded="true" aria-label="Collapse concurrency sweep">▾</button> Concurrency sweep <span id="concSubtitle" class="muted" style="text-transform:none;letter-spacing:0">same depths 0–200K at max concurrency (x parallel, pp2048/tg1024) — est. 40min</span></h3>
     <div class="row" style="margin-bottom:10px">
       <button id="runConc" class="btn">▶ Run concurrency sweep — est. 40min</button>
       <button id="cancelConc" class="btn secondary" disabled>Cancel</button>
@@ -117,7 +117,7 @@
     <div id="concTableWrap" style="overflow:auto;max-height:320px;margin-top:12px">
       <table id="concTable"><thead><tr><th>time</th><th>model</th><th>depth</th><th>conc</th><th>pp</th><th>tg</th><th>TTFT (s)</th><th>elapsed</th><th>download results</th><th>modify</th></tr></thead><tbody></tbody></table>
     </div>
-    <div class="muted" style="margin-top:8px">History file: <code>observability/conc_history.jsonl</code> (limit 20, <code>--depth 0…200k --tg 1024 --concurrency max_num_seqs --no-cache</code>). Same book corpus as depth, but with <code>x = max_num_seqs</code> parallel runs.</div>
+    <div id="concNote" class="muted" style="margin-top:8px">History file: <code>observability/conc_history.jsonl</code> (limit 20, <code>--depth 0…200k --tg 1024 --concurrency max_num_seqs --no-cache</code>). Same book corpus as depth, but with <code>x = max_num_seqs</code> parallel runs.</div>
     <div id="concLog" class="log" style="display:none;margin-top:10px"></div>
   </div>
   </div>

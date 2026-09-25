@@ -279,6 +279,7 @@ const SWEEPS = {
     chartWrap:'depthChartWrap', tableWrap:'depthTableWrap',
     base:'/api/depth', histUrl:'/api/depth/history',
     runLabel:'▶ Run depth sweep (0–200K) — est. 20min', activeLabel:'⏳ depth running…',
+    confirmRun:'Run full depth sweep 0–200K? est. 20min, hits vLLM heavily. LAN-exposed.',
     emptyCols:9, emptyText:'no sweeps yet',
   },
   conc: {
@@ -287,6 +288,7 @@ const SWEEPS = {
     chartWrap:'concChartWrap', tableWrap:'concTableWrap',
     base:'/api/conc', histUrl:'/api/conc/history',
     runLabel:'▶ Run concurrency sweep — est. 40min', activeLabel:'⏳ conc running…',
+    confirmRun:'Run concurrency sweep up to max_num_seqs? est. 40min, hits vLLM with corpus.',
     emptyCols:10, emptyText:'no sweeps yet',
   },
 };
@@ -500,8 +502,9 @@ function pollAllSweeps(){
 
 function wireSweep(kind, confirmRun){
   const d = SWEEPS[kind];
+  if(confirmRun) d.confirmRun = confirmRun; // boot-time default; refreshSweepLabels() rewrites it live
   $(d.runBtn).addEventListener('click', async () => {
-    if(!confirm(confirmRun)) return;
+    if(!confirm(d.confirmRun)) return;
     const r = await fetch(d.base, {method:'POST'});
     if(r.status === 409){ alert('Another bench is already running'); pollAllSweeps(); return; }
     if(!r.ok){ alert('Start failed: '+ await r.text()); return; }
@@ -575,6 +578,38 @@ function benchmarksVisible(){
   return $('tab-benchmarks').classList.contains('active') && !document.hidden;
 }
 
+/* Rewrite sweep section titles, run-button labels, confirm prompts, and
+ * corpus notes from the live sweep geometry (GET /api/sweep-config).
+ * Hardcoded HTML/JS text stays as the fallback when the fetch fails. */
+async function refreshSweepLabels(){
+  try{
+    const r = await fetch('/api/sweep-config');
+    if(!r.ok) return;
+    const c = await r.json();
+    const depths = c.depths || [];
+    if(!depths.length) return;
+    const top = depths[depths.length - 1];
+    const k = v => v >= 1000 ? Math.round(v / 1000) + 'K' : String(v);
+    const kl = v => v >= 1000 ? Math.round(v / 1000) + 'k' : String(v);
+    const range = `0–${k(top)}`;
+    const list = depths.map(kl).join(' ');
+    const conc = c.max_conc || '?';
+    const ds = $('depthSubtitle');
+    if(ds) ds.textContent = `full ${range} corpus (pp2048/tg1024, TTFT in table) — est. 20min`;
+    const cs = $('concSubtitle');
+    if(cs) cs.textContent = `same depths ${range} at max concurrency (×${conc} parallel, pp2048/tg1024) — est. 40min`;
+    SWEEPS.depth.runLabel = `▶ Run depth sweep (${range}) — est. 20min`;
+    SWEEPS.depth.confirmRun = `Run full depth sweep ${range}? est. 20min, hits vLLM heavily. LAN-exposed.`;
+    SWEEPS.conc.runLabel = `▶ Run concurrency sweep (${range} ×${conc}) — est. 40min`;
+    SWEEPS.conc.confirmRun = `Run concurrency sweep ${range} up to conc ${conc}? est. 40min, hits vLLM with corpus.`;
+    const dn = $('depthNote');
+    if(dn) dn.innerHTML = `History file: <code>observability/depth_history.jsonl</code> (limit 20, book corpus <code>--depth ${list} --tg 1024 --no-cache</code>).`;
+    const cn = $('concNote');
+    if(cn) cn.innerHTML = `History file: <code>observability/conc_history.jsonl</code> (limit 20, <code>--depth ${list} --tg 1024 --concurrency ${conc} --no-cache</code>). Same book corpus as depth, but with <code>x = max_num_seqs</code> parallel runs.`;
+    syncRunButtons(); // re-paint idle run buttons with the new labels
+  }catch(e){ console.warn('sweep-config fetch failed', e); }
+}
+
 function initTabs(){
   const btns = Array.from(document.querySelectorAll('.tab-btn'));
   const panels = document.querySelectorAll('.tab-panel');
@@ -635,16 +670,17 @@ function initTabs(){
   initTabs();
   initCollapse();
   wireSweep('bench', 'Run bench now? This hits vLLM with pp2048 + tg32/128 ×3 (~2-4 min). LAN-exposed — anyone can trigger.');
-  wireSweep('depth', 'Run full depth sweep 0–200K? est. 20min, hits vLLM heavily. LAN-exposed.');
-  wireSweep('conc', 'Run concurrency sweep up to max_num_seqs? est. 40min, hits vLLM with corpus.');
+  wireSweep('depth');
+  wireSweep('conc');
   $('vllmurl').textContent = location.hostname+':8180';
   await seedRing();
+  await refreshSweepLabels(); // live ladder before first paint of labels
   scheduleTick();
   refreshSweep('bench'); refreshSweep('depth'); refreshSweep('conc'); refreshInfo();
   setInterval(() => { if(benchmarksVisible()) refreshSweep('bench'); }, 10000);
   setInterval(() => { if(benchmarksVisible()) refreshSweep('depth'); }, 15000);
   setInterval(() => { if(benchmarksVisible()) refreshSweep('conc'); }, 15000);
-  setInterval(refreshInfo, 15000);
+  setInterval(() => { refreshInfo(); refreshSweepLabels(); }, 15000);
   document.addEventListener('visibilitychange', () => { if(!document.hidden){ tick(); pollAllSweeps(); } });
   pollAllSweeps();
 })();

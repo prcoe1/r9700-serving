@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Depth sweep sized to the live profile: rungs are powers of two up to the
-largest depth that fits under VLLM_MAX_MODEL_LEN (see profile_config), so a
-131072 profile sweeps [0..125952] instead of the old hardcoded 0-200K ladder
-whose top rung exceeded the window.
+"""Depth sweep sized to the live server: rungs are powers of two up to the
+largest depth that fits under the *running* server's `--max-model-len`
+(queried via `GET /v1/models`, env-file stack as fallback — see
+profile_config.resolve_max_len), so a 131072 window sweeps [0..125952]
+instead of the old hardcoded 0-200K ladder whose top rung exceeded it.
 
 Usage:
     python3 benchmarks/depth_sweep.py [model] [--pp N] [--tg N] [--runs N]
@@ -37,17 +38,18 @@ def main() -> None:
 
     cfg = pc.load_profile()
     model = a.model or pc.served_name(cfg)
-    max_len = pc.max_model_len(cfg)
+    max_len, src = pc.resolve_max_len(cfg, base_url=BASE)
     if a.depth is not None:
         depths = a.depth
     else:
         if max_len is None:
-            raise SystemExit("VLLM_MAX_MODEL_LEN unset and no --depth given")
+            raise SystemExit("live /v1/models unreachable and "
+                             "VLLM_MAX_MODEL_LEN unset, and no --depth given")
         depths = pc.depth_ladder(max_len, pp=a.pp, tg=a.tg)
     tokenizer = (cfg.get("VLLM_TOKENIZER")
                  or ("Qwen/Qwen3-8B" if "qwen" in model.lower() else "gpt2"))
-    print(f"depth sweep: model={model} maxlen={max_len} depths={depths} "
-          f"pp={a.pp} tg={a.tg} runs={a.runs}", flush=True)
+    print(f"depth sweep: model={model} maxlen={max_len} (source={src}) "
+          f"depths={depths} pp={a.pp} tg={a.tg} runs={a.runs}", flush=True)
 
     cmd = sc.benchy_cmd(BASE, model, tokenizer, a.pp, a.tg, depths,
                         runs=a.runs)

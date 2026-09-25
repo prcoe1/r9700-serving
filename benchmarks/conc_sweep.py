@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Concurrency sweep sized to the live profile: levels cover 1..max_num_seqs
+"""Concurrency sweep sized to the live server: levels cover 1..max_num_seqs
 (powers of two plus the max, see profile_config), so a conc-4 profile tests
-[1, 2, 4] and a conc-8 profile [1, 2, 4, 8]. Depths default to the live
-max-model-len ladder (same sizing as depth_sweep.py).
+[1, 2, 4] and a conc-8 profile [1, 2, 4, 8]. Depths default to the running
+server's `--max-model-len` ladder (live `GET /v1/models`, env fallback —
+same sizing as depth_sweep.py).
 
 Usage:
     python3 benchmarks/conc_sweep.py [model] [--depth D ...]
@@ -39,20 +40,21 @@ def main() -> None:
 
     cfg = pc.load_profile()
     model = a.model or pc.served_name(cfg)
-    max_len = pc.max_model_len(cfg)
+    max_len, src = pc.resolve_max_len(cfg, base_url=BASE)
     max_seqs = pc.max_num_seqs(cfg)
     levels = a.levels if a.levels is not None else pc.conc_ladder(max_seqs)
     if a.depth is not None:
         depths = a.depth
     else:
         if max_len is None:
-            raise SystemExit("VLLM_MAX_MODEL_LEN unset and no --depth given")
+            raise SystemExit("live /v1/models unreachable and "
+                             "VLLM_MAX_MODEL_LEN unset, and no --depth given")
         depths = pc.depth_ladder(max_len, pp=a.pp, tg=a.tg)
     tokenizer = (cfg.get("VLLM_TOKENIZER")
                  or ("Qwen/Qwen3-8B" if "qwen" in model.lower() else "gpt2"))
-    print(f"conc sweep: model={model} maxlen={max_len} maxseqs={max_seqs} "
-          f"levels={levels} depths={depths} pp={a.pp} tg={a.tg} runs={a.runs}",
-          flush=True)
+    print(f"conc sweep: model={model} maxlen={max_len} (source={src}) "
+          f"maxseqs={max_seqs} levels={levels} depths={depths} "
+          f"pp={a.pp} tg={a.tg} runs={a.runs}", flush=True)
 
     cmd = sc.benchy_cmd(BASE, model, tokenizer, a.pp, a.tg, depths,
                         levels=levels, runs=a.runs)

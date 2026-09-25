@@ -85,6 +85,45 @@ def served_name(cfg: dict | None = None) -> str:
     return cfg.get("VLLM_SERVED_NAME", cfg.get("MODEL_PROFILE", DEFAULT_PROFILE))
 
 
+def live_max_model_len(base_url: str, timeout: float = 5.0) -> int | None:
+    """Live `--max-model-len` from the running server (`GET /v1/models`
+    exposes it as `data[0].max_model_len`). Returns None when the server
+    is unreachable or the field is absent — callers fall back to the
+    env-file value. Stdlib only (no extra deps for sweep wrappers)."""
+    import json
+    import urllib.request
+    try:
+        url = base_url.rstrip("/") + "/v1/models"
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            payload = json.loads(r.read().decode("utf-8", "replace"))
+        data = payload.get("data") or []
+        if not data:
+            return None
+        v = data[0].get("max_model_len")
+        v = int(v)
+        return v if v > 0 else None
+    except Exception:
+        return None
+
+
+def resolve_max_len(cfg: dict | None = None, base_url: str | None = None,
+                    timeout: float = 5.0) -> tuple[int | None, str]:
+    """(max_len, source): live server first, env-file stack second.
+
+    The depth ladder must fit the *launched* context window, which can
+    differ from the env files (profile switch, CLI override, stale
+    checkout) — so the live `GET /v1/models` value wins when reachable.
+    Source is "live", "env", or "none"."""
+    if base_url:
+        live = live_max_model_len(base_url, timeout=timeout)
+        if live is not None:
+            return live, "live"
+    env_len = max_model_len(cfg)
+    if env_len is not None:
+        return env_len, "env"
+    return None, "none"
+
+
 def depth_ladder(max_len: int, pp: int = 2048, tg: int = 32,
                  margin: int = 2048, rung: int = 1024) -> list[int]:
     """Depth rungs that fit in `max_len` tokens: powers of two plus a top
