@@ -827,6 +827,39 @@ async def _discover_model_tokenizer() -> tuple[str, str]:
     return model, tokenizer
 
 
+def _parse_result_json(out: str) -> dict[str, Any] | None:
+    # benchy prints single-line JSON progress objects mid-run before the
+    # final pretty result, so a first-`{`-to-last-`}` span is not valid
+    # JSON (Extra data). Scan for top-level objects and take the last one
+    # shaped like a benchy result (has "benchmarks").
+    stripped = out.strip()
+    try:
+        obj = json.loads(stripped)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    dec = json.JSONDecoder()
+    idx = 0
+    fallback, last = None, None
+    while True:
+        nxt = out.find("{", idx)
+        if nxt == -1:
+            break
+        try:
+            obj, end = dec.raw_decode(out, nxt)
+        except json.JSONDecodeError:
+            idx = nxt + 1
+            continue
+        if isinstance(obj, dict):
+            if "benchmarks" in obj:
+                last = obj
+            elif fallback is None:
+                fallback = obj
+        idx = end
+    return last if last is not None else fallback
+
+
 def _popen_sweep(cmd: list[str]) -> subprocess.Popen:
     # start_new_session: the child leads its own process group so cancel/
     # timeout can kill uvx AND its grandchildren (HF downloads, workers) —
@@ -916,16 +949,13 @@ async def _run_sweep(kind: str) -> None:
                 state["log"] += f"\n[CANCELLED] returncode {returncode}\n"
                 state["last"] = {"ts": time.time(), "cancelled": True, "elapsed": time.time() - start, "model": model}
                 return
-            # Parse the result JSON (llama-benchy prints it to stdout last)
+            # Parse the result JSON (llama-benchy prints it to stdout last,
+            # after single-line JSON progress objects — see _parse_result_json)
             result = None
             try:
-                stripped = out.strip()
-                if stripped.startswith("{"):
-                    result = json.loads(stripped)
-                else:
-                    m = re.search(r"\{.*\}", out, re.DOTALL)
-                    if m:
-                        result = json.loads(m.group(0))
+                result = _parse_result_json(out)
+                if result is None:
+                    raise ValueError("no JSON object found in benchy output")
             except Exception as e:
                 state["log"] += f"\n[parse failed: {e}]\n"
             record: dict[str, Any] = {

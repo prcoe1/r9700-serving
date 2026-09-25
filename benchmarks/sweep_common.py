@@ -50,15 +50,42 @@ def run(cmd, dry_run=False):
 
 
 def parse_result(stdout):
-    """Extract the benchy result dict (printed last on stdout)."""
+    """Extract the benchy result dict (printed last on stdout).
+
+    benchy also prints single-line JSON progress objects mid-run, so a
+    first-`{`-to-last-`}` span is not valid JSON (`Extra data`). Scan for
+    top-level objects instead and take the last one shaped like a benchy
+    result (has "benchmarks")."""
     stripped = stdout.strip()
-    if stripped.startswith("{"):
-        return json.loads(stripped)
-    import re
-    m = re.search(r"\{.*\}", stdout, re.DOTALL)
-    if not m:
-        raise ValueError("no JSON object found in benchy output")
-    return json.loads(m.group(0))
+    try:
+        obj = json.loads(stripped)
+        if isinstance(obj, dict):
+            return obj
+    except Exception:
+        pass
+    dec = json.JSONDecoder()
+    idx, n = 0, len(stdout)
+    fallback, last = None, None
+    while True:
+        nxt = stdout.find("{", idx)
+        if nxt == -1:
+            break
+        try:
+            obj, end = dec.raw_decode(stdout, nxt)
+        except json.JSONDecodeError:
+            idx = nxt + 1
+            continue
+        if isinstance(obj, dict):
+            if "benchmarks" in obj:
+                last = obj
+            elif fallback is None:
+                fallback = obj
+        idx = end
+    if last is not None:
+        return last
+    if fallback is not None:
+        return fallback
+    raise ValueError("no JSON object found in benchy output")
 
 
 def rows(result):
