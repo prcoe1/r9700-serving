@@ -324,9 +324,16 @@ touches one of:
    - `#53041` RFC: tiered SWA/Mamba checkpointing (HBM tail + periodic store)
      + recompute backfill for divergent hybrid prefix hits (same family as
      `#52959`/`#52789`; monitor)
-   - `#55697` (2026-09-09, RFC, open): application-directed prefix
+    - `#55697` (2026-09-09, RFC, open): application-directed prefix
      checkpoints for Mamba/hybrid prefix caching — same family as `#53041`/
      `#52959`; monitor-only
+   - `#58303` (2026-09-24, open): pushback on the dense-retention default we
+     ride (`#55760`/`#55861`) — dense checkpoints share the pool with attention
+     KV, so under interleaved long conversations the pool fills and prefix
+     reuse returns to 0% (same symptom as `#53595`, other end of the knob).
+     Proposes a sparse interval multiple of `scheduler_block_size` as the
+     middle; no PR yet. Not our workload shape (2 concurrent seqs, far from
+     pool ceiling) — monitor alongside `#53041`/`#55697`.
   - `#53488` `prompt_logprobs` silently corrupted under MTP + chunked prefill
     (Qwen3.5-family, two builds) — we don't request prompt_logprobs; monitor
   - `#50729` Mamba state-copy overlap race in `vllm/v1/worker/mamba_utils.py`
@@ -630,7 +637,9 @@ touches one of:
  stock-kernel LDS overflow confirms our LDS-cap patch is load-bearing).
   RFC/feature monitor-only: #54080 (TreeWY), #53786 (fine-grained SWA hits),
   #55916 (RDNA4 FlyDSL all-reduce), #57111 (checkpoint-aware eviction for
-  hybrids — same family as #53041/#55697).
+  hybrids — same family as #53041/#55697), #58638 (KV-cache grouping for
+  hybrid + spec drafters — DFlash-only pathology, MTP unaffected; signal if a
+  profile ever moves off MTP).
  - `#56190` (upstream profiler fix, new in v0.30.0): preloads
    `libtorch_cpu.so` RTLD_GLOBAL at `import vllm` for kineto/rocprofiler
    registration — **fatal on this stack** (TheRock torch 2.13 + `rocm` pip
