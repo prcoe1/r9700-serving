@@ -594,18 +594,24 @@ async function refreshSweepLabels(){
     const range = `0–${k(top)}`;
     const list = depths.map(kl).join(' ');
     const conc = c.max_conc || '?';
+    // Conc sweeps run a shallower ladder (~88% of the window, ~110k top
+    // rung on a 131k window) instead of hugging full context.
+    const cdepths = (c.conc_depths && c.conc_depths.length) ? c.conc_depths : depths;
+    const ctop = cdepths[cdepths.length - 1];
+    const crange = `0–${k(ctop)}`;
+    const clist = cdepths.map(kl).join(' ');
     const ds = $('depthSubtitle');
-    if(ds) ds.textContent = `full ${range} corpus (pp2048/tg1024, TTFT in table) — est. 20min`;
+    if(ds) ds.textContent = `${range} corpus (pp2048/tg1024, TTFT in table) — est. 20min`;
     const cs = $('concSubtitle');
-    if(cs) cs.textContent = `same depths ${range} at max concurrency (×${conc} parallel, pp2048/tg1024) — est. 40min`;
+    if(cs) cs.textContent = `capped depths ${crange} at max concurrency (×${conc} parallel, pp2048/tg1024) — est. 40min`;
     SWEEPS.depth.runLabel = `▶ Run depth sweep (${range}) — est. 20min`;
     SWEEPS.depth.confirmRun = `Run full depth sweep ${range}? est. 20min, hits vLLM heavily. LAN-exposed.`;
-    SWEEPS.conc.runLabel = `▶ Run concurrency sweep (${range} ×${conc}) — est. 40min`;
-    SWEEPS.conc.confirmRun = `Run concurrency sweep ${range} up to conc ${conc}? est. 40min, hits vLLM with corpus.`;
+    SWEEPS.conc.runLabel = `▶ Run concurrency sweep (${crange} ×${conc}) — est. 40min`;
+    SWEEPS.conc.confirmRun = `Run concurrency sweep ${crange} up to conc ${conc}? est. 40min, hits vLLM with corpus.`;
     const dn = $('depthNote');
     if(dn) dn.innerHTML = `History file: <code>observability/depth_history.jsonl</code> (limit 20, book corpus <code>--depth ${list} --tg 1024 --no-cache</code>).`;
     const cn = $('concNote');
-    if(cn) cn.innerHTML = `History file: <code>observability/conc_history.jsonl</code> (limit 20, <code>--depth ${list} --tg 1024 --concurrency ${conc} --no-cache</code>). Same book corpus as depth, but with <code>x = max_num_seqs</code> parallel runs.`;
+    if(cn) cn.innerHTML = `History file: <code>observability/conc_history.jsonl</code> (limit 20, <code>--depth ${clist} --tg 1024 --concurrency ${conc} --no-cache</code>). Same book corpus as depth, but with <code>x = max_num_seqs</code> parallel runs; depths capped at ~88% of the window (~110k top rung).`;
     syncRunButtons(); // re-paint idle run buttons with the new labels
   }catch(e){ console.warn('sweep-config fetch failed', e); }
 }

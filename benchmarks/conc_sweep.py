@@ -3,7 +3,8 @@
 (powers of two plus the max, see profile_config), so a conc-4 profile tests
 [1, 2, 4] and a conc-8 profile [1, 2, 4, 8]. Depths default to the running
 server's `--max-model-len` ladder (live `GET /v1/models`, env fallback —
-same sizing as depth_sweep.py).
+same sizing as depth_sweep.py) capped at SWEEP_DEPTH_FRACTION of the window
+(~110k top rung on a 131k window). Explicit --depth bypasses the cap.
 
 Usage:
     python3 benchmarks/conc_sweep.py [model] [--depth D ...]
@@ -49,7 +50,10 @@ def main() -> None:
         if max_len is None:
             raise SystemExit("live /v1/models unreachable and "
                              "VLLM_MAX_MODEL_LEN unset, and no --depth given")
-        depths = pc.depth_ladder(max_len, pp=a.pp, tg=a.tg)
+        # Per-request depths top out at SWEEP_DEPTH_FRACTION of the window
+        # (~110k top rung on a 131k window) instead of hugging full context.
+        depths = pc.depth_ladder(max_len, pp=a.pp, tg=a.tg,
+                                 fraction=pc.SWEEP_DEPTH_FRACTION)
     tokenizer = (cfg.get("VLLM_TOKENIZER")
                  or ("Qwen/Qwen3-8B" if "qwen" in model.lower() else "gpt2"))
     print(f"conc sweep: model={model} maxlen={max_len} (source={src}) "

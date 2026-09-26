@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Depth sweep sized to the live server: rungs are powers of two up to the
-largest depth that fits under the *running* server's `--max-model-len`
+"""Depth sweep sized to the live server: rungs are powers of two up to
+SWEEP_DEPTH_FRACTION of the *running* server's `--max-model-len`
 (queried via `GET /v1/models`, env-file stack as fallback — see
-profile_config.resolve_max_len), so a 131072 window sweeps [0..125952]
-instead of the old hardcoded 0-200K ladder whose top rung exceeded it.
+profile_config.resolve_max_len), so a 131072 window sweeps [0..110592
+dashboard / 111616 CLI] instead of hugging full context at 125952.
 
 Usage:
     python3 benchmarks/depth_sweep.py [model] [--pp N] [--tg N] [--runs N]
@@ -45,7 +45,8 @@ def main() -> None:
         if max_len is None:
             raise SystemExit("live /v1/models unreachable and "
                              "VLLM_MAX_MODEL_LEN unset, and no --depth given")
-        depths = pc.depth_ladder(max_len, pp=a.pp, tg=a.tg)
+        depths = pc.depth_ladder(max_len, pp=a.pp, tg=a.tg,
+                                 fraction=pc.SWEEP_DEPTH_FRACTION)
     tokenizer = (cfg.get("VLLM_TOKENIZER")
                  or ("Qwen/Qwen3-8B" if "qwen" in model.lower() else "gpt2"))
     print(f"depth sweep: model={model} maxlen={max_len} (source={src}) "

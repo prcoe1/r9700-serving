@@ -15,6 +15,7 @@ from app import (
     _derive_metrics,
     _ema,
     _find_record,
+    _get_depths,
     _get_max_concurrency,
     _history_etag,
     _parse_metrics,
@@ -23,6 +24,7 @@ from app import (
     _reset_rate_state,
     _resolve_history_path,
     _serve_download,
+    SWEEP_DEPTH_FRACTION,
 )
 
 METRICS = """# HELP vllm:kv_cache_usage_perc KV cache usage
@@ -269,3 +271,32 @@ def test_get_max_concurrency_prefers_env(monkeypatch):
     monkeypatch.delenv("VLLM_MAX_NUM_SEQS_PER_REQUEST", raising=False)
     assert _get_max_concurrency() == 2  # compose.yaml --max-num-seqs default
     assert os.environ.get("VLLM_MAX_NUM_SEQS") is None
+
+
+def _no_live(monkeypatch):
+    import app as appmod
+    monkeypatch.setattr(appmod, "_get_live_max_model_len",
+                        lambda timeout=5.0: None)
+
+
+def test_get_depths_serial_uses_full_window(monkeypatch):
+    _no_live(monkeypatch)
+    monkeypatch.setenv("VLLM_MAX_MODEL_LEN", "131072")
+    assert _get_depths() == [0, 4096, 8192, 16384, 32768, 65536, 125952]
+
+
+def test_get_depths_conc_capped_below_full(monkeypatch):
+    # SWEEP_DEPTH_FRACTION of a 131072 window tops the ladder at 110592
+    # instead of hugging full context (125952).
+    _no_live(monkeypatch)
+    monkeypatch.setenv("VLLM_MAX_MODEL_LEN", "131072")
+    assert _get_depths(fraction=SWEEP_DEPTH_FRACTION) == [
+        0, 4096, 8192, 16384, 32768, 65536, 110592]
+
+
+def test_get_depths_conc_extrapolates_to_262k(monkeypatch):
+    # Same fraction on a 262144 window tops out at 226304.
+    _no_live(monkeypatch)
+    monkeypatch.setenv("VLLM_MAX_MODEL_LEN", "262144")
+    assert _get_depths(fraction=SWEEP_DEPTH_FRACTION) == [
+        0, 4096, 8192, 16384, 32768, 65536, 131072, 226304]

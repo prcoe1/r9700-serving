@@ -45,8 +45,17 @@ STDERR_CAP = 4000
 # Depth-sweep ladder follows the running server's --max-model-len (live
 # GET /v1/models, VLLM_MAX_MODEL_LEN env as fallback):
 # powers of two plus a top rung at the largest 1024-aligned depth below
-# max_len - pp - tg - margin. Legacy 256K-era ladder as fallback.
+# fraction * max_len - pp - tg - margin. Both sweeps pass
+# SWEEP_DEPTH_FRACTION so the ladder tops out around ~110k on a 131k
+# window (~226k on a 262k window) instead of hugging full context.
+# Legacy 256K-era ladder as fallback.
 LEGACY_DEPTHS = [0, 4096, 8192, 16384, 32768, 65536, 128000, 200000]
+
+# Sweep depth budget as a fraction of the window. 0.885 tops the ladder
+# at the 110592 rung (108x1024) on a 131072 window and at 226304 on a
+# 262144 window (tg1024 overhead accounted). Mirrors
+# benchmarks/profile_config.py SWEEP_DEPTH_FRACTION — keep both in sync.
+SWEEP_DEPTH_FRACTION = 0.885
 
 
 def _get_max_model_len() -> int | None:
@@ -86,13 +95,15 @@ def _get_live_max_model_len(timeout: float = 5.0) -> int | None:
     return None
 
 
-def _get_depths(pp: int = 2048, tg: int = 1024, margin: int = 2048) -> list[int]:
+def _get_depths(pp: int = 2048, tg: int = 1024, margin: int = 2048,
+                fraction: float = 1.0) -> list[int]:
     max_len = _get_live_max_model_len() or _get_max_model_len()
     if max_len is None:
         print("[warn] VLLM_MAX_MODEL_LEN not set and live lookup failed; using legacy depth ladder",
               file=sys.stderr)
         return list(LEGACY_DEPTHS)
-    cap = max_len - pp - tg - margin
+    budget = int(fraction * max_len)
+    cap = budget - pp - tg - margin
     if cap < 4096:
         return [0]
     cap = (cap // 1024) * 1024
@@ -623,9 +634,11 @@ async def api_sweep_config():
     # confirm prompts): depth ladder from the running server's
     # --max-model-len, concurrency cap from env. The frontend falls back
     # to its hardcoded text when this fetch fails.
-    depths = _get_depths()
+    depths = _get_depths(fraction=SWEEP_DEPTH_FRACTION)
+    max_conc = _get_max_concurrency()
     return JSONResponse({"max_model_len": _get_live_max_model_len() or _get_max_model_len(),
-                         "depths": depths, "max_conc": _get_max_concurrency()})
+                         "depths": depths, "max_conc": max_conc,
+                         "conc_depths": _get_depths(fraction=SWEEP_DEPTH_FRACTION)})
 
 
 # ---------------------------------------------------------------------------
@@ -711,7 +724,7 @@ def _depth_cmd(model: str, tokenizer: str) -> list[str]:
         "--tokenizer", tokenizer,
         "--pp", "2048",
         "--tg", "1024",
-        "--depth", *[str(d) for d in _get_depths()],
+        "--depth", *[str(d) for d in _get_depths(fraction=SWEEP_DEPTH_FRACTION)],
         "--runs", "2",
         "--no-cache",
         "--extra-body", '{"chat_template_kwargs":{"enable_thinking":false}}',
@@ -727,7 +740,7 @@ def _conc_cmd(model: str, tokenizer: str) -> list[str]:
         "--tokenizer", tokenizer,
         "--pp", "2048",
         "--tg", "1024",
-        "--depth", *[str(d) for d in _get_depths()],
+        "--depth", *[str(d) for d in _get_depths(fraction=SWEEP_DEPTH_FRACTION)],
         "--concurrency", str(_get_max_concurrency()),
         "--runs", "2",
         "--no-cache",

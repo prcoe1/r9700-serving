@@ -26,6 +26,12 @@ ENV_STACK = [
 
 DEFAULT_PROFILE = "qwen3.8-27b"
 
+# Sweep depth budget as a fraction of the window. 0.885 tops the ladder
+# at the 110592 rung (108x1024) on a 131072 window and at 226304 on a
+# 262144 window (dashboard tg1024 overhead accounted) — deep enough to
+# probe near-full context without hugging it.
+SWEEP_DEPTH_FRACTION = 0.885
+
 
 def _parse_env_file(path: Path) -> dict:
     out = {}
@@ -125,11 +131,17 @@ def resolve_max_len(cfg: dict | None = None, base_url: str | None = None,
 
 
 def depth_ladder(max_len: int, pp: int = 2048, tg: int = 32,
-                 margin: int = 2048, rung: int = 1024) -> list[int]:
+                 margin: int = 2048, rung: int = 1024,
+                 fraction: float = 1.0) -> list[int]:
     """Depth rungs that fit in `max_len` tokens: powers of two plus a top
     rung at the largest `rung`-aligned depth below
-    max_len - pp - tg - margin. Always includes 0."""
-    cap = max_len - pp - tg - margin
+    fraction * max_len - pp - tg - margin. Always includes 0.
+
+    Depth sweeps pass fraction=SWEEP_DEPTH_FRACTION so the ladder tops
+    out around ~110k on a 131k window (~226k on a 262k window) instead
+    of hugging full context."""
+    budget = int(fraction * max_len)
+    cap = budget - pp - tg - margin
     if cap < 4096:
         return [0]
     cap = (cap // rung) * rung
