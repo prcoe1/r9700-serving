@@ -353,16 +353,6 @@ v0.30.0 bump.)
   `make_forward_batch_descriptor` API. Drop when a pinned `VLLM_REF`
   contains the merge.
 
-- **RDNA4 SplitKV FlyDSL paged decode** (`patches/vllm/55996-rdna4-splitkv.patch`
-  + `55996-v030-port.patch`,
-  [#55996](https://github.com/vllm-project/vllm/pull/55996), not in v0.30.0):
-  a FlyDSL SplitKV paged-attention decode path for the `ROCM_ATTN` backend
-  under `VLLM_ROCM_USE_RDNA4_SPLITKV_FLYDSL`. **Dormant since 2026-09-24**:
-  this stack pins `ROCM_AITER_UNIFIED_ATTN`, whose impl overrides `forward`,
-  so the SplitKV path is unreachable; the flag stays off (default). Carried
-  for a future UA-backend backport. Drop when a pinned `VLLM_REF` contains
-  the merge.
-
 ### AITER source-build patches (applied at image build time)
 
 `Dockerfile.fullbuild` applies `patches/aiter/*.patch` to the pinned
