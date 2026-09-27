@@ -1,11 +1,13 @@
 """Sweep aiter unified-attention config knobs on this GPU (gfx1201).
 
-Aiter's select_2d_config/select_3d_config hard-code per-arch launch knobs
-(num_warps, num_stages, waves_per_eu, ...). This script monkey-patches those
-selectors with knob overrides, calls the public unified_attention() API with
-the Qwen3.8-27B full-attention geometry (GQA 24:4, head 256, KV page 832,
-bf16 KV), and measures wall-clock per scenario so the best knobs can be baked
-into a patches/aiter tuning patch.
+Aiter v0.1.22+ keeps unified-attention launch config in a per-arch JSON
+config tree (aiter/ops/triton/configs/<arch>/triton/attention/
+unified_attention/DEFAULT.json), loaded via get_unified_attention_config().
+This script monkey-patches that loader with knob overrides, calls the
+public unified_attention() API with the Qwen3.8-27B full-attention geometry
+(GQA 24:4, head 256, KV page 832, bf16 KV), and measures wall-clock per
+scenario so the best knobs can be baked into the gfx1201 entries of the
+JSON (see patches/aiter/unified-attention-gfx1201-tune.patch).
 
 Correctness: each candidate's output is compared against the baseline
 config's output (same kernel, different launch config; mathematically
@@ -37,6 +39,8 @@ import torch
 import triton
 
 import aiter.ops.triton.attention.unified_attention as ua
+from aiter.ops.triton.utils import unified_attention_utils as ua_utils
+from aiter.ops.triton.utils.device_info import get_num_sms
 
 # Qwen3.8-27B full-attention geometry (4 of 64 layers are full attention;
 # the GDN linear layers do not use this kernel). KV page size is the vLLM
@@ -54,7 +58,7 @@ NUM_QUERY_PER_KV = NUM_Q_HEADS // NUM_KV_HEADS
 
 # scenario name -> (num_seqs, q_len, kv_len)
 SCENARIOS = {
-    "d512": (1, 1, 512),      # 2D decode path (kv <= 512)
+    "d512": (1, 1, 512),
     "d1k": (1, 1, 1024),      # 3D decode path
     "d16k": (1, 1, 16384),
     "d64k": (1, 1, 65536),
@@ -62,7 +66,7 @@ SCENARIOS = {
     "d64k_q4": (1, 4, 65536),     # MTP-style batch decode (4 query tokens)
     "d128k_q4": (1, 4, 131072),
     "d256k_q4": (1, 4, 262144),
-    "p2k": (1, 2048, 2048),        # 2D prefill (num_2d_prgms > target)
+    "p2k": (1, 2048, 2048),        # 2D prefill
     "p2k_c64k": (1, 2048, 65536),  # chunked-extend with long context
 }
 
@@ -122,6 +126,59 @@ def make_scenario(num_seqs, q_len, kv_len):
     }
 
 
+def make_params(sc):
+    """Build the _UAParams the dispatcher derives, mirroring
+    unified_attention()'s own math (BLOCK_M/BLOCK_Q bounds, program counts,
+    ALL_DECODE flag)."""
+    block_m = (16 if NUM_QUERY_PER_KV <= 16
+               else triton.next_power_of_2(NUM_QUERY_PER_KV))
+    all_decode = sc["max_seqlen_q"] == 1
+    if all_decode:
+        total_num_q_blocks = sc["num_seqs"]
+    else:
+        total_num_q_blocks = (sc["num_q_tokens"] // (block_m // NUM_QUERY_PER_KV)
+                              + sc["num_seqs"])
+    num_2d_prgms = total_num_q_blocks * NUM_KV_HEADS
+    num_sms = get_num_sms()
+    return ua._UAParams(
+        q=sc["q"],
+        k=sc["k"],
+        v=sc["v"],
+        out=sc["out"],
+        cu_seqlens_q=sc["cu_q"],
+        seqused_k=sc["seqused_k"],
+        block_table=sc["block_table"],
+        softmax_scale=SOFTMAX_SCALE,
+        softcap=0.0,
+        causal=True,
+        sliding_window=0,
+        max_seqlen_q=sc["max_seqlen_q"],
+        max_seqlen_k=sc["max_seqlen_k"],
+        num_tokens=sc["num_q_tokens"],
+        num_query_heads=NUM_Q_HEADS,
+        num_kv_heads=NUM_KV_HEADS,
+        num_queries_per_kv=NUM_QUERY_PER_KV,
+        head_size=HEAD_SIZE,
+        head_size_v=HEAD_SIZE,
+        num_seqs=sc["num_seqs"],
+        total_num_q_blocks=total_num_q_blocks,
+        num_2d_prgms=num_2d_prgms,
+        num_blocks=sc["k"].shape[0],
+        block_size=BLOCK_SIZE,
+        k_width=8,  # plain (non-shuffled) bf16 KV
+        scale_k_width=4,
+        block_scales_size=16,
+        q_dtype=Q_DTYPE,
+        kv_cache_dtype=KV_DTYPE,
+        all_decode=all_decode,
+        shuffled_kv_cache=False,
+        use_alibi_slopes=False,
+        use_qq_bias=False,
+        num_sms=num_sms,
+        target_num_prgms=num_sms * 4,
+    )
+
+
 def call_ua(sc):
     return ua.unified_attention(
         q=sc["q"],
@@ -146,30 +203,26 @@ def call_ua(sc):
     )
 
 
-def patch_selectors(ovr_2d, ovr_3d_attn, ovr_3d_reduce):
-    orig_2d = ua.select_2d_config
-    orig_3d = ua.select_3d_config
+_REAL_GET_CONFIG = ua_utils.get_unified_attention_config
 
-    def wrapped_2d(*a, **k):
-        cfg = orig_2d(*a, **k)
-        cfg.update(ovr_2d)
-        if "BLOCK_M" in ovr_2d:
-            cfg["BLOCK_Q"] = cfg["BLOCK_M"] // NUM_QUERY_PER_KV
+
+def patch_loader(ovr_2d, ovr_3d_attn, ovr_3d_reduce):
+    """Route ua's config loads through per-op knob overrides."""
+    by_op = {"attn_2d": ovr_2d, "attn_3d": ovr_3d_attn, "reduce": ovr_3d_reduce}
+
+    def wrapped(op, params, backend="triton", arch=None):
+        cfg = _REAL_GET_CONFIG(op, params, backend=backend, arch=arch)
+        extra = by_op.get(op)
+        if extra:
+            cfg = dict(cfg)
+            cfg.update(extra)
         return cfg
 
-    def wrapped_3d(*a, **k):
-        attn, red = orig_3d(*a, **k)
-        attn.update(ovr_3d_attn)
-        red.update(ovr_3d_reduce)
-        return attn, red
-
-    ua.select_2d_config = wrapped_2d
-    ua.select_3d_config = wrapped_3d
+    ua.get_unified_attention_config = wrapped
 
 
-def unpatch_selectors(orig_2d, orig_3d):
-    ua.select_2d_config = orig_2d
-    ua.select_3d_config = orig_3d
+def unpatch_loader():
+    ua.get_unified_attention_config = _REAL_GET_CONFIG
 
 
 def run_once(sc):
@@ -238,9 +291,6 @@ def main():
     if unknown:
         sys.exit(f"unknown scenarios: {unknown}; have {list(SCENARIOS)}")
 
-    orig_2d = ua.select_2d_config
-    orig_3d = ua.select_3d_config
-
     # Candidate overrides.
     ovr_2d_candidates = []
     if not args.skip_2d:
@@ -275,7 +325,7 @@ def main():
               flush=True)
         sc = make_scenario(num_seqs, q_len, kv_len)
 
-        # Baseline: stock selectors, unpatched.
+        # Baseline: stock config-tree lookup, unpatched.
         base_out = None
         base_ms = None
         base_cfg = None
@@ -290,34 +340,20 @@ def main():
             continue
         print(f"  baseline: {base_ms:.3f} ms", flush=True)
 
-        # Capture the stock config(s) for this scenario's dispatch path
-        # (mirrors the dispatch math in unified_attention()).
-        block_m = (16 if NUM_QUERY_PER_KV <= 16
-                   else triton.next_power_of_2(NUM_QUERY_PER_KV))
-        block_q = block_m // NUM_QUERY_PER_KV
-        if sc["max_seqlen_q"] == 1:
-            num_2d_prgms = num_seqs * NUM_KV_HEADS
-        else:
-            num_2d_prgms = (sc["num_q_tokens"] // block_q
-                            + num_seqs) * NUM_KV_HEADS
-        target_num_prgms = ua.get_num_sms() * 4
-        use2d = ua.use_2d_kernel(
-            HEAD_SIZE, 0, sc["max_seqlen_q"] == 1, sc["max_seqlen_q"],
-            sc["max_seqlen_k"], target_num_prgms, num_2d_prgms,
-        )
+        # Capture the stock config(s) for this scenario's dispatch path.
+        params = make_params(sc)
+        use2d = ua.use_2d_kernel(params)
         if use2d:
-            base_cfg = dict(orig_2d(
-                BLOCK_SIZE, HEAD_SIZE, 0, sc["max_seqlen_q"] == 1,
-                sc["max_seqlen_q"], sc["max_seqlen_k"],
-                NUM_Q_HEADS // NUM_KV_HEADS, num_2d_prgms,
-                Q_DTYPE, KV_DTYPE, False,
-            ))
+            base_cfg = dict(_REAL_GET_CONFIG("attn_2d", params))
         else:
-            attn, red = orig_3d(
-                HEAD_SIZE, BLOCK_SIZE, sc["max_seqlen_k"], target_num_prgms,
-                num_2d_prgms, Q_DTYPE, KV_DTYPE, False, 1, 0,
-            )
-            base_cfg = {"attn": dict(attn), "reduce": dict(red)}
+            base_cfg = {
+                "attn": dict(_REAL_GET_CONFIG("attn_3d", params)),
+                "reduce": dict(_REAL_GET_CONFIG("reduce", params)),
+                "kv_split": {
+                    k: v for k, v in _REAL_GET_CONFIG("kv_split", params).items()
+                    if k in ("NUM_SEGMENTS", "TILE_SIZE")
+                },
+            }
         print(f"  dispatch: {'2D' if use2d else '3D'}, base config: {base_cfg}",
               flush=True)
 
@@ -334,7 +370,7 @@ def main():
                 candidates = ovr_3d_candidates
 
         for label, o2, o3a, o3r in candidates:
-            patch_selectors(o2, o3a, o3r)
+            patch_loader(o2, o3a, o3r)
             try:
                 out = run_once(sc)
                 diff = (out.float() - base_out.float()).abs().max().item()
@@ -353,7 +389,7 @@ def main():
                     rows.append({"label": label, "ms": None, "valid": False,
                                  "error": str(ex)[:200]})
             finally:
-                unpatch_selectors(orig_2d, orig_3d)
+                unpatch_loader()
 
         results["scenarios"][name] = {
             "shape": {"num_seqs": num_seqs, "q_len": q_len, "kv_len": kv_len},

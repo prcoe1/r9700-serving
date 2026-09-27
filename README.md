@@ -78,12 +78,13 @@ host render group gid for `/dev/dri` access — check with `getent group render`
 | ROCm         | 10.0.0 (`rocm/dev-ubuntu-24.04:10.0.0-full`, Python 3.12) |
 | PyTorch      | 2.13.0+rocm10.0.0 (`stable.repo.amd.com/whl-next`, `torch[device-gfx1201]`) |
 | vLLM         | 0.30.0 |
-| AITER        | v0.1.20.post1 |
+| AITER        | v0.1.23 |
 | Flash Attention | @ 1cc7ff67 (source; official guide uses `flash-attn==2.8.3` wheel) |
 
 ROCm 10.0 is the TheRock 10.0 stream (successor to the 7.9/7.13/7.14 previews); the
-production 7.2.x line lacks RDNA4/`gfx1201` support. AITER `v0.1.20.post1` is the
-`10.0` post-release (ROCm 10 hipcub fix #4883); vLLM is 0.30.0, carrying the
+production 7.2.x line lacks RDNA4/`gfx1201` support. AITER `v0.1.23` carries
+the RDNA unified-attention LDS guard (#4868) and the UA config-tree
+tuning tables; vLLM is 0.30.0, carrying the
 hybrid prefix-cache family (#54713, #55450), the draft-backend override
 (#54826), the trailing-block-drop opt-out (#53388), the last-block replay
 implementation (#53945), GDN warmup (#54251), W4A16 packed zero-points
@@ -91,7 +92,7 @@ implementation (#53945), GDN warmup (#54251), W4A16 packed zero-points
 requires source builds. Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2.13.0+rocm10.0.0`
 `torchvision[device-gfx1201]==0.28.0+rocm10.0.0` `torchaudio==2.11.0+rocm10.0.0` via
 `--index-url https://stable.repo.amd.com/rocm/whl-next/` and `flash-attn==2.8.3`
-`amd-aiter==0.1.20.post1` via `--extra-index-url https://rocm.frameworks.amd.com/whl-multi-arch/vllm/`.
+`amd-aiter==0.1.23` via `--extra-index-url https://rocm.frameworks.amd.com/whl-multi-arch/vllm/`.
 
 The default (active) model is `Qwen/Qwen3.8-27B-FP8` (`qwen3.8-27b`, the
 newest dense 27B hybrid linear/full-attention architecture, MTP trained,
@@ -185,8 +186,9 @@ restart anyway).
   note in AGENTS.md and
   [`benchmarks/2026-08-22_kv_calibration_quality_ab.md`](benchmarks/2026-08-22_kv_calibration_quality_ab.md)).
   The 3.6 profiles run **bf16 KV** (higher K/V fidelity at the cost of KV
-  bytes; the AITER BF16 LDS-fit patch
-  `patches/aiter/unified-attention-bf16-kv.patch` is required), with a
+  bytes; the AITER bf16 LDS posture now comes from upstream #4868 in
+  AITER v0.1.23 plus the narrowed small-Q guard in
+  `patches/aiter/unified-attention-gfx1201-tune.patch`), with a
   calibrated fp8 sidecar already on disk for 3.6-27b as the opt-in path when
   context length is the binding constraint.
 - **`--attention-backend ROCM_AITER_UNIFIED_ATTN`** + `--speculative-config`
@@ -240,7 +242,34 @@ v0.30.0 bump.)
   neighbour's row or past the table (IMA in
   `precopy_mamba_align_fused_kernel`). Version-locked to v0.30.0 (re-anchored:
   v0.30.0 builds `ModelState` in `load_model`, so the bind hook runs after
-  `kv_cache_config` assignment in `initialize_kv_cache`).
+   `kv_cache_config` assignment in `initialize_kv_cache`).
+
+- **Annotate MTP draft KV cache groups positionally on the hybrid path**
+  (`patches/vllm/55390-mtp-draft-hybrid-annotation.patch`,
+  [#55390](https://github.com/vllm-project/vllm/pull/55390), merged to main
+  2026-09-22 after the v0.30.0 tag cut — not in v0.30.0): the fix for
+  #54360 (spec decode silently disables prefix-cache hits on hybrid
+  GDN/align — `_annotate_eagle_groups` could not identify the MTP draft
+  group, so the fallback flagged ALL groups as eagle). Generalizes the
+  DeepseekV4-only positional rule to every MTP drafter
+  (`_uses_trailing_mtp_layers`) with an exact-partition guard. Carried
+  together with the #58368 patch below (which fixes the regression #55390
+  introduces). Ported source-only to v0.30.0 (one docstring hunk re-cut;
+  all functions verified byte-identical to upstream post-merge text).
+  Drop both when a pinned `VLLM_REF` contains the fixes (expected
+  v0.30.1/v0.31).
+
+- **Restore prompt-tail prefix-cache hits with MTP**
+  (`patches/vllm/58368-mamba-prompt-tail-hits-mtp.patch`,
+  [#58368](https://github.com/vllm-project/vllm/pull/58368), merged to main
+  2026-09-24 — not in v0.30.0): fixes the #55390 regression on hybrid
+  Mamba/GDN + MTP + align with `hash_block_size` < Mamba `block_size`
+  (this stack's geometry): `_cache_partial_tail_block` keyed the
+  one-hash-unit tail back-off off `self.use_eagle`, which stops being set
+  on correctly-annotated Mamba groups once #55390 lands. Keys it off
+  `self.drop_eagle_checkpoint_block` instead (set by the coordinator on
+  every Mamba manager under spec decode). One-line change, verbatim
+  upstream. MUST be carried with the #55390 patch above.
 
 - **Fix `_mamba_block_aligned_split` deadlock on 2+ large images**
   (`patches/vllm/40707-mamba-block-aligned-split-deadlock.patch`,
@@ -337,27 +366,30 @@ v0.30.0 bump.)
 ### AITER source-build patches (applied at image build time)
 
 `Dockerfile.fullbuild` applies `patches/aiter/*.patch` to the pinned
-`AITER_REF` (v0.1.20.post1, TheRock 10.0) before building the wheel. Together they make aiter's
+`AITER_REF` (v0.1.23, TheRock 10.0) before building the wheel. Together they make aiter's
 unified attention work and run well on RDNA4 (`gfx1201`):
 
-- **`unified-attention-bf16-kv.patch`** — with bf16 KV the staged K/V tiles of
-  the 2D-decode and 3D kernels overflow RDNA's 64 KiB workgroup LDS
-  (`"out of resource: shared memory, Required: 65792, Hardware limit: 65536"`,
-  a hard startup abort). Caps `TILE_SIZE` to 32 (and drops `attn_stages` to 1
-  on 3D) when `kv_cache_dtype == bfloat16`, gated on `arch.is_rdna`. This is
-  the fix for upstream [ROCm/aiter#4329]
-  (https://github.com/ROCm/aiter/issues/4329) / [vllm#48723]
-  (https://github.com/vllm-project/vllm/issues/48723), still open upstream.
 - **`unified-attention-gfx1201-tune.patch`** — per-arch launch-config tuning
-  for gfx1201, mirroring the in-file `gfx1151` precedent. 3D long-context
-  decode (the kernel behind decode at depth): `attn_warps` 2 → 4 makes the
-  attention kernel **~1.4–1.9× faster** at 16k–128k context, bitwise-identical,
-  for both bs=1 and the MTP batch-decode shape (q_len>1). 2D large-prefill:
-  `num_warps` 4 → 8 gives ~7% on the attention prefill kernel. These are
-  attention-kernel wins; end-to-end decode is dominated by the 48 GDN layers +
-  MTP + TP, so the system-level effect is within noise (see the tuning doc). See
+  for gfx1201, expressed as additive keys in the v0.1.23 per-arch JSON
+  config tree (`aiter/ops/triton/configs/gfx1201/triton/attention/
+  unified_attention/DEFAULT.json`; upstream entries untouched). 3D decode
+  (`D_LEQ_256.DT_any_bf16`, where head-256 bf16 decode lands):
+  `num_warps` 2 → 4, `waves_per_eu` 2 → 6 — **~1.4–1.9× faster** at
+  16k–128k context, bitwise-identical, for both bs=1 and the MTP
+  batch-decode shape. 2D large-prefill (`Q_GEQ_256.DT_bf16_bf16`):
+  `num_warps` 4 → 8, ~7% on the attention prefill kernel. Plus a narrowed
+  LDS guard (`Q_LEQ_1.DT_any_bf16`, `TILE_SIZE_MAX` 64 → 32): upstream
+  #4868 bounds the prefill bucket but leaves the small-Q 2D bucket at 64,
+  which stages 2·64·256·2+scratch > 64 KiB for head-256 bf16 (the exact
+  [ROCm/aiter#4329](https://github.com/ROCm/aiter/issues/4329) shape).
+  These are attention-kernel wins; end-to-end decode is dominated by the 48
+  GDN layers + MTP + TP, so the system-level effect is within noise (see
+  the tuning doc). See
   [`benchmarks/2026-08-25_gfx1201_ua_tuning.md`](benchmarks/2026-08-25_gfx1201_ua_tuning.md)
-  for the full sweep.
+  for the full sweep. The retired code-level bf16-KV cap
+  (`unified-attention-bf16-kv.patch`, superseded by #4868 and unappliable
+  since the config-tree refactor) is kept in `archive/patches/` for
+  archaeology.
 - **`allowed-archs-gfx1201.patch`** — accept gfx1201 (and the rest of the RDNA
   family) in `csrc/cpp_itfs/utils.py` `allowed_archs` so a
   `GPU_ARCHS=gfx1201` build-time prebuild path doesn't hard-assert (matches the
@@ -365,7 +397,7 @@ unified attention work and run well on RDNA4 (`gfx1201`):
   `PREBUILD_KERNELS=0`).
 
 Re-verify each patch applies cleanly on the new ref when bumping `AITER_REF`
-(they are version-locked to v0.1.20.post1; verified `git apply --check` clean on `v0.1.20.post1` 2026-09-09).
+(they are version-locked to v0.1.23; verified `git apply --check` clean on `v0.1.23` 2026-09-27).
 
 ### Runtime env knobs
 
@@ -393,7 +425,7 @@ and `env/2xr9700.vllm.common` (loaded via `env_file`):
 The `VLLM_ROCM_USE_AITER_*` flags in `env/aiter-unified-attention.env` enable
 only AITER's unified attention; MoE/linear/RMSNorm stay on stock vLLM kernels
 (AITER's MoE/FP8 backends don't support `gfx1201` yet). The attention backend
-is configured for gfx1201 by the aiter patches above (bf16-KV LDS caps +
+is configured for gfx1201 by the aiter patches above (narrowed bf16 LDS guard +
 per-arch tuning); `tools/tune_ua_config.py` re-runs the config sweep to
 re-validate or retune after an `AITER_REF` bump.
 
@@ -475,6 +507,7 @@ Full methodology, per-run files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) a
 | model                     | MTP (draft #) | KV   | pp2048 t/s | tg32 t/s | tg128 t/s |
 |:--------------------------|:--------------|:-----|-----------:|---------:|----------:|
 | Qwen3.8-27B (default, 2026-09-22)³ | **MTP3** | bf16 |  ~3124 |   ~67 |    ~68 |
+| Qwen3.8-27B (default, 2026-09-27)⁵ | **MTP1** | fp8 |  ~3440 |   ~50 |    ~52 |
 | Qwen3.8-27B-FP8 (2026-09-18, v0.29.0) | **MTP3** | fp8 |  ~3275 |   ~68 |    ~71 |
 | Qwen3.8-27B-FP8 (2026-08-28, pre-v0.29.0) | **MTP3** | fp8 |  ~3160 |   ~62 |    ~61 |
 | Qwen3.8-27B-FP8 (2026-08-25, pre-v0.29.0) | **MTP3** | bf16 |  ~3060 |   ~67 |    ~68 |
@@ -485,10 +518,15 @@ profile (bf16 KV, MRV2, chunk 1024); coherence PASSED. Delta vs the 09-18
 fp8 row is the KV-dtype switch (09-21 operator decision), not a version
 regression — see
 [`benchmarks/2026-09-22_qwen3.8-27b_v0.30.0_bump.md`](benchmarks/2026-09-22_qwen3.8-27b_v0.30.0_bump.md).
-⁴ AWQ trial profile (`qwen3.8-27b`, backported #48606 loader, RDNAHybrid
+ ⁴ AWQ trial profile (`qwen3.8-27b`, backported #48606 loader, RDNAHybrid
 kernel): decode-optimized alternative, not the default — prefill −26%, decode
 +30–50%, weights 10.3 GiB. Full record:
 [`benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`](benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md).
+⁵ vLLM 0.30.0 + #55390/#58368 local patches, aiter v0.1.23 + rebased
+gfx1201 JSON tuning; live profile fp8 KV (restored 09-23) + MTP1 (K cut
+3→1 on 09-26, #47602 acceptance decay at depth). Decode consistent with
+MTP1 expectations (old bf16 sweep MTP3→MTP1 went 57.6→45.6 tg32) — no
+regression from the bump.
 
 ### Profile-following sweeps
 

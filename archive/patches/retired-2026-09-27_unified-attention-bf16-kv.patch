@@ -1,3 +1,15 @@
+# RETIRED 2026-09-27 on the AITER_REF=v0.1.23 bump. Upstream #4868
+# (in v0.1.23) now bounds the gfx1201 unified-attention table for the
+# overflow shapes this patch capped in code (2D-prefill TILE 32, bf16 3D
+# stages 1), and select_2d_config/select_3d_config no longer exist
+# (config-tree refactor), so this patch cannot apply anymore. The two
+# measured gfx1201 wins live on in unified-attention-gfx1201-tune.patch
+# (JSON rebase), including a narrowed Q_LEQ_1 bf16 TILE-32 guard for the
+# small-Q 2D bucket upstream leaves at 64. Kept here for archaeology only
+# — NOT applied by Dockerfile.fullbuild.
+#
+# --- original patch below ---
+#
 # Version-locked to AITER_REF=v0.1.20.post1 (verified `git apply --check`
 # clean on v0.1.20.post1, 2026-09-09; originally v0.1.20, 2026-08-29).
 # RDNA-local work fixing ROCm/aiter#4329 / vllm-project/vllm#48723 (still

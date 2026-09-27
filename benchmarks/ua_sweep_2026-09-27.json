@@ -1,0 +1,1008 @@
+{
+  "geometry": {
+    "num_q_heads": 24,
+    "num_kv_heads": 4,
+    "head_size": 256,
+    "block_size": 832,
+    "kv_dtype": "torch.bfloat16",
+    "arch": "gfx1201"
+  },
+  "scenarios": {
+    "d512": {
+      "shape": {
+        "num_seqs": 1,
+        "q_len": 1,
+        "kv_len": 512
+      },
+      "dispatch": "2d",
+      "base_config": {
+        "BLOCK_M": 16,
+        "num_warps": 4,
+        "num_stages": 1,
+        "waves_per_eu": 6,
+        "TILE_SIZE": 32
+      },
+      "rows": [
+        {
+          "label": "baseline",
+          "ms": 0.04304980039596558,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 23228.91141891834
+        },
+        {
+          "label": "2d:w2:s1",
+          "ms": 0.07709339857101441,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 12971.279234484029
+        },
+        {
+          "label": "2d:w2:s2",
+          "ms": 0.10958900451660156,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 9125.003045798365
+        },
+        {
+          "label": "2d:w4:s1",
+          "ms": 0.041280698776245114,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 24224.39613777681
+        },
+        {
+          "label": "2d:w4:s2",
+          "ms": 0.045617800951004026,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 21921.26711837894
+        },
+        {
+          "label": "2d:w8:s1",
+          "ms": 0.04400680065155029,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 22723.76053687901
+        },
+        {
+          "label": "2d:w8:s2",
+          "ms": 0.042625799775123596,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 23459.970376522993
+        }
+      ]
+    },
+    "d1k": {
+      "shape": {
+        "num_seqs": 1,
+        "q_len": 1,
+        "kv_len": 1024
+      },
+      "dispatch": "3d",
+      "base_config": {
+        "attn": {
+          "BLOCK_M": 16,
+          "num_warps": 4,
+          "num_stages": 1,
+          "waves_per_eu": 6
+        },
+        "reduce": {
+          "num_stages": 1,
+          "waves_per_eu": 2,
+          "num_warps": 2
+        },
+        "kv_split": {
+          "TILE_SIZE": 64,
+          "NUM_SEGMENTS": 16
+        }
+      },
+      "rows": [
+        {
+          "label": "baseline",
+          "ms": 0.09819380044937134,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 10183.94232042785
+        },
+        {
+          "label": "3d:w1:s1:eu6",
+          "ms": 0.1138720989227295,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 8781.782451191777
+        },
+        {
+          "label": "3d:w1:s1:eu8",
+          "ms": 0.11073399782180786,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 9030.650203826208
+        },
+        {
+          "label": "3d:w1:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w1:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s1:eu6",
+          "ms": 0.11265499591827392,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 8876.659147237948
+        },
+        {
+          "label": "3d:w2:s1:eu8",
+          "ms": 0.12136310338973999,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 8239.736559707484
+        },
+        {
+          "label": "3d:w2:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w4:s1:eu6",
+          "ms": 0.11478099822998047,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 8712.243449881436
+        },
+        {
+          "label": "3d:w4:s1:eu8",
+          "ms": 0.1360244035720825,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 7351.622015898614
+        },
+        {
+          "label": "3d:w4:s2:eu6",
+          "ms": 0.09725170135498047,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 10282.596459159919
+        },
+        {
+          "label": "3d:w4:s2:eu8",
+          "ms": 0.08938660025596619,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 11187.359147080371
+        }
+      ]
+    },
+    "d16k": {
+      "shape": {
+        "num_seqs": 1,
+        "q_len": 1,
+        "kv_len": 16384
+      },
+      "dispatch": "3d",
+      "base_config": {
+        "attn": {
+          "BLOCK_M": 16,
+          "num_warps": 4,
+          "num_stages": 1,
+          "waves_per_eu": 6
+        },
+        "reduce": {
+          "num_stages": 1,
+          "waves_per_eu": 2,
+          "num_warps": 2
+        },
+        "kv_split": {
+          "TILE_SIZE": 64,
+          "NUM_SEGMENTS": 128
+        }
+      },
+      "rows": [
+        {
+          "label": "baseline",
+          "ms": 0.2578226089477539,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 3878.635795678585
+        },
+        {
+          "label": "3d:w1:s1:eu6",
+          "ms": 0.5153550148010254,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1940.4099529061384
+        },
+        {
+          "label": "3d:w1:s1:eu8",
+          "ms": 0.4980347156524658,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 2007.892158059542
+        },
+        {
+          "label": "3d:w1:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w1:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s1:eu6",
+          "ms": 0.3095174074172974,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 3230.8360565057997
+        },
+        {
+          "label": "3d:w2:s1:eu8",
+          "ms": 0.34763100147247317,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 2876.613408367677
+        },
+        {
+          "label": "3d:w2:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w4:s1:eu6",
+          "ms": 0.2307291030883789,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 4334.086973054969
+        },
+        {
+          "label": "3d:w4:s1:eu8",
+          "ms": 0.27562589645385743,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 3628.106113633666
+        },
+        {
+          "label": "3d:w4:s2:eu6",
+          "ms": 0.31165740489959715,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 3208.651500907408
+        },
+        {
+          "label": "3d:w4:s2:eu8",
+          "ms": 0.3476089954376221,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 2876.795517736964
+        }
+      ]
+    },
+    "d64k": {
+      "shape": {
+        "num_seqs": 1,
+        "q_len": 1,
+        "kv_len": 65536
+      },
+      "dispatch": "3d",
+      "base_config": {
+        "attn": {
+          "BLOCK_M": 16,
+          "num_warps": 4,
+          "num_stages": 1,
+          "waves_per_eu": 6
+        },
+        "reduce": {
+          "num_stages": 1,
+          "waves_per_eu": 2,
+          "num_warps": 2
+        },
+        "kv_split": {
+          "TILE_SIZE": 64,
+          "NUM_SEGMENTS": 128
+        }
+      },
+      "rows": [
+        {
+          "label": "baseline",
+          "ms": 0.5861602783203125,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1706.018024396974
+        },
+        {
+          "label": "3d:w1:s1:eu6",
+          "ms": 1.6764366149902343,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 596.5033160563755
+        },
+        {
+          "label": "3d:w1:s1:eu8",
+          "ms": 1.7831615447998046,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 560.8016855883184
+        },
+        {
+          "label": "3d:w1:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w1:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s1:eu6",
+          "ms": 0.959877872467041,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1041.7992003814386
+        },
+        {
+          "label": "3d:w2:s1:eu8",
+          "ms": 1.1146037101745605,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 897.1798594169294
+        },
+        {
+          "label": "3d:w2:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w4:s1:eu6",
+          "ms": 0.5707100868225098,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1752.2031292062984
+        },
+        {
+          "label": "3d:w4:s1:eu8",
+          "ms": 0.7666006088256836,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1304.4602215120192
+        },
+        {
+          "label": "3d:w4:s2:eu6",
+          "ms": 0.9483567237854004,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1054.455538637891
+        },
+        {
+          "label": "3d:w4:s2:eu8",
+          "ms": 1.0002665519714355,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 999.7335190595845
+        }
+      ]
+    },
+    "d128k": {
+      "shape": {
+        "num_seqs": 1,
+        "q_len": 1,
+        "kv_len": 131072
+      },
+      "dispatch": "3d",
+      "base_config": {
+        "attn": {
+          "BLOCK_M": 16,
+          "num_warps": 4,
+          "num_stages": 1,
+          "waves_per_eu": 6
+        },
+        "reduce": {
+          "num_stages": 1,
+          "waves_per_eu": 2,
+          "num_warps": 2
+        },
+        "kv_split": {
+          "TILE_SIZE": 64,
+          "NUM_SEGMENTS": 128
+        }
+      },
+      "rows": [
+        {
+          "label": "baseline",
+          "ms": 1.0687317848205566,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 935.6884619726202
+        },
+        {
+          "label": "3d:w1:s1:eu6",
+          "ms": 3.1285331726074217,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 319.6386117160993
+        },
+        {
+          "label": "3d:w1:s1:eu8",
+          "ms": 3.449932098388672,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 289.86077739531765
+        },
+        {
+          "label": "3d:w1:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w1:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s1:eu6",
+          "ms": 1.8110580444335938,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 552.1634179940096
+        },
+        {
+          "label": "3d:w2:s1:eu8",
+          "ms": 2.121538543701172,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 471.3560368577751
+        },
+        {
+          "label": "3d:w2:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w4:s1:eu6",
+          "ms": 1.056483554840088,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 946.5362668625378
+        },
+        {
+          "label": "3d:w4:s1:eu8",
+          "ms": 1.442944622039795,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 693.0272892845787
+        },
+        {
+          "label": "3d:w4:s2:eu6",
+          "ms": 1.8240802764892579,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 548.221486131446
+        },
+        {
+          "label": "3d:w4:s2:eu8",
+          "ms": 2.0205955505371094,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 494.9035940092923
+        }
+      ]
+    },
+    "d64k_q4": {
+      "shape": {
+        "num_seqs": 1,
+        "q_len": 4,
+        "kv_len": 65536
+      },
+      "dispatch": "3d",
+      "base_config": {
+        "attn": {
+          "BLOCK_M": 16,
+          "num_warps": 4,
+          "num_stages": 1,
+          "waves_per_eu": 6
+        },
+        "reduce": {
+          "num_stages": 1,
+          "waves_per_eu": 2,
+          "num_warps": 2
+        },
+        "kv_split": {
+          "TILE_SIZE": 64,
+          "NUM_SEGMENTS": 128
+        }
+      },
+      "rows": [
+        {
+          "label": "baseline",
+          "ms": 0.7592873096466064,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 5268.098056138608
+        },
+        {
+          "label": "3d:w1:s1:eu6",
+          "ms": 3.101220703125,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1289.8146836080803
+        },
+        {
+          "label": "3d:w1:s1:eu8",
+          "ms": 3.4437576293945313,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1161.5219276343978
+        },
+        {
+          "label": "3d:w1:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w1:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s1:eu6",
+          "ms": 1.3761201858520509,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 2906.722858311481
+        },
+        {
+          "label": "3d:w2:s1:eu8",
+          "ms": 1.7004608154296874,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 2352.3035424895957
+        },
+        {
+          "label": "3d:w2:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w4:s1:eu6",
+          "ms": 0.7829516887664795,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 5108.872050971495
+        },
+        {
+          "label": "3d:w4:s1:eu8",
+          "ms": 1.0220389366149902,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 3913.7452172302415
+        },
+        {
+          "label": "3d:w4:s2:eu6",
+          "ms": 1.5741766929626464,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 2541.0108140223338
+        },
+        {
+          "label": "3d:w4:s2:eu8",
+          "ms": 1.5920310020446777,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 2512.513886263973
+        }
+      ]
+    },
+    "d128k_q4": {
+      "shape": {
+        "num_seqs": 1,
+        "q_len": 4,
+        "kv_len": 131072
+      },
+      "dispatch": "3d",
+      "base_config": {
+        "attn": {
+          "BLOCK_M": 16,
+          "num_warps": 4,
+          "num_stages": 1,
+          "waves_per_eu": 6
+        },
+        "reduce": {
+          "num_stages": 1,
+          "waves_per_eu": 2,
+          "num_warps": 2
+        },
+        "kv_split": {
+          "TILE_SIZE": 64,
+          "NUM_SEGMENTS": 128
+        }
+      },
+      "rows": [
+        {
+          "label": "baseline",
+          "ms": 1.3475116729736327,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 2968.434396692807
+        },
+        {
+          "label": "3d:w1:s1:eu6",
+          "ms": 5.836053848266602,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 685.3946354843971
+        },
+        {
+          "label": "3d:w1:s1:eu8",
+          "ms": 6.4823463439941404,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 617.0605190983013
+        },
+        {
+          "label": "3d:w1:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w1:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s1:eu6",
+          "ms": 2.495509910583496,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1602.878827704085
+        },
+        {
+          "label": "3d:w2:s1:eu8",
+          "ms": 3.0970575332641603,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1291.5484962864666
+        },
+        {
+          "label": "3d:w2:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w4:s1:eu6",
+          "ms": 1.3027469635009765,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 3070.4350975806374
+        },
+        {
+          "label": "3d:w4:s1:eu8",
+          "ms": 1.8470516204833984,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 2165.613540867442
+        },
+        {
+          "label": "3d:w4:s2:eu6",
+          "ms": 2.7806299209594725,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1438.5229655515527
+        },
+        {
+          "label": "3d:w4:s2:eu8",
+          "ms": 2.8766548156738283,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1390.5039903312274
+        }
+      ]
+    },
+    "d256k_q4": {
+      "shape": {
+        "num_seqs": 1,
+        "q_len": 4,
+        "kv_len": 262144
+      },
+      "dispatch": "3d",
+      "base_config": {
+        "attn": {
+          "BLOCK_M": 16,
+          "num_warps": 4,
+          "num_stages": 1,
+          "waves_per_eu": 6
+        },
+        "reduce": {
+          "num_stages": 1,
+          "waves_per_eu": 2,
+          "num_warps": 2
+        },
+        "kv_split": {
+          "TILE_SIZE": 64,
+          "NUM_SEGMENTS": 128
+        }
+      },
+      "rows": [
+        {
+          "label": "baseline",
+          "ms": 2.5654821395874023,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1559.1611176226338
+        },
+        {
+          "label": "3d:w1:s1:eu6",
+          "ms": 11.71734619140625,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 341.37422712095724
+        },
+        {
+          "label": "3d:w1:s1:eu8",
+          "ms": 12.873602294921875,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 310.71334257217507
+        },
+        {
+          "label": "3d:w1:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w1:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s1:eu6",
+          "ms": 4.821939849853516,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 829.5416625990295
+        },
+        {
+          "label": "3d:w2:s1:eu8",
+          "ms": 5.992826461791992,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 667.4646805647545
+        },
+        {
+          "label": "3d:w2:s2:eu6",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w2:s2:eu8",
+          "ms": null,
+          "valid": false,
+          "error": "lds-overflow"
+        },
+        {
+          "label": "3d:w4:s1:eu6",
+          "ms": 2.5281866073608397,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1582.1616918442498
+        },
+        {
+          "label": "3d:w4:s1:eu8",
+          "ms": 3.547075653076172,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1127.6895085479875
+        },
+        {
+          "label": "3d:w4:s2:eu6",
+          "ms": 5.525402450561524,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 723.9291681990507
+        },
+        {
+          "label": "3d:w4:s2:eu8",
+          "ms": 5.621829986572266,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 711.5120894004258
+        }
+      ]
+    },
+    "p2k": {
+      "shape": {
+        "num_seqs": 1,
+        "q_len": 2048,
+        "kv_len": 2048
+      },
+      "dispatch": "2d",
+      "base_config": {
+        "BLOCK_M": 64,
+        "num_warps": 8,
+        "num_stages": 1,
+        "waves_per_eu": 6,
+        "TILE_SIZE": 32
+      },
+      "rows": [
+        {
+          "label": "baseline",
+          "ms": 1.156561279296875,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1770766.527170156
+        },
+        {
+          "label": "2d:w2:s1",
+          "ms": 5.241375350952149,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 390737.137272178
+        },
+        {
+          "label": "2d:w2:s2",
+          "ms": 5.897568130493164,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 347261.77886964794
+        },
+        {
+          "label": "2d:w4:s1",
+          "ms": 1.2266505241394043,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1669587.1886060126
+        },
+        {
+          "label": "2d:w4:s2",
+          "ms": 1.5251008033752442,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1342862.0557195384
+        },
+        {
+          "label": "2d:w8:s1",
+          "ms": 1.2084233283996582,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1694770.3274747366
+        },
+        {
+          "label": "2d:w8:s2",
+          "ms": 1.5446640968322753,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 1325854.6011394598
+        }
+      ]
+    },
+    "p2k_c64k": {
+      "shape": {
+        "num_seqs": 1,
+        "q_len": 2048,
+        "kv_len": 65536
+      },
+      "dispatch": "2d",
+      "base_config": {
+        "BLOCK_M": 64,
+        "num_warps": 8,
+        "num_stages": 1,
+        "waves_per_eu": 6,
+        "TILE_SIZE": 32
+      },
+      "rows": [
+        {
+          "label": "baseline",
+          "ms": 67.61332397460937,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 30289.88784472539
+        },
+        {
+          "label": "2d:w2:s1",
+          "ms": 324.501123046875,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 6311.226231732213
+        },
+        {
+          "label": "2d:w2:s2",
+          "ms": 365.7767333984375,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 5599.043933090001
+        },
+        {
+          "label": "2d:w4:s1",
+          "ms": 73.40070190429688,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 27901.640541125533
+        },
+        {
+          "label": "2d:w4:s2",
+          "ms": 92.60022583007813,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 22116.5767323083
+        },
+        {
+          "label": "2d:w8:s1",
+          "ms": 68.24873046875,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 30007.88418969561
+        },
+        {
+          "label": "2d:w8:s2",
+          "ms": 103.513623046875,
+          "valid": true,
+          "max_diff": 0.0,
+          "tokens_per_s": 19784.83546144053
+        }
+      ]
+    }
+  }
+}

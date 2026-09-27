@@ -127,19 +127,19 @@ that affect this GPU setup and model combo** before recommending a bump.
 # (47137 content half — local hunk dropped). NOT in v0.30.0 (verified via
 # compare API): #48606 (Quark W4A16, merged main 2026-09-18 post-cut —
 # keep carrying, drop at v0.31+), #51565 (#51562 GDN fix, merged
-# 2026-09-22 post-cut — rides v0.30.1/v0.31). No #54360 fix PR exists yet.
+# 2026-09-22 post-cut — rides v0.30.1/v0.31). The #54360 fix (#55390) and
+# its regression fix (#58368) are carried as local patches until then.
 # Next target: v0.30.1/v0.31 (watch #51565, #53479, #54076, #50409,
-# #54360-fix, #51599). MRV2 is the default for all our profiles (#53183).
+# #51599). MRV2 is the default for all our profiles (#53183).
 gh release list -R vllm-project/vllm --limit 8
 
-# AITER — pin AITER_REF=v0.1.20.post1 (TheRock 10.0 hipcub fix). v0.1.22.post1
-# (2026-09-17, latest) = MoE/DSv4/gfx950 cherry-picks only — no bump (nothing
-# touches unified-attention/gfx1201/LDS). UA refactor #5088 + perf #4761 mean
-# any bump needs rebase + tools/tune_ua_config.py re-run. LDS fix #4868 is
-# main-only (CLOSED aiter#4329; vllm#48723 still OPEN) — local LDS-cap patch
-# stays load-bearing until a pinned ref contains #4868 (then verify
-# equivalence: upstream shrinks stages-then-tile generically; ours is bf16
-# caps + gfx1201 tuning; note aiter#5035 still open).
+# AITER — pin AITER_REF=v0.1.23 (2026-09-26; carries the RDNA UA LDS guard
+# #4868, so the code-level bf16-KV cap is retired — replaced by a narrowed
+# Q_LEQ_1 JSON guard inside the rebased gfx1201 tune patch; the UA config
+# tree refactor (#4761/#5106, in v0.1.22) moved all tuning into per-arch
+# JSON). Next bump: re-check the tune patch + re-run
+# tools/tune_ua_config.py (config-tree API since the v0.1.23 rebase).
+# aiter#5035 (3D LDS clamp on gfx1201) still open — residual risk noted.
 gh release list -R ROCm/aiter --limit 8
 
 # Flash Attention — pinned to a commit; compare HEAD to FLASH_ATTN_REF
@@ -251,7 +251,8 @@ touches one of:
     checkpoint vetoes every attention-group hit. Live geometry since
     2026-09-21: `block_size=832` on the bf16-KV profile (1600 on fp8), so
     incremental multi-turn prefixes never hit — measured **0% on the 30-turn
-    qwen3.8-27b probe (re-confirmed 2026-08-23, fp8/1600 geometry)**. Note the cumulative
+    qwen3.8-27b probe (re-confirmed 2026-08-23, fp8/1600 geometry; again
+    2026-09-27, 4-turn probe, 0% — v0.30.0 + #55390/#58368 + MTP1)**. Note the cumulative
     `vllm:prefix_cache_hits_total` is non-zero: caching *does* hit on
     repeated-identical-prompt workloads — the failure is specific to the
     incremental shared-prefix pattern, not a global no-op. Fixes in flight:
@@ -321,6 +322,20 @@ touches one of:
        differs (A already corrupted vs A-fine here) — partial explanation only,
        no PR yet. For MTP3 the trigger chunk is 4 tokens = the documented
        mod-1600 {4,…} carrier; masking analysis unchanged.
+       **2026-09-22** (v0.30.0 bump): re-probed **INCONCLUSIVE (B got no
+       hit)** — B is the incremental pattern (the `#45238` 0%-hit no-op),
+       so no restore existed to corrupt; see
+       `benchmarks/2026-09-22_qwen3.8-27b_v0.30.0_bump.md`.
+       **2026-09-27 re-probe** (v0.30.0 + #55390/#58368 local patches,
+       aiter v0.1.23, fp8/1600, **MTP1**): **CLEAN with live restores** —
+       r=6/8/20 all CLEAN while B received **14400-token block-aligned
+       hits** (9×1600). Measured hit geometry is now a **1-block back-off**
+       (identical 3200-token repeat hits 1600; 2000-token repeat hits 0 —
+       the pair removed the erroneous second eagle drop the flag-all bug
+       applied to Mamba groups). Masking holds: the bad checkpoint sits AT
+       the last aligned boundary and hits stop ≥1 block short, so it stays
+       unrestorable. MTP1 note: the trigger chunk is now 1+1=2 tokens;
+       verdict unchanged.
    - `#53041` RFC: tiered SWA/Mamba checkpointing (HBM tail + periodic store)
      + recompute backfill for divergent hybrid prefix hits (same family as
      `#52959`/`#52789`; monitor)
@@ -386,9 +401,21 @@ touches one of:
     Qwen3.8-27B hybrid GDN align — **nightly-only** (not in our pin; our
     v0.29.0 probe demonstrably hits). Root cause located 2026-09-18:
     `_annotate_eagle_groups()` can't identify a draft group for plain MTP →
-    fallback flags *all* groups as eagle (insertion-side failure). Monitor for
-    the fix PR ahead of the v0.30.0 final; re-run the prefix-cache probe if a
-    bump lands that includes it.
+    fallback flags *all* groups as eagle (insertion-side failure). **Fixed
+    upstream by #55390** (merged main 2026-09-22, after the v0.30.0 cut —
+    verified NOT in the v0.30.0 tag) **and carried as a local patch**
+    (`patches/vllm/55390-mtp-draft-hybrid-annotation.patch`, ported
+    source-only to v0.30.0, functions byte-identical to upstream), **plus
+    #58368** (merged main 2026-09-24 — fixes the #55390 regression on
+    hybrid+MTP+align with hash_block_size < Mamba block_size, this stack's
+    exact geometry; carried as
+    `patches/vllm/58368-mamba-prompt-tail-hits-mtp.patch`). Drop both when
+    a pinned `VLLM_REF` contains the fixes (expected v0.30.1/v0.31);
+    re-run the prefix-cache probe then. **Validated live 2026-09-27**:
+    annotation warning gone from logs, identical 3200-token repeat hits
+    1600 (1-block back-off — the pair removed the erroneous second eagle
+    drop flag-all applied to Mamba groups), bench coherence PASSED, MTP1
+    acceptance 88–100%.
    - `#54498` (2026-08-27, open, checked 2026-09-03): V1 EAGLE/MTP drafter
     feeds the M-RoPE **temporal** dim (`positions[0]`) to the KV-slot
     computation on `SupportsMRoPE` targets — on any prompt with an image the
@@ -664,19 +691,20 @@ applied at build time. Before bumping any pin:
   (`benchmarks/tool_truncation_probe.py`, `benchmarks/thinkoff_probe.py`).
   Re-run its probe after any bump touching `vllm/parser/`.
 
-- The aiter patches (version-locked to `AITER_REF` v0.1.20.post1) are **RDNA4-local
-   work**, not upstream cherry-picks: `unified-attention-bf16-kv.patch`
-   (bf16-KV LDS caps, the fix for upstream ROCm/aiter#4329 / vllm#48723 —
-   #4329 CLOSED 2026-09-15 via main-only #4868, NOT in any release
-   (verified 2026-09-21: #4868 merge commit not contained in v0.1.22.post1
-   via compare API), and vllm#48723 still OPEN, so the patch stays
-   load-bearing), `unified-attention-gfx1201-tune.patch` (per-arch gfx1201 tuning:
-  attn_warps 4 in 3D decode ~1.4-1.9x, num_warps 8 in 2D large-prefill ~7%),
-  and `allowed-archs-gfx1201.patch` (build-path arch acceptance). When a pinned
-  `AITER_REF` contains #4868, the bf16-KV cap should be **dropped** (upstreamed)
-  but re-verify the tuning still wins — re-run `tools/tune_ua_config.py` (with
-  `just down` first) and re-check the LDS guard. See
-  `benchmarks/2026-08-25_gfx1201_ua_tuning.md`.
+- The aiter patches (version-locked to `AITER_REF` v0.1.23) are **RDNA4-local
+   work**, not upstream cherry-picks: `unified-attention-gfx1201-tune.patch`
+   (additive gfx1201 JSON keys in the v0.1.22+ config tree: warps 4/waves 6
+   on `D_LEQ_256.DT_any_bf16` 3D decode ~1.4-1.9x, warps 8 on
+   `Q_GEQ_256.DT_bf16_bf16` 2D large-prefill ~7%, plus a narrowed
+   `Q_LEQ_1.DT_any_bf16` TILE-32 LDS guard for the small-Q 2D bucket
+   upstream #4868 leaves at 64) and `allowed-archs-gfx1201.patch`
+   (build-path arch acceptance). The old code-level
+   `unified-attention-bf16-kv.patch` was retired on the v0.1.23 bump
+   (superseded by #4868; unappliable since the config-tree refactor —
+   archived at `archive/patches/`). After any `AITER_REF` bump re-verify
+   the tuning still wins — re-run `tools/tune_ua_config.py` (config-tree
+   API; with `just down` first) and re-check the LDS guard. See
+   `benchmarks/2026-08-25_gfx1201_ua_tuning.md`.
 - Check whether a newer `VLLM_REF` **already contains** a carried patch (the
   fix landed upstream). If so, the patch should be **dropped**, not kept.
   Verify: `gh pr view <pr> --repo vllm-project/vllm` and check the PR's merged

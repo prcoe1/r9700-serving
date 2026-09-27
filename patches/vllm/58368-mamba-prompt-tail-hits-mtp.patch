@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: vLLM upstream PR #58368
+Date: Sun, 27 Sep 2026 00:00:00 +0000
+Subject: [PATCH] Restore prompt-tail prefix-cache hits with MTP (#58368)
+
+Version-locked to VLLM_REF=v0.30.0 (ported 2026-09-27; `git apply
+--check` clean). Upstream PR #58368
+(https://github.com/vllm-project/vllm/pull/58368) merged to main
+2026-09-24 — not in v0.30.0. Fixes the regression #55390 introduced on
+hybrid Mamba/GDN + MTP + prefix caching + mamba-cache-mode align with
+hash_block_size < Mamba block_size (exactly this stack's geometry):
+_cache_partial_tail_block keyed the one-hash-unit tail back-off off
+self.use_eagle, which stops being set on correctly-annotated Mamba
+groups once #55390 lands. Key it off self.drop_eagle_checkpoint_block
+instead (set by the coordinator on every Mamba manager under spec
+decode, independent of group annotation). MUST be carried together with
+55390-mtp-draft-hybrid-annotation.patch. Drop both when VLLM_REF
+contains the fixes (expected v0.30.1/v0.31).
+
+v0.30.0 port: one-line source change, verbatim upstream (tests/ hunk
+dropped per repo convention).
+
+---
+diff --git a/vllm/v1/core/single_type_kv_cache_manager.py b/vllm/v1/core/single_type_kv_cache_manager.py
+index 70d56c6543bd..0dd973484789 100644
+--- a/vllm/v1/core/single_type_kv_cache_manager.py
++++ b/vllm/v1/core/single_type_kv_cache_manager.py
+@@ -2078,7 +2078,7 @@ def _cache_partial_tail_block(
+         latest_prompt_hash_boundary = (
+             request.num_prompt_tokens // hash_block_size
+         ) * hash_block_size
+-        if self.use_eagle:
++        if self.drop_eagle_checkpoint_block:
+             # Eagle groups match one hash unit past the candidate and drop it,
+             # so register the tail one unit lower.
+             latest_prompt_hash_boundary = max(
