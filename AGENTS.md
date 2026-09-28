@@ -424,7 +424,8 @@ touches one of:
     attention reads the full span: acceptance drops and the error compounds
      with K. **Affects this stack's model**: Qwen3.8-27B is M-RoPE (local
      config: `mrope_section [11,11,10]`, `mrope_interleaved`), we run MTP3 and
-     we serve images (capped 1). Buggy line verified in v0.28.1rc0
+     we serve images (up to 99 since the carried #40707 patch — 09-19
+      multi-image probe PASS). Buggy line verified in v0.28.1rc0
      (`llm_base_proposer.py:787`). Text-only prompts are unaffected (dims ==
      absolute index). Upstream measurements: Qwen3.8-27B K=6 ≈ -5.7% mean
      acceptance vs the V2 runner; the gap grows with K (K=3 ≈ -0.3%, K=15
@@ -466,8 +467,10 @@ touches one of:
     and crash in `profile_run` (`AttributeError: 'NoneType' object has no
     attribute 'size'`; can also flip attention-backend selection — wrong
     twice over). Surfaced via dup `#58203` (Qwen3.8-27B-FP8 + images + MTP,
-    NVIDIA/B200). **Not exposed here today**: all qwen3.8-27b runs use
-    image-cap 1 and profile model names differ, so hashes don't collide.
+    NVIDIA/B200). **Not exposed here today**: all qwen3.8-27b runs share
+    image-cap 99 (raised from 1 on 09-19 once the #40707 patch landed;
+    `multi_image_probe.py` PASS) and profile model names differ, so hashes
+    don't collide.
     Hygiene rule: never alternate image caps / `--language-model-only` for
     the same model on a shared compile cache without clearing it first.
     Monitor for a fix (key the cache on the multimodal config).
