@@ -4,8 +4,9 @@ Date: Thu, 24 Sep 2026 11:08:29 +0000
 Subject: [PATCH 3/5] [Perf][ROCm] RDNA4 FP8 block-scale FlyDSL GEMM (upstream
  #56005)
 
-Version-locked to VLLM_REF=v0.30.0 (cherry-picked 2026-09-24; applies
-cleanly, no porting). Upstream PR #56005 (open): 1.786x geomean vs Triton
+Version-locked to VLLM_REF=v0.30.1rc0 (rebased 2026-09-28: ROCM
+FP8-block list hunk re-cut after upstream dropped the AiterPreshuffled
+kernel from _POSSIBLE_FP8_BLOCK_KERNELS; remainder applies cleanly). Upstream PR #56005 (open): 1.786x geomean vs Triton
 (min 1.257x, 18/18 shapes) on Radeon AI PRO R9700 with Qwen3.8-27B-FP8
 shapes, validated against FlyDSL main@65e5d8e (contained in flydsl
 0.3.4.1, the PyPI release used by the image). RDNA4Fp8BlockScaledMMKernel
@@ -533,14 +534,16 @@ index d3c41f9..37356b3 100644
  from vllm.model_executor.kernels.linear.scaled_mm.rocm import (
      ROCmFP8ScaledMMLinearKernel,
  )
-@@ -465,6 +468,7 @@ _POSSIBLE_FP8_BLOCK_KERNELS: dict[
+@@ -465,8 +465,9 @@ _POSSIBLE_FP8_BLOCK_KERNELS: dict[
+         TritonFp8BlockScaledMMKernel,
          BlockWiseTorchFP8ScaledMMLinearKernel,
      ],
      PlatformEnum.ROCM: [
 +        RDNA4Fp8BlockScaledMMKernel,
-         AiterPreshuffledFp8BlockScaledMMKernel,
          AiterFp8BlockScaledMMKernel,
          TritonFp8BlockScaledMMKernel,
+     ],
+     PlatformEnum.CPU: [
 @@ -1263,6 +1267,7 @@ __all__ = [
      "PerTensorTorchFP8ScaledMMLinearKernel",
      "RowWiseTorchFP8ScaledMMLinearKernel",

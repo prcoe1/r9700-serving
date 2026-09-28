@@ -5,7 +5,8 @@ Subject: [PATCH] gfx1201 unified-attention tuning + bf16 small-Q LDS guard
  (config-tree rebase)
 
 Version-locked to AITER_REF=v0.1.23 (verified `git apply --check`
-clean on v0.1.23, 2026-09-27). RDNA4-local launch-config tuning, not an
+clean on v0.1.23, 2026-09-27). Re-verified `git apply` clean on
+AITER_REF=v0.1.24, 2026-09-28 (v0.1.24 touches no UA/config-tree files). RDNA4-local launch-config tuning, not an
 upstream cherry-pick. Replaces unified-attention-gfx1201-tune.patch AND
 unified-attention-bf16-kv.patch from the v0.1.20.post1 era: v0.1.22
 moved all UA launch config into the per-arch JSON config tree

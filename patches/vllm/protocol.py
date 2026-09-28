@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 #
 # NOTE: Overlay of vllm/entrypoints/openai/chat_completion/protocol.py from
-# VLLM_REF=v0.30.0, mounted read-only into the runtime image (see compose.yaml).
+# VLLM_REF=v0.30.1rc0, mounted read-only into the runtime image (see compose.yaml).
 # It adds tolerance for `tools: []` with `tool_choice: "none"` that some clients
 # send; upstream rejects empty tools arrays unconditionally. Refresh this file
 # when upgrading VLLM_REF.
@@ -459,18 +459,6 @@ class ChatCompletionRequest(OpenAIBaseModel):
         ),
     )
 
-    return_assistant_tokens_mask: bool = Field(
-        default=False,
-        description=(
-            "If true, the /render response will include an "
-            "``assistant_tokens_mask`` field — a per-token list of 0/1 "
-            "values indicating which tokens were assistant-generated. "
-            "Requires the chat template to use ``{% generation %}`` "
-            "tags.  When the template does not support it, "
-            "``assistant_tokens_mask`` will be ``null``."
-        ),
-    )
-
     cache_salt: str | None = Field(
         default=None,
         min_length=1,
@@ -611,7 +599,6 @@ class ChatCompletionRequest(OpenAIBaseModel):
                 extra_kwargs,
             ),
             media_io_kwargs=self.media_io_kwargs,
-            return_assistant_tokens_mask=bool(self.return_assistant_tokens_mask),
             # No-tools requests default to tool_choice="none" at the API
             # layer. Collapse that default before rendering, so K3 emits a
             # model-visible tool-choice instruction only for requests with a

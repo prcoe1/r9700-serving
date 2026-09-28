@@ -10,6 +10,7 @@ hunk ported/excluded in the companion 57767-v030-port patch). Upstream
 PR #57767 (open). Opt-in: VLLM_ROCM_USE_RDNA_ALL_REDUCE=1 (graph-only,
 BF16/FP16, decode-routing; no FlyDSL dependency). Adds
 csrc/rocm/rdna_custom_all_reduce.cu to the _rocm_C build.
+Re-verified `git apply` clean on VLLM_REF=v0.30.1rc0, 2026-09-28.
 ---
  CMakeLists.txt                                |   19 +
  .../benchmark_rdna_custom_all_reduce.py       |  272 ++++
