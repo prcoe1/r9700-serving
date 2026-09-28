@@ -100,7 +100,9 @@ vision). Alternatives: `Qwen/Qwen3.6-27B-FP8` (`qwen3.6-27b`, dense),
 `Qwen/Qwen3.6-35B-A3B-FP8` (`qwen3.6-35b-a3b`, 35B total / 3B active MoE),
 and `cyankiwi/Qwen3.8-27B-AWQ-BF16-INT4` (`qwen3.8-27b`, compressed-tensors
 W4A16 weight-only trial — decode-optimized alternative, MTP3 via a local
-HF-config snapshot (upstream `#53387` workaround) with calibrated fp8 KV;
+HF-config snapshot (upstream `#53387` workaround) with calibrated fp8 KV
+when spec decode is on (currently off, mirroring live; rollback one-liner
+in `env/qwen3.8-27b-awq.env`);
 earlier Quark trial in
 [`benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`](benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md)).
 Model selection is controlled by `MODEL_PROFILE` in `.env` — override inline
@@ -171,11 +173,13 @@ restart anyway).
   (`temperature` 1.0, `top_p` 0.95, `top_k` 20, `min_p` 0, no penalties).
 - **`--enable-prefix-caching`**: reuse KV for shared prompt prefixes (known
   limitations on this hybrid — AGENTS.md watchlist).
-- **`--max-model-len`** (default `131072`; Qwen3.8-27B overrides to `262144`),
+- **`--max-model-len`** (`VLLM_MAX_MODEL_LEN`, 131072 everywhere — compose
+  default, pinned explicitly by qwen3.8-27b),
   **`-tp 2`**, **`--gpu-memory-utilization 0.95`** (`VLLM_GPU_MEM_UTIL`,
   single-tenant default; lower to 0.92 when a GPU co-tenant such as whisper.cpp
-  is active so it keeps ~2-3 GiB of VRAM headroom), **`--max-num-seqs 2`** (the
-  universal #35288 cap, set explicitly per profile to keep it visible).
+  is active so it keeps ~2-3 GiB of VRAM headroom), **`--max-num-seqs`**
+  (compose default 2 — the #35288 cap; qwen3.8-27b raises it to 4 for the
+  MTP-off experiment below, which is safe because #35288 needs MTP).
 - **`--kv-cache-dtype`** (`VLLM_KV_CACHE_DTYPE`): **fp8 on qwen3.8-27b**
   (the live default), served from the calibrated local copy that `just up`
   builds via `ensure-kvscales` — the stock checkpoints ship no KV scales and
@@ -192,9 +196,13 @@ restart anyway).
   calibrated fp8 sidecar already on disk for 3.6-27b as the opt-in path when
   context length is the binding constraint.
 - **`--attention-backend ROCM_AITER_UNIFIED_ATTN`** + `--speculative-config`
-  (MTP4 on Qwen3.6-27B, **MTP3** on Qwen3.8-27B, **MTP4 on 35B-A3B**). MTP3 is
-  the Qwen3.8-27B default: DFlash2's decode win is short-context only (it
-  decays hard with depth) and was rejected after a 2026-08-22 depth A/B — see
+  (MTP4 on both Qwen3.6 profiles via `qwen3.6.env.common`). Qwen3.8-27B
+  peaked at **MTP3** through 2026-09-26 (its MTP head accepts drafts poorly
+  past position 3, so more drafts waste compute) but currently runs with
+  spec decode **disabled** (09-27 MTP-off experiment — `VLLM_SPEC_DECODE`
+  empty; one-line rollback to MTP1 in `env/qwen3.8-27b.env`). DFlash2's
+  decode win is short-context only (it decays hard with depth) and was
+  rejected after a 2026-08-22 depth A/B — see
   [`archive/DEADENDS.md`](archive/DEADENDS.md).
 
 ### Runtime overlays (bind-mounted source fixes)
@@ -413,10 +421,11 @@ re-validate or retune after an `AITER_REF` bump.
 
 Key tuning decisions:
 - **MTP speculative decoding** (dense profiles): MTP4 on Qwen3.6-27B (~72%
-  acceptance, ~doubles decode). Qwen3.8-27B peaks at **MTP3** (its MTP head
+  acceptance, ~doubles decode). Qwen3.8-27B peaked at **MTP3** (its MTP head
   accepts drafts poorly past position 3, so more drafts waste compute —
   bf16-KV sweep: MTP3 57.6, MTP2 56.0, MTP1 45.6, MTP4 49.2, no-MTP 32.0
-  tg32). **MTP4 is now enabled on 35B-A3B** (2026-08-24): the #47087 MoE
+  tg32) but runs MTP-off since the 09-27 experiment (rollback: MTP1
+  one-liner in `env/qwen3.8-27b.env`). **MTP4 is now enabled on 35B-A3B** (2026-08-24): the #47087 MoE
   token-loop bug (fixed upstream by #51113 in v0.27.1) was re-tested clean on
   the v0.28.0 build and delivers a ~2x decode win (tg32 194.9 vs 87.8 MTP-off);
   the old "disabled" state is documented in [`archive/DEADENDS.md`](archive/DEADENDS.md).
@@ -441,14 +450,17 @@ Key tuning decisions:
   config. Enabled via `VLLM_TUNED_CONFIG_FOLDER=/app/fused_moe_configs`.
 - **`--max-num-batched-tokens 4096`** is required for the MoE model (its
   gated-delta layers force an attention block size of 2112 tokens).
-- **`--max-num-batched-tokens 2048`** on Qwen3.8-27B (2026-09-03 A/B): at the
+- **`--max-num-batched-tokens 1024`** on Qwen3.8-27B (2026-09-21 A/B,
+  tightened from the 2048 set on 2026-09-03): at the
   8192 default, a 100K+ prefill running alongside a decoding request stalls
   that request's token generation 150–200x (47 ms → p50 3.5–4.4 s, p99 up to
-  9.8 s — each scheduler step is one big prefill chunk). 2048 caps the step at
+  9.8 s — each scheduler step is one big prefill chunk). 2048 capped the step at
   one Mamba-block grid stop → ~1 s ITL during prefill, flat big-prompt TTFT,
-  −3.4% pp2048 (+27 ms). Below 2048 gains nothing (step floored at the
-  1600-token Mamba checkpoint grid). Full record:
-  [`benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md`](benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md).
+  −3.4% pp2048 (+27 ms); the 09-21 follow-up halved it to 1024, halving the
+  co-decode stall again (B-prefill p50 801→429 ms, p99 1229→802 ms) for +8%
+  prefill TTFT. Full records:
+  [`benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md`](benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md),
+  [`benchmarks/2026-09-21_qwen3.8-27b_chunk1024_ab.md`](benchmarks/2026-09-21_qwen3.8-27b_chunk1024_ab.md).
 - **V2 model runner (MRV2) everywhere**: v0.29.0 made MRV2 the platform
   default on ROCm and all profiles run it (qwen3.8-27b pins
   `VLLM_USE_V2_MODEL_RUNNER=1` explicitly, also the #54498 mitigation; the
@@ -460,11 +472,13 @@ Key tuning decisions:
 
 [#35288](https://github.com/vllm-project/vllm/issues/35288): MTP spec-decode
 corrupts output when 4+ decode sequences share a batch (garbage header →
-repetition loop → `max_tokens`). **Workaround**: `--max-num-seqs 2` everywhere
-(compose default + explicit per profile), so the batch never reaches the
-threshold — verified with the #35288 repro (4/6/8 concurrent requests → all
-coherent) and the 400-request stress test. See the AGENTS.md watchlist for
-status.
+repetition loop → `max_tokens`). **Workaround**: `--max-num-seqs 2` on the
+MTP profiles (compose default), so the batch never reaches the threshold —
+verified with the #35288 repro (4/6/8 concurrent requests → all
+coherent) and the 400-request stress test. qwen3.8-27b currently runs
+`--max-num-seqs 4`, which is safe only because its spec decode is disabled
+(MTP-off experiment); re-apply the cap of 2 if MTP is re-enabled. See the
+AGENTS.md watchlist for status.
 
 ### Upstream issues
 
@@ -478,8 +492,8 @@ stale triage snapshots live in
 
 Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.30.1rc0 +
 local patches, torch 2.13 (ROCm 10.0), tuned MoE/dense GEMM configs. The
-top Qwen3.8-27B row is the current default stack (**MTP3**, 128K context,
-**bf16 KV**), benched 2026-09-22 on the live image. Since 2026-08-27 the MTP profiles
+newest Qwen3.8-27B row is the current live stack (**MTP-off**, 131K context,
+**fp8 KV**), benched 2026-09-28. Since 2026-08-27 the MTP profiles
 also pass `--no-async-scheduling` (vLLM turns async on by default for MTP,
 which is the open `#51571` accepted-count race + the `#54039`/`#32275` ROCm-CI
 hang combination); re-bench shows decode parity — see
@@ -496,7 +510,7 @@ Full methodology, per-run files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) a
 | Qwen3.8-27B-FP8 (2026-08-25, pre-v0.29.0) | **MTP3** | bf16 |  ~3060 |   ~67 |    ~68 |
 | Qwen3.8-27B-AWQ-INT4 (trial, 2026-09-10)⁴ | **MTP3** | fp8 | ~2130–2310 | ~81–95 | ~85–87 |
 
-² no-async scheduling. ³ vLLM 0.30.0 + all local patches, current live
+² no-async scheduling. ³ vLLM 0.30.0 + all local patches; 09-22 live
 profile (bf16 KV, MRV2, chunk 1024); coherence PASSED. Delta vs the 09-18
 fp8 row is the KV-dtype switch (09-21 operator decision), not a version
 regression — see
@@ -546,7 +560,10 @@ three accept `--dry-run` (sweeps) or explicit overrides (`--depth`,
 
 ### Depth sweep (Qwen3.8-27B-FP8)
 
-Current live profile: fp8 KV + **MTP3** + 256K max-model-len, full-context
+Live profile is MTP-off since 09-27, so the depth figures below (recorded
+with MTP3) describe the pre-experiment shape, not current throughput —
+re-run the sweep if MTP is re-enabled. Reference sweep: fp8 KV + **MTP3** +
+256K max-model-len, full-context
 prefill at depth (2026-08-27, `--no-async-scheduling`): pp256K 1277 t/s /
 TTFT 202 s, tg32 holds 41–60 t/s at every depth, coherence passed at every
 depth — full table in
@@ -603,7 +620,7 @@ Backend helpers have unit tests: `uv run --with "fastapi==0.115.*" --with "httpx
 
 **Depth sweep** — `full 0–200K corpus (pp2048/tg1024, TTFT in table) — est. 20min` (`observability/depth_history.jsonl`, limit 20, `POST /api/depth`, timeout 3600s). Runs `llama-benchy --depth 0 4096 8192 16384 32768 65536 128000 200000 --tg 1024 --no-cache --runs 2`. Chart + table show latest sweep; history rows collapsed with per-run `download results`/`modify`.
 
-**Concurrency sweep** — `same depths 0–200K at max concurrency (x parallel, pp2048/tg1024) — est. 40min` (`observability/conc_history.jsonl`, limit 20, `POST /api/conc`, timeout 3600s). Same depths but with `--concurrency max_num_seqs` (currently 2 via `VLLM_MAX_NUM_SEQS`, `#35288`) + `--no-cache --runs 2`. Same download/modify UX.
+**Concurrency sweep** — `same depths 0–200K at max concurrency (x parallel, pp2048/tg1024) — est. 40min` (`observability/conc_history.jsonl`, limit 20, `POST /api/conc`, timeout 3600s). Same depths but with `--concurrency max_num_seqs` (4 on the live qwen3.8-27b profile, 2 elsewhere via `VLLM_MAX_NUM_SEQS`, `#35288`) + `--no-cache --runs 2`. Same download/modify UX.
 
 Empty sweeps minimise to header+buttons (chart+table hidden, `minimised` class) so the page stays compact before first run. `Clear data` (red) wipes each history file; `Cancel` kills the sweep's whole process group (uvx *and* grandchildren — runs use `start_new_session` so nothing survives to keep hammering vLLM). All bench endpoints are `409` if another bench is running.
 
