@@ -179,13 +179,14 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 
 # Tell vLLM to retain the existing AMD PyTorch installation instead of trying
 # to resolve or build another PyTorch stack.
+# (Upstream #58572, in v0.31.0rc2, moved aux scripts root -> tools/.)
 RUN cd /src/vllm \
-    && python use_existing_torch.py --prefix \
+    && python tools/use_existing_torch.py --prefix \
     && python -m pip install -r requirements/rocm.txt
 
 RUN --mount=type=cache,target=/root/.cache/ccache \
     cd /src/vllm \
-    && bash build_rust.sh
+    && bash tools/build_rust.sh
 
 RUN --mount=type=cache,target=/root/.cache/ccache \
     --mount=type=cache,target=/root/.cache/pip \

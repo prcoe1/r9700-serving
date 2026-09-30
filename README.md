@@ -77,19 +77,22 @@ host render group gid for `/dev/dri` access — check with `getent group render`
 |:-------------|:--------|
 | ROCm         | 10.0.0 (`rocm/dev-ubuntu-24.04:10.0.0-full`, Python 3.12) |
 | PyTorch      | 2.13.0+rocm10.0.0 (`stable.repo.amd.com/whl-next`, `torch[device-gfx1201]`) |
-| vLLM         | 0.30.1rc0 |
+| vLLM         | 0.31.0rc2 (+ carried post-rc2 #58021, behavior-neutral here) |
 | AITER        | v0.1.24 |
 | Flash Attention | @ 1cc7ff67 (source; official guide uses `flash-attn==2.8.3` wheel) |
 
 ROCm 10.0 is the TheRock 10.0 stream (successor to the 7.9/7.13/7.14 previews); the
 production 7.2.x line lacks RDNA4/`gfx1201` support. AITER `v0.1.24` carries
 the RDNA unified-attention LDS guard (#4868) and the UA config-tree
-tuning tables; vLLM is 0.30.1rc0, carrying the
-hybrid prefix-cache family (#54713, #55450), the draft-backend override
+tuning tables; vLLM is 0.31.0rc2, carrying the
+hybrid prefix-cache family (#54713, #55450, #58368, #59146), the draft-backend override
 (#54826), the trailing-block-drop opt-out (#53388), the last-block replay
 implementation (#53945), GDN warmup (#54251), W4A16 packed zero-points
-(#54965) and multimodal prefix-cache worker paths (#54994) since `gfx1201`
-requires source builds. Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2.13.0+rocm10.0.0`
+(#54965), multimodal prefix-cache worker paths (#54994), the GDN
+stateless-chunk fix (#51565), the MRV2 padded-tail fix (#58434) and
+incremental multimodal block hashing (#51694) since `gfx1201`
+requires source builds. Post-rc2 #58021 rides as a local patch
+(source-only, behavior-neutral — no profile passes `--prefix-match-unit`). Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2.13.0+rocm10.0.0`
 `torchvision[device-gfx1201]==0.28.0+rocm10.0.0` `torchaudio==2.11.0+rocm10.0.0` via
 `--index-url https://stable.repo.amd.com/rocm/whl-next/` and `flash-attn==2.8.3`
 `amd-aiter==0.1.23` via `--extra-index-url https://rocm.frameworks.amd.com/whl-multi-arch/vllm/`.
@@ -212,15 +215,16 @@ Version-locked patches applied at runtime by read-only bind-mounts in
 the pinned dependency.
 
 - **Tolerate empty `tools` arrays** (`patches/vllm/protocol.py`, overlay of
-  upstream at `VLLM_REF` v0.30.1rc0 — refreshed on the bump; rc0 only
-  removed `return_assistant_tokens_mask` vs v0.30.0): some clients send `{"tools": [], "tool_choice":
+  upstream at `VLLM_REF` v0.31.0rc2 — refreshed on the bump; rc2 reworks
+  sampling-params resolution (user → server default → OpenAI default) and
+  `presence/frequency_penalty` None-defaults (#50769): some clients send `{"tools": [], "tool_choice":
   "none"}`, which upstream rejects with a 400. The overlay treats `tools: []`
   as a no-tools request when `tool_choice` is `"none"`/omitted, while still
   rejecting genuinely invalid combos.
 
 ### Source-build patches (applied at image build time)
 
-Local backports of upstream fixes not in `VLLM_REF` v0.30.1rc0, applied by
+Local backports of upstream fixes not in `VLLM_REF` v0.31.0rc2, applied by
 `Dockerfile.fullbuild` from `patches/vllm/*.patch` (mirrors the aiter patch
 loop). Re-verify each patch applies cleanly on the new ref when bumping
 `VLLM_REF` — and drop any whose fix has since landed (see
@@ -229,7 +233,8 @@ upstream 2026-08-11, and dropped with the v0.28.0 bump; #53877 was carried on
 v0.28.1rc0 and dropped with the v0.29.0 bump — GDN decode beta FP32 is now
 upstream; the 47137 content half landed via #47562 and was dropped with the
 v0.30.0 bump; #48606 and #55390 were carried on v0.30.0 and dropped with the
-v0.30.1rc0 bump — both are in the rc.)
+v0.30.1rc0 bump — both are in the rc; #58368 was carried on v0.30.1rc0 and
+dropped with the v0.31.0rc2 bump — in rc2.)
 
 - **Honor `drop_eagle_block` in `MambaManager`**
   (`patches/vllm/48375-mamba-drop-eagle-block.patch`,
@@ -238,7 +243,7 @@ v0.30.1rc0 bump — both are in the rc.)
   matched page holding recurrent state written over draft positions that
   verification later rejects — silent corruption spread to every later request
   sharing the prefix (#43559, #50188). The fix lowers the cache-hit search
-  ceiling by one page. Version-locked to v0.30.1rc0 (applies cleanly; MambaManager
+  ceiling by one page. Version-locked to v0.31.0rc2 (applies cleanly; MambaManager
   still ignores the flag).
 
 - **Seed align-mode Mamba `state_idx` in Mamba blocks**
@@ -250,25 +255,30 @@ v0.30.1rc0 bump — both are in the rc.)
   `cache_config.block_size` (scheduler block, 832/1600/2112 here) instead of
   `MambaSpec.block_size` (7168-scale after page unification), landing in a
   neighbour's row or past the table (IMA in
-  `precopy_mamba_align_fused_kernel`). Version-locked to v0.30.1rc0 (re-anchored:
+  `precopy_mamba_align_fused_kernel`). Version-locked to v0.31.0rc2 (re-anchored:
   v0.30.0 builds `ModelState` in `load_model`, so the bind hook runs after
-   `kv_cache_config` assignment in `initialize_kv_cache`).
+   `kv_cache_config` assignment in `initialize_kv_cache`; neighbouring
+  upstream `#58434` touches the same file but the hunks are disjoint —
+  verified clean).
 
-- **Restore prompt-tail prefix-cache hits with MTP**
-  (`patches/vllm/58368-mamba-prompt-tail-hits-mtp.patch`,
-  [#58368](https://github.com/vllm-project/vllm/pull/58368), merged to main
-  2026-09-24 — in neither v0.30.0 nor v0.30.1rc0): fixes the #55390
-  regression on hybrid Mamba/GDN + MTP + align with `hash_block_size` <
-  Mamba `block_size` (this stack's geometry): `_cache_partial_tail_block`
-  keyed the one-hash-unit tail back-off off `self.use_eagle`, which stops
-  being set on correctly-annotated Mamba groups once #55390 lands. Keys it
-  off `self.drop_eagle_checkpoint_block` instead (set by the coordinator on
-  every Mamba manager under spec decode). One-line change, verbatim
-  upstream. Since the v0.30.1rc0 bump it sits on top of upstream's #55390
-  (in the rc — the local #55390 port was dropped); still carried because
-  #58368 itself is not in rc0. Drop when a pinned `VLLM_REF` contains it
-  (expected v0.30.1 final / v0.31). Verified live 2026-09-28 on rc0:
-  identical 3200-token repeat hits 1600 (1-block back-off).
+- **Restore prompt-tail prefix-cache hits with MTP** — DROPPED with the
+  v0.31.0rc2 bump: [#58368](https://github.com/vllm-project/vllm/pull/58368)
+  is in rc2 (`d5051aba`), so the one-line `_cache_partial_tail_block` fix
+  now rides stock upstream (retired patch kept in `archive/patches/`).
+  Previously carried as `patches/vllm/58368-mamba-prompt-tail-hits-mtp.patch`
+  on v0.30.0/v0.30.1rc0 (verbatim upstream; verified live 2026-09-28 on rc0:
+  identical 3200-token repeat hits 1600, 1-block back-off).
+
+- **Reject a `prefix_match_unit` a single KV group cannot honor**
+  (`patches/vllm/58021-prefix-match-unit-single-group.patch`,
+  [#58021](https://github.com/vllm-project/vllm/pull/58021), merged to main
+  2026-09-29 ~2h after the v0.31.0rc2 cut — rides rc3/final; fixes #58020):
+  without it, a single-group run with an explicit `--prefix-match-unit`
+  lets the Mamba prefill checkpoint builder write checkpoints off the
+  scheduler's grid (silent wrong-state resumes). Source-only carry
+  (upstream mooncake-test hunk dropped); behavior-neutral here — no
+  profile passes the flag (verified; flag-unset path byte-identical).
+  Drop when a pinned `VLLM_REF` contains the merge.
 
 - **Fix `_mamba_block_aligned_split` deadlock on 2+ large images**
   (`patches/vllm/40707-mamba-block-aligned-split-deadlock.patch`,
@@ -277,7 +287,7 @@ v0.30.1rc0 bump — both are in the rc.)
   and a sub-`block_size` remainder floors to 0 new tokens — the scheduler
   skips the request forever (hang, engine never recovers). The patch keeps
   the unaligned chunk end for multimodal requests in that case (state simply
-  isn't block-cached that step). Version-locked to v0.30.1rc0 (applies cleanly).
+  isn't block-cached that step). Version-locked to v0.31.0rc2 (applies cleanly).
 
 - **Streaming/non-streaming tool-parser parity on truncated tool calls**
   (`patches/vllm/47137-tool-truncation-parity.patch`,
@@ -289,7 +299,15 @@ v0.30.1rc0 bump — both are in the rc.)
   arguments non-streaming while streaming clients already received the
   partial args. Adapted from magiccodingman/vllm-radiance
   (`patch_qwen3_toolparse.py`); engine-parsers only (`qwen3_coder` here).
-  Verified live 2026-09-18 (`benchmarks/tool_truncation_probe.py` PASS).
+  Verified live 2026-09-18 (`benchmarks/tool_truncation_probe.py` PASS);
+  re-verified 2026-09-30 on rc2: partial-args parity still holds both
+  sides, but finish parity now FAILS — upstream #46303 (in rc0) gated
+  *streaming* truncated tool calls to `finish_reason='length'` while the
+  non-streaming path still stamps `'tool_calls'` (`serving.py:1113` vs
+  `:774`; #46303's "non-streaming already correct" premise doesn't hold
+  on the engine-parser path). Upstream inconsistency, not a bump
+  regression (first re-run since v0.30.0); no server patch carried —
+  see `benchmarks/2026-09-30_qwen3.8-27b_v0.31.0rc2_bump.md`.
   Drop when a pinned `VLLM_REF` contains the #48007 equivalent.
 
 - **Qwen3 parser/template agreement on thinking-off**
@@ -300,7 +318,8 @@ v0.30.1rc0 bump — both are in the rc.)
   `enable_thinking` — so thinking-off-by-any-other-route filed the whole
   output as reasoning (`content=None`, answer stranded in `reasoning`).
   Adapted from GGZ14/vllm-mxfp4 (`patch_qwen3_thinkoff.py`); engine parser
-  only. Verified live 2026-09-18 (`benchmarks/thinkoff_probe.py` PASS).
+  only. Verified live 2026-09-18 (`benchmarks/thinkoff_probe.py` PASS);
+  re-verified 2026-09-30 on rc2 (PASS).
   Drop when a pinned `VLLM_REF` derives `thinking_enabled` from the same
   kwargs.
 
@@ -321,11 +340,11 @@ v0.30.1rc0 bump — both are in the rc.)
   (`Option 'spirv-expand-step' registered more than once` → LLVM ERROR →
   abort, exit 139, crash-loop before logging). The skip restores v0.29.0
   behavior where `rocm_sdk` is present and costs only kineto
-   GPU-profiling registration (unused here). Version-locked to v0.30.1rc0
-  (the #56190 preload is still present in rc0).
+   GPU-profiling registration (unused here). Version-locked to v0.31.0rc2
+  (the #56190 preload is still present in rc2).
 
 - **RDNA4 FlyDSL block-FP8 GEMM** (`patches/vllm/56005-rdna4-fp8-flydsl-gemm.patch`,
-  [#56005](https://github.com/vllm-project/vllm/pull/56005), not in v0.30.1rc0):
+  [#56005](https://github.com/vllm-project/vllm/pull/56005), not in v0.31.0rc2):
   a vLLM-owned FlyDSL WMMA kernel family (prefill / wave32 / packed-row and
   split-K small-M variants) replacing the Triton block-scaled FP8 GEMM on
   gfx1200/gfx1201 for 1x128-activation/128x128-weight OCP-FP8 linears.
@@ -337,7 +356,7 @@ v0.30.1rc0 bump — both are in the rc.)
 
 - **Native HIP RDNA custom all-reduce** (`patches/vllm/57767-rdna-all-reduce.patch`
   + `57767-v030-port.patch`,
-  [#57767](https://github.com/vllm-project/vllm/pull/57767), not in v0.30.1rc0):
+  [#57767](https://github.com/vllm-project/vllm/pull/57767), not in v0.31.0rc2):
   a HIP/C++ custom all-reduce for RDNA (`rdna_custom_all_reduce.cu`, built for
   gfx1100/1200/1201, exposed as `torch.ops._rdna_custom_ar`) with a
   `VLLM_ROCM_USE_RDNA_ALL_REDUCE` opt-in. **Compiled but dormant on this
@@ -346,8 +365,9 @@ v0.30.1rc0 bump — both are in the rc.)
   communicators fall back to PYNCCL (`no visible P2P access to rank 1`); the
   env flag stays unset. Re-enabling is one line if P2P ever appears. The
   port patch adapts the `model_runner.py` hunk to the ref's
-  `make_forward_batch_descriptor` API (re-cut on the v0.30.1rc0 bump for
-  import-block drift). Drop when a pinned `VLLM_REF`
+  `make_forward_batch_descriptor` API (re-cut on the v0.31.0rc2 bump for
+  the collapsed `parallel_state` import + new `BatchExecutionDescriptor`
+  import; was re-cut on v0.30.1rc0 for import-block drift). Drop when a pinned `VLLM_REF`
   contains the merge.
 
 ### AITER source-build patches (applied at image build time)

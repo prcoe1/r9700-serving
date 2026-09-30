@@ -170,7 +170,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533 54713 55450 48007 57580 58020 50891; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533 54713 55450 48007 57580 50891; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -369,12 +369,16 @@ touches one of:
     COMPLETED 2026-09-22** via merged fix `#51565` (merged 2026-09-22 01:11
     UTC, hours after the v0.30.0 cut — verified NOT in the v0.30.0 final).
     Rides v0.30.1/v0.31. No action until then.
-  - `#58020` (2026-09-21, open, new): engine-resolved prefix-cache match unit
-    not propagated to workers — hybrid geometry with attn block 16 / mamba
-    block 1600 (mirrors our fp8-KV geometry): the Mamba checkpoint consumer
-    derives a 1600-token unit while the engine hashes at 16 → checkpoint/hash
-    misalignment. Same `#45238` family, possible co-root-cause of the 0%-hit
-    no-op. No PR yet — monitor.
+  - `#58020` (2026-09-21, new) — **CLOSED as COMPLETED 2026-09-29** via
+    merged fix `#58021` (merged 2026-09-29 23:12 UTC, ~2h after the v0.31.0rc2
+    cut — rides rc3/final). Root cause was KDA-path single-group
+    `--prefix-match-unit` misuse (attn-block-16 geometry = small-block-drafter
+    profile), NOT a `#45238` co-root-cause — our MTP geometry never passes the
+    flag, so the fix is behavior-neutral here (verified: no profile passes
+    `--prefix-match-unit`; flag-unset path byte-identical). **Carried as a
+    local patch** anyway (`patches/vllm/58021-prefix-match-unit-single-group.
+    patch`, source-only) for in-tree documentation of the closure. Drop when
+    a pinned `VLLM_REF` contains the merge. Removed from the re-check loop.
   - `#52959` RFC: internal state checkpoints for Mamba align mode (same
     family as `#52789`; in flight, not merged)
   - `#40707` hybrid Mamba scheduling deadlock with 2+ large images in one

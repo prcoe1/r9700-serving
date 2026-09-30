@@ -2,34 +2,38 @@ From 0d4a1334f41fbd47b0b13865c5c0762e09d94182 Mon Sep 17 00:00:00 2001
 From: opencode <opencode@localhost>
 Date: Thu, 24 Sep 2026 11:08:29 +0000
 Subject: [PATCH 5/5] [Perf][ROCm] Port #57767 model_runner.py hunk to
- v0.30.1rc0
+ v0.31.0rc2
 
-v0.30.1rc0 still constructs BatchDescriptor directly in execute_model (the
+v0.31.0rc2 still constructs BatchDescriptor directly in execute_model (the
 main-base uses make_forward_batch_descriptor). Port the switch: drop the
 now-unused BatchDescriptor import, add make_forward_batch_descriptor to
 the cudagraph_utils import (function added by the 57767 patch), and call
 it with num_reqs/uniform_token_count/num_ubatches + fallback=True.
-BatchDescriptor in v0.30.1rc0 already carries the num_reqs/uniform fields.
+BatchDescriptor in v0.31.0rc2 still carries the num_reqs/uniform fields.
 Rebased 2026-09-28: import-block context drifted (mamba ssu_dispatch
 import added); construction-site hunk unchanged in intent.
+Rebased 2026-09-30 to v0.31.0rc2: parallel_state import collapsed to one
+line; cudagraph_utils import gained BatchExecutionDescriptor upstream.
+Construction-site hunk unchanged (BatchDescriptor direct construction and
+uniform_tok_count/ubatch_slices still present).
 ---
- vllm/v1/worker/gpu/model_runner.py | 11 +++++++++--
- 1 file changed, 9 insertions(+), 2 deletions(-)
+ vllm/v1/worker/gpu/model_runner.py | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
 
 diff --git a/vllm/v1/worker/gpu/model_runner.py b/vllm/v1/worker/gpu/model_runner.py
-index 57f0180..7ff1491 100644
+index 8bcaa01..bd7f324 100644
 --- a/vllm/v1/worker/gpu/model_runner.py
 +++ b/vllm/v1/worker/gpu/model_runner.py
-@@ -40,7 +40,7 @@ from vllm.distributed.parallel_state import (
-     get_dcp_group,
-     get_pp_group,
+@@ -38,7 +38,7 @@ from vllm.distributed.aux_output_connector.worker import (
+     get_aux_output_connector,
  )
+ from vllm.distributed.parallel_state import get_dcp_group, get_pp_group
 -from vllm.forward_context import BatchDescriptor, set_forward_context
 +from vllm.forward_context import set_forward_context
  from vllm.logger import init_logger
  from vllm.model_executor.layers.fused_moe.all2all_utils import get_ep_all2all_manager
  from vllm.model_executor.layers.mamba.ops.ssu_dispatch import (
-@@ -103,6 +103,7 @@ from vllm.v1.worker.gpu.cudagraph_utils import (
+@@ -102,6 +102,7 @@ from vllm.v1.worker.gpu.cudagraph_utils import (
      ModelCudaGraphManager,
      has_compiled_submodule,
      make_cudagraph_stats,
@@ -37,7 +41,7 @@ index 57f0180..7ff1491 100644
  )
  from vllm.v1.worker.gpu.cudagraph_utils import (
      profile_cudagraph_memory as _profile_cudagraph_memory,
-@@ -1919,11 +1920,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
+@@ -1953,11 +1954,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
              model_output = self.cudagraph_manager.run_fullgraph(batch_desc)
          else:
              # For piecewise and eager mode, just call model().
@@ -52,7 +56,7 @@ index 57f0180..7ff1491 100644
 +                fallback=True,
              )
 +            assert batch_descriptor is not None
-
+ 
              with set_forward_context(
                  attn_metadata,
 --
