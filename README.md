@@ -312,9 +312,31 @@ still carried.)
   non-streaming path still stamps `'tool_calls'` (`serving.py:1113` vs
   `:774`; #46303's "non-streaming already correct" premise doesn't hold
   on the engine-parser path). Upstream inconsistency, not a bump
-  regression (first re-run since v0.30.0); no server patch carried —
-  see `benchmarks/2026-09-30_qwen3.8-27b_v0.31.0rc2_bump.md`.
-  Drop when a pinned `VLLM_REF` contains the #48007 equivalent.
+   regression (first re-run since v0.30.0); no server patch carried —
+   see `benchmarks/2026-09-30_qwen3.8-27b_v0.31.0rc2_bump.md`.
+   Drop when a pinned `VLLM_REF` contains the #48007 equivalent.
+
+- **Qwen3 parser drops malformed `<parameter>` elements instead of leaking
+  them** (`patches/vllm/55497-qwen3-malformed-parameter-drop.patch`,
+  [issue #55495](https://github.com/vllm-project/vllm/issues/55495), fix
+  [PR #55497](https://github.com/vllm-project/vllm/pull/55497) open +
+  conflicting, in no release): when the model writes a `<parameter=>`
+  element slightly off (name missing / `>` missing / stray `=` — typical
+  for shell-command values with `$`/newlines), the streamed partial
+  converter swallowed everything up to the closing tag's `>` as a key
+  while the final conversion did not, leaving the client with an
+  unterminated non-JSON `arguments` string and raw `</parameter>` tags in
+  content (seen live 2026-10-01 as a `<tool_call>` leak in an opencode
+  session). Both upstream commits carried source-only: a shared
+  `([^>\s<]+)` parameter-name group in both regexes so partial and final
+  conversion agree, plus a warning (tool name + lengths only) in
+  `_flush_arg_converter` instead of the silent `None`. Pre-build validation
+  2026-10-01: upstream `TestMalformedParameterElements` FAILS 7/10 against
+  the running v0.31.0rc3 container (positive control) and the full
+  `tests/parser/engine/test_qwen3.py` PASSES 61/61 with the fix applied at
+  runtime. Live no-regression guard: the complex-values check in
+  `benchmarks/tool_truncation_probe.py`. Drop when a pinned `VLLM_REF`
+  contains the #55497 merge.
 
 - **Qwen3 parser/template agreement on thinking-off**
   (`patches/vllm/qwen3-thinkoff-kwarg-parity.patch`, no upstream fix as of

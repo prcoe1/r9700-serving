@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Probe for vLLM #47137: streaming vs non-streaming tool-parser parity on
-truncated tool calls (qwen3_coder engine parser).
+"""Probe for vLLM #47137 / #55495: streaming vs non-streaming tool-parser
+parity on truncated tool calls (qwen3_coder engine parser).
 
 1. Gets a full tool-call response (temperature=0 for determinism).
 2. Backs max_tokens off until the tool call is truncated mid-arguments
@@ -10,6 +10,14 @@ truncated tool calls (qwen3_coder engine parser).
 
 Parity (plus no raw <tool_call> markup in content) = the
 patches/vllm/47137-tool-truncation-parity.patch halves hold.
+
+4. Well-formed complex values (#55495 no-regression guard): a shell-shaped
+   tool call whose parameter values contain `$VARS`, quotes, `=` and
+   newlines must parse identically streaming vs non-streaming, as valid
+   JSON, with no raw markup in content. This is the live counterpart of
+   patches/vllm/55497-qwen3-malformed-parameter-drop.patch — the regex
+   half must not drop or mangle well-formed parameters.
+
 Exit 0 on parity, 1 otherwise.
 """
 import json
@@ -51,6 +59,40 @@ MESSAGES = [
     }
 ]
 
+# #55495 no-regression guard: values shaped like the production leak
+# trigger (multi-line shell with $VARS, quotes, `=`) but well-formed.
+COMPLEX_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "exec_command",
+            "description": "Run a shell command.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "cmd": {
+                        "type": "string",
+                        "description": "Shell command to run",
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Working directory",
+                    },
+                },
+                "required": ["cmd"],
+            },
+        },
+    }
+]
+COMPLEX_MESSAGES = [
+    {
+        "role": "user",
+        "content": "Use exec_command to print the home directory and the "
+        "hostname: the cmd must be a two-line shell snippet that references "
+        "$HOME and $(hostname), with cwd set to /tmp.",
+    }
+]
+
 
 def post(payload):
     req = urllib.request.Request(
@@ -62,11 +104,11 @@ def post(payload):
         return resp.status, resp.read()
 
 
-def non_stream(max_tokens):
+def non_stream(max_tokens, messages=MESSAGES, tools=TOOLS):
     payload = {
         "model": MODEL,
-        "messages": MESSAGES,
-        "tools": TOOLS,
+        "messages": messages,
+        "tools": tools,
         "temperature": 0,
         "max_tokens": max_tokens,
         "stream": False,
@@ -86,11 +128,11 @@ def non_stream(max_tokens):
     }
 
 
-def stream(max_tokens):
+def stream(max_tokens, messages=MESSAGES, tools=TOOLS):
     payload = {
         "model": MODEL,
-        "messages": MESSAGES,
-        "tools": TOOLS,
+        "messages": messages,
+        "tools": tools,
         "temperature": 0,
         "max_tokens": max_tokens,
         "stream": True,
@@ -130,6 +172,41 @@ def stream(max_tokens):
         "content": "".join(content_parts) or None,
         "tools": [(names[0] if names else None, "".join(arg_parts))],
     }
+
+
+def complex_wellformed_check():
+    """#55495 no-regression guard: complex but well-formed parameter values
+    must survive the parser identically in both modes (valid JSON, equal
+    arguments, no raw markup in content)."""
+    ns = non_stream(512, COMPLEX_MESSAGES, COMPLEX_TOOLS)
+    s = stream(512, COMPLEX_MESSAGES, COMPLEX_TOOLS)
+    print("complex: ns finish=%s tools=%s" % (ns["finish"], ns["tools"]))
+    print("complex: s  finish=%s tools=%s" % (s["finish"], s["tools"]))
+    ok = True
+    if not ns["tools"] or ns["finish"] not in ("stop", "tool_calls"):
+        print("COMPLEX FAIL: baseline did not produce a complete tool call")
+        return False
+    ns_args = ns["tools"][0][1] if ns["tools"] else None
+    s_args = s["tools"][0][1] if s["tools"] else None
+    try:
+        ns_parsed = json.loads(ns_args)
+        s_parsed = json.loads(s_args)
+    except (TypeError, ValueError) as e:
+        print("COMPLEX FAIL: arguments are not valid JSON: %s" % e)
+        return False
+    if not isinstance(ns_parsed, dict) or not isinstance(s_parsed, dict):
+        print("COMPLEX FAIL: arguments are not JSON objects")
+        ok = False
+    if ns_args != s_args:
+        print("COMPLEX FAIL: streaming disagrees with non-streaming:\n"
+              "  ns=%r\n  s =%r" % (ns_args, s_args))
+        ok = False
+    for label, c in (("non-stream", ns["content"]), ("stream", s["content"])):
+        if c and ("<tool_call>" in c or "</parameter" in c):
+            print("COMPLEX LEAK: raw tool markup in %s content" % label)
+            ok = False
+    print("COMPLEX: %s" % ("PASS" if ok else "FAIL"))
+    return ok
 
 
 def main():
@@ -197,6 +274,8 @@ def main():
             if c and "<tool_call>" in c:
                 print("LEAK: raw tool markup in %s content" % label)
                 ok = False
+    if not complex_wellformed_check():
+        ok = False
     print("OVERALL: %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
 

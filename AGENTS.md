@@ -170,7 +170,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533 54713 55450 48007 57580 50891; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533 54713 55450 48007 57580 50891 55495 55497 53739 58407 56077; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -415,11 +415,34 @@ touches one of:
     exact geometry; carried as
     `patches/vllm/58368-mamba-prompt-tail-hits-mtp.patch`). Drop both when
     a pinned `VLLM_REF` contains the fixes (expected v0.30.1/v0.31);
-    re-run the prefix-cache probe then. **Validated live 2026-09-27**:
-    annotation warning gone from logs, identical 3200-token repeat hits
-    1600 (1-block back-off — the pair removed the erroneous second eagle
-    drop flag-all applied to Mamba groups), bench coherence PASSED, MTP1
-    acceptance 88–100%.
+     re-run the prefix-cache probe then. **Validated live 2026-09-27**:
+     annotation warning gone from logs, identical 3200-token repeat hits
+     1600 (1-block back-off — the pair removed the erroneous second eagle
+     drop flag-all applied to Mamba groups), bench coherence PASSED, MTP1
+     acceptance 88–100%.
+   - `#55495` (open): qwen3_coder engine parser emits a truncated `arguments`
+     string with a leaked `</parameter` tag when the model writes a
+     `<parameter=>` element slightly off (name missing / `>` missing / stray
+     `=` — typical for shell-command values with `$`/newlines); the streamed
+     partial converter swallows everything up to the closing tag's `>` as a
+     key while the final conversion does not, so the prefix invariant breaks
+     and the client keeps an unterminated non-JSON string (raw tags leak
+     into content; Responses clients then 400 on every later turn).
+     **Seen live on this stack 2026-10-01** (raw `</parameter>` in an
+     opencode session + a one-call→two-mangled-calls split in another).
+     **Fixed upstream by #55497** (open + conflicting, in no release —
+     verified NOT in v0.31.0rc3) **and carried as a local patch**
+     (`patches/vllm/55497-qwen3-malformed-parameter-drop.patch`, both
+     upstream commits, source-only: shared `([^>\s<]+)` param-name group +
+     a warning — tool name + lengths only — in `_flush_arg_converter`
+     instead of the silent `None`). Drop when a pinned `VLLM_REF` contains
+     the merge. **Validated pre-build 2026-10-01**: upstream
+     `TestMalformedParameterElements` FAILS 7/10 against the running
+     v0.31.0rc3 container (positive control) and the full
+     `tests/parser/engine/test_qwen3.py` PASSES 61/61 with the fix applied
+     at runtime. Related open (same `_flush` area, alternate strategies —
+     not carried): `#53739`, `#58407`. Live no-regression guard:
+     `benchmarks/tool_truncation_probe.py` complex-values check.
    - `#54498` (2026-08-27, open, checked 2026-09-03): V1 EAGLE/MTP drafter
     feeds the M-RoPE **temporal** dim (`positions[0]`) to the KV-slot
     computation on `SupportsMRoPE` targets — on any prompt with an image the
