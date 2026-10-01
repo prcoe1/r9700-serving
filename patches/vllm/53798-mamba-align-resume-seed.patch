@@ -11,6 +11,7 @@ tag (v0.29.0, v0.30.0). Drop when VLLM_REF contains the fix. Sibling
 variants #55507/#55601/#55688 also open — upstream unsettled, keep
 carrying this one.
 Re-verified `git apply` clean on VLLM_REF=v0.30.1rc0, 2026-09-28.
+Re-verified `git apply` clean on VLLM_REF=v0.31.0rc3, 2026-10-01 (full ordered apply + py_compile in scratch clone).
 
 v0.30.0 rebase: v0.30.0 moved ModelState construction out of
 initialize_kv_cache into load_model (init_model_state), so the bind hook

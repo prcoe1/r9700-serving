@@ -16,6 +16,8 @@ Rebased 2026-09-30 to v0.31.0rc2: parallel_state import collapsed to one
 line; cudagraph_utils import gained BatchExecutionDescriptor upstream.
 Construction-site hunk unchanged (BatchDescriptor direct construction and
 uniform_tok_count/ubatch_slices still present).
+Re-verified `git apply` clean on VLLM_REF=v0.31.0rc3, 2026-10-01
+(rc3's #58411 touches model_runner.py elsewhere; port hunk unaffected).
 ---
  vllm/v1/worker/gpu/model_runner.py | 10 ++++++++--
  1 file changed, 8 insertions(+), 2 deletions(-)

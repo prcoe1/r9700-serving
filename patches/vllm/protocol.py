@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 #
 # NOTE: Overlay of vllm/entrypoints/openai/chat_completion/protocol.py from
-# VLLM_REF=v0.31.0rc2, mounted read-only into the runtime image (see compose.yaml).
+# VLLM_REF=v0.31.0rc3, mounted read-only into the runtime image (see compose.yaml).
 # It adds tolerance for `tools: []` with `tool_choice: "none"` that some clients
 # send; upstream rejects empty tools arrays unconditionally. Refresh this file
 # when upgrading VLLM_REF.

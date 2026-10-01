@@ -9,6 +9,7 @@ clean on the v0.30.0 tag, 2026-09-22). Upstream PR #40709
 (https://github.com/vllm-project/vllm/pull/40709) open as of 2026-09-22,
 not in any tag. Drop when VLLM_REF contains the fix.
 Re-verified `git apply` clean on VLLM_REF=v0.30.1rc0, 2026-09-28.
+Re-verified `git apply` clean on VLLM_REF=v0.31.0rc3, 2026-10-01 (full ordered apply + py_compile in scratch clone).
 
 Carried verbatim: applies cleanly on v0.30.0 (the hunk context and
 request.has_encoder_inputs guard are unchanged from the PR base). When the

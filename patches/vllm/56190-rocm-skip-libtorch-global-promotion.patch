@@ -6,6 +6,7 @@ Subject: [PATCH] [ROCm] Skip libtorch_cpu RTLD_GLOBAL promotion when rocm_sdk
 
 Version-locked to VLLM_REF=v0.30.0 (`git apply --check` clean).
 Re-verified `git apply` clean on VLLM_REF=v0.30.1rc0, 2026-09-28.
+Re-verified `git apply` clean on VLLM_REF=v0.31.0rc3, 2026-10-01 (full ordered apply + py_compile in scratch clone).
 Upstream #56190 ("[ROCm][Bugfix] Fix profiler in TheRock image", new in
 v0.30.0) preloads libtorch_cpu.so RTLD_GLOBAL at `import vllm` time so
 kineto can advertise itself to rocprofiler-sdk. On this stack (TheRock
