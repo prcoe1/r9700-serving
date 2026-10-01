@@ -519,7 +519,7 @@ stale triage snapshots live in
 Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.30.1rc0 +
 local patches, torch 2.13 (ROCm 10.0), tuned MoE/dense GEMM configs. The
 newest Qwen3.8-27B row is the current live stack (**MTP-off**, 131K context,
-**bf16 KV** since the 09-29 experiment), benched 2026-10-01 on vLLM 0.31.0rc3. Since 2026-08-27 the MTP profiles
+**fp8 KV** — bf16 c2 experiment 09-29→10-01 reverted mid-day), benched 2026-10-01 on vLLM 0.31.0rc3. Since 2026-08-27 the MTP profiles
 also pass `--no-async-scheduling` (vLLM turns async on by default for MTP,
 which is the open `#51571` accepted-count race + the `#54039`/`#32275` ROCm-CI
 hang combination); re-bench shows decode parity — see
@@ -531,7 +531,7 @@ Full methodology, per-run files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) a
 | Qwen3.8-27B (default, 2026-09-22)³ | **MTP3** | bf16 |  ~3124 |   ~67 |    ~68 |
 | Qwen3.8-27B (default, 2026-09-27)⁵ | **MTP1** | fp8 |  ~3440 |   ~50 |    ~52 |
 | Qwen3.8-27B (default, 2026-09-28)⁶ | **off** | fp8 | ~3045–3353 | ~34.6 | ~34.3 |
-| Qwen3.8-27B (default, 2026-10-01)⁷ | **off** | bf16 | ~3493–3519 | ~34.3 | ~34.5 |
+| Qwen3.8-27B (default, 2026-10-01)⁷ | **off** | fp8 | ~3550–3580 | ~34.1 | ~34.1 |
 | Qwen3.8-27B-FP8 (2026-09-18, v0.29.0) | **MTP3** | fp8 |  ~3275 |   ~68 |    ~71 |
 | Qwen3.8-27B-FP8 (2026-08-28, pre-v0.29.0) | **MTP3** | fp8 |  ~3160 |   ~62 |    ~61 |
 | Qwen3.8-27B-FP8 (2026-08-25, pre-v0.29.0) | **MTP3** | bf16 |  ~3060 |   ~67 |    ~68 |
@@ -559,11 +559,13 @@ no-MTP numbers (old no-MTP expectation ~32–35) — not a regression.
  Coherence PASSED. Full record:
  [`benchmarks/2026-09-28_qwen3.8-27b_v0.30.1rc0_bump.md`](benchmarks/2026-09-28_qwen3.8-27b_v0.30.1rc0_bump.md).
  ⁷ vLLM 0.31.0rc3 + 10 carried patches (#58021 verified NOT in rc3),
- aiter v0.1.24; live profile bf16 KV/c2 with spec decode **disabled**
- (user's 09-29 experiment state, left untouched — `env/qwen3.8-27b.env`
- uncommitted). Prefill up vs the 09-30 rc2 row, decode within noise —
- no regression. Coherence PASSED; prefix probe still 0% (#45238 open),
- nan sweep CLEAN with live 8320-token restores. Full record:
+ aiter v0.1.24; live profile c2 with spec decode **disabled**. Benched
+ twice 10-01: morning bf16 run (pp2048 ~3493–3519, tg32 ~34.3, tg128
+ ~34.5 — the 09-29 experiment geometry) then the fp8 row above after
+ reverting to calibrated fp8 KV mid-day (block geometry back to 1600,
+ prefix probe 0% / coherence PASS on both). Prefill up vs the 09-30 rc2
+ row, decode within noise — no regression. Coherence PASSED; nan sweep
+ CLEAN with live 8320-token restores (bf16 geometry). Full record:
  [`benchmarks/2026-10-01_qwen3.8-27b_v0.31.0rc3_bump.md`](benchmarks/2026-10-01_qwen3.8-27b_v0.31.0rc3_bump.md).
 
 ### Profile-following sweeps
