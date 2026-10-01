@@ -518,8 +518,8 @@ stale triage snapshots live in
 
 Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.30.1rc0 +
 local patches, torch 2.13 (ROCm 10.0), tuned MoE/dense GEMM configs. The
-newest Qwen3.8-27B row is the current live stack (**MTP-off**, 131K context,
-**fp8 KV** — bf16 c2 experiment 09-29→10-01 reverted mid-day), benched 2026-10-01 on vLLM 0.31.0rc3. Since 2026-08-27 the MTP profiles
+newest Qwen3.8-27B row is the current live stack (**MTP3**, 131K context,
+**fp8 KV** — spec decode re-enabled at K=3 mid-day 10-01), benched 2026-10-01 on vLLM 0.31.0rc3. Since 2026-08-27 the MTP profiles
 also pass `--no-async-scheduling` (vLLM turns async on by default for MTP,
 which is the open `#51571` accepted-count race + the `#54039`/`#32275` ROCm-CI
 hang combination); re-bench shows decode parity — see
@@ -532,6 +532,7 @@ Full methodology, per-run files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) a
 | Qwen3.8-27B (default, 2026-09-27)⁵ | **MTP1** | fp8 |  ~3440 |   ~50 |    ~52 |
 | Qwen3.8-27B (default, 2026-09-28)⁶ | **off** | fp8 | ~3045–3353 | ~34.6 | ~34.3 |
 | Qwen3.8-27B (default, 2026-10-01)⁷ | **off** | fp8 | ~3550–3580 | ~34.1 | ~34.1 |
+| Qwen3.8-27B (default, 2026-10-01)⁸ | **MTP3** | fp8 | ~3418 | ~61.6 | ~70.8 |
 | Qwen3.8-27B-FP8 (2026-09-18, v0.29.0) | **MTP3** | fp8 |  ~3275 |   ~68 |    ~71 |
 | Qwen3.8-27B-FP8 (2026-08-28, pre-v0.29.0) | **MTP3** | fp8 |  ~3160 |   ~62 |    ~61 |
 | Qwen3.8-27B-FP8 (2026-08-25, pre-v0.29.0) | **MTP3** | bf16 |  ~3060 |   ~67 |    ~68 |
@@ -567,6 +568,12 @@ no-MTP numbers (old no-MTP expectation ~32–35) — not a regression.
  row, decode within noise — no regression. Coherence PASSED; nan sweep
  CLEAN with live 8320-token restores (bf16 geometry). Full record:
  [`benchmarks/2026-10-01_qwen3.8-27b_v0.31.0rc3_bump.md`](benchmarks/2026-10-01_qwen3.8-27b_v0.31.0rc3_bump.md).
+ ⁸ Same day, MTP3 re-enabled (`num_speculative_tokens: 3`, drafter UA —
+ c2 cap covers #35288/#55533, `--no-async-scheduling` automatic,
+ MRV2 covers #54498): decode ~1.8–2.1x vs the ⁷ off-row at a small
+ prefill cost (~−4%), per-token acceptance ~64% (468/735). One stock
+ warning at boot (`max_num_scheduled_tokens` 1024 vs draft slots —
+ the #52872 ITL pin stands, functional).
 
 ### Profile-following sweeps
 
