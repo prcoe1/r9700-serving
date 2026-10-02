@@ -434,16 +434,18 @@ still carried.)
 ### AITER source-build patches (applied at image build time)
 
 `Dockerfile.fullbuild` applies `patches/aiter/*.patch` to the pinned
-`AITER_REF` (v0.1.24, TheRock 10.0) before building the wheel. Together they make aiter's
+`AITER_REF` (v0.1.24.post1, TheRock 10.0) before building the wheel. Together they make aiter's
 unified attention work and run well on RDNA4 (`gfx1201`):
 
 - **`unified-attention-gfx1201-tune.patch`** — per-arch launch-config tuning
   for gfx1201, expressed as additive keys in the v0.1.24 per-arch JSON
-  config tree (`aiter/ops/triton/configs/gfx1201/triton/attention/
-  unified_attention/DEFAULT.json`; upstream entries untouched). v0.1.24
-  touches no UA/config-tree files (9 commits, all gfx950/Gluon/GEMM) and
-  the table is byte-identical to v0.1.23, so the tuning trivially still
-  wins — no `tune_ua_config.py` re-run on the bump. 3D decode
+   config tree (`aiter/ops/triton/configs/gfx1201/triton/attention/
+   unified_attention/DEFAULT.json`; upstream entries untouched). v0.1.24
+   touches no UA/config-tree files (9 commits, all gfx950/Gluon/GEMM) and
+   the table is byte-identical to v0.1.23, so the tuning trivially still
+   wins — no `tune_ua_config.py` re-run on the bump. Same on the v0.1.24.post1
+   bump (post1 touches no gfx1201 UA files — gemm/conv/mla tables only;
+   both aiter patches apply clean, verified 2026-10-02). 3D decode
   (`D_LEQ_256.DT_any_bf16`, where head-256 bf16 decode lands):
   `num_warps` 2 → 4, `waves_per_eu` 2 → 6 — **~1.4–1.9× faster** at
   16k–128k context, bitwise-identical, for both bs=1 and the MTP
@@ -588,6 +590,7 @@ Full methodology, per-run files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) a
 | Qwen3.8-27B (default, 2026-09-28)⁶ | **off** | fp8 | ~3045–3353 | ~34.6 | ~34.3 |
 | Qwen3.8-27B (default, 2026-10-01)⁷ | **off** | fp8 | ~3550–3580 | ~34.1 | ~34.1 |
 | Qwen3.8-27B (default, 2026-10-01)⁸ | **MTP3** | fp8 | ~3418 | ~61.6 | ~70.8 |
+| Qwen3.8-27B (default, 2026-10-02)⁹ | **MTP3** | fp8 | ~3272–3348 | ~68.9 | ~71.1 |
 | Qwen3.8-27B-FP8 (2026-09-18, v0.29.0) | **MTP3** | fp8 |  ~3275 |   ~68 |    ~71 |
 | Qwen3.8-27B-FP8 (2026-08-28, pre-v0.29.0) | **MTP3** | fp8 |  ~3160 |   ~62 |    ~61 |
 | Qwen3.8-27B-FP8 (2026-08-25, pre-v0.29.0) | **MTP3** | bf16 |  ~3060 |   ~67 |    ~68 |
@@ -629,6 +632,10 @@ no-MTP numbers (old no-MTP expectation ~32–35) — not a regression.
  prefill cost (~−4%), per-token acceptance ~64% (468/735). One stock
  warning at boot (`max_num_scheduled_tokens` 1024 vs draft slots —
  the #52872 ITL pin stands, functional).
+ ⁹ aiter v0.1.24 → v0.1.24.post1 (gfx1201 GEMM retune; UA tree untouched,
+ no re-tune). Settled second run: prefill −2–4% vs the ⁸ row (day noise),
+ decode tg32 +12% / tg128 flat — no regression, small decode win as
+ expected from GEMM rows. Prefix probe 0% / coherence PASS.
 
 ### Profile-following sweeps
 

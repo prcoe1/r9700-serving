@@ -743,7 +743,7 @@ applied at build time. Before bumping any pin:
   (`benchmarks/tool_truncation_probe.py`, `benchmarks/thinkoff_probe.py`).
   Re-run its probe after any bump touching `vllm/parser/`.
 
-- The aiter patches (version-locked to `AITER_REF` v0.1.23) are **RDNA4-local
+- The aiter patches (version-locked to `AITER_REF` v0.1.24.post1) are **RDNA4-local
    work**, not upstream cherry-picks: `unified-attention-gfx1201-tune.patch`
    (additive gfx1201 JSON keys in the v0.1.22+ config tree: warps 4/waves 6
    on `D_LEQ_256.DT_any_bf16` 3D decode ~1.4-1.9x, warps 8 on
@@ -756,7 +756,10 @@ applied at build time. Before bumping any pin:
    archived at `archive/patches/`). After any `AITER_REF` bump re-verify
    the tuning still wins — re-run `tools/tune_ua_config.py` (config-tree
    API; with `just down` first) and re-check the LDS guard. See
-   `benchmarks/2026-08-25_gfx1201_ua_tuning.md`.
+   `benchmarks/2026-08-25_gfx1201_ua_tuning.md`. (v0.1.24.post1 touches no
+   gfx1201 UA files — gemm/conv/mla only — so no re-tune was needed;
+   watch aiter#5790, the gfx1201 UA-2D D=256 tune on main: our D=256
+   head-dim bucket, may collide with our additive keys on rebase.)
 - Check whether a newer `VLLM_REF` **already contains** a carried patch (the
   fix landed upstream). If so, the patch should be **dropped**, not kept.
   Verify: `gh pr view <pr> --repo vllm-project/vllm` and check the PR's merged
