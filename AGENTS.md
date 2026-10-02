@@ -501,6 +501,15 @@ touches one of:
     Hygiene rule: never alternate image caps / `--language-model-only` for
     the same model on a shared compile cache without clearing it first.
     Monitor for a fix (key the cache on the multimodal config).
+    **Carried as a local patch since 2026-10-02**
+    (`patches/vllm/50891-mm-cap-compile-cache-key.patch`, own fix — no
+    upstream PR exists): keys the folded
+    `multimodal_config.limit_per_prompt` explicitly via `normalize_value`
+    (dropping the ignore entry alone is a silent no-op — the caps arrive as
+    an InitVar, never retained on the instance; verified hashes still
+    collided before the explicit factor, DIFFER after, in-container).
+    Drop when a pinned `VLLM_REF` keys the compile cache on the multimodal
+    config.
   - `#55894` (2026-09-08, open): hybrid Mamba + MTP silently corrupts
     requests (0.2–1% of a mixed workload, up to 7% targeted) when a
     request's first decode step is scheduled alongside a long chunked
@@ -523,8 +532,12 @@ touches one of:
     min over all groups) — otherwise mandatory chunk ends land on a grid the
     worker can never materialize a Mamba state at. Repro is a Qwen3.8-27B
     hybrid + spec drafter with mismatched target/drafter attention blocks
-      (1648/816); our MTP drafter group can create the same geometry.
-      Monitor for a merge.
+      (1648/816). **Evaluated 2026-10-02, NOT carried**: live server logs
+      `kv cache group sizes [1600, 1600, 1600, 1600]` — equal geometry, and
+      per the PR author equal-geometry behavior is byte-identical, so the
+      patch is a proven no-op here (MTP drafter shares the target's block
+      geometry, unlike the DFlash repro). Re-check only if a profile ever
+      runs a small-block drafter.
   - `#53798` (2026-09-01, PR, open): align-mode `add_request` seeds the
     running-state block column by the scheduler block size instead of the
     (page-unification-scaled) Mamba block size, so a request admitted with
@@ -544,7 +557,16 @@ touches one of:
     cached Mamba state sits at `num_tokens`, which `get_computed_blocks`
     caps below — the Mamba group then reports a 0-token hit and the
     reconciled hybrid hit is 0. Adds the replay boundary as a mandatory
-    chunk stop. Monitor for a merge.
+    chunk stop. **Carried as a local patch since 2026-10-02**
+    (`patches/vllm/50409-mamba-replay-boundary-chunk-stop.patch`, ported to
+    rc3's stops-tuple scheduler). **Measured inert here**: with
+    `max_num_batched_tokens=1024` < 1600 block, windows never span a full
+    block from an aligned start, so the replay stop always coincides with
+    the existing stops (exact-multiple 3200/4800/8000 identical repeats hit
+    0/1600/4800 = the 1-block MTP back-off ladder — back-off arithmetic, not
+    missing states). Kept (13 lines; binds correctly if the chunk cap ever
+    exceeds the block size). Drop when a pinned `VLLM_REF` contains the
+    merge.
   - `#54163` (2026-09-01, PR, open): removes the one-mamba-block back-off
     for DFlash/DSpark drafters (they never write target blocks, so the
      `#53388` `use_eagle_block_drop()` stand-in over-backs them). N/A for

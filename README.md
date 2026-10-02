@@ -398,6 +398,39 @@ still carried.)
   import; was re-cut on v0.30.1rc0 for import-block drift). Drop when a pinned `VLLM_REF`
   contains the merge.
 
+- **Stop mamba align prefill at the replay boundary**
+  (`patches/vllm/50409-mamba-replay-boundary-chunk-stop.patch`,
+  [#50409](https://github.com/vllm-project/vllm/pull/50409), open upstream,
+  in no tag): when the prompt length is an exact multiple of the scheduler
+  block size, align prefill's only cached Mamba state sits at `num_tokens`,
+  which `get_computed_blocks` caps below — the Mamba group reports a 0-token
+  hit and the reconciled hybrid hit is 0. Ported to rc3's stops-tuple
+  scheduler (upstream hunk predates the tail-boundary/Marconi stops; logic
+  identical). Live since 2026-10-02 — **measured inert under this stack's
+  `max_num_batched_tokens=1024` chunk cap**: windows never span a full
+  1600-block from an aligned start, so the replay stop always coincides
+  with the existing `aligned_end`/`next_block_boundary` stops (exact-multiple
+  identical repeats of 3200/4800/8000 tokens still hit 0/1600/4800 = the
+  1-block MTP back-off ladder, i.e. back-off arithmetic, not missing
+  states). Kept carrying: 13 lines, harmless if the chunk cap ever grows
+  past the block size. Drop when a pinned `VLLM_REF` contains the merge.
+
+- **Key the AOT compile cache on `limit_mm_per_prompt`**
+  (`patches/vllm/50891-mm-cap-compile-cache-key.patch`,
+  [issue #50891](https://github.com/vllm-project/vllm/issues/50891), open
+  upstream, no fix PR): `ModelConfig.compute_hash()` ignored the image caps,
+  so same-model runs with different caps collided on one torch-compile
+  cache entry and crashed in `profile_run` (`'NoneType' has no attribute
+  'size'` — bidirectional poisoning, guard checking disabled on cache hit).
+  Own fix (no upstream PR to carry): the caps arrive as an InitVar — not a
+  dataclass field, never retained, merely dropping the ignore entry is a
+  silent no-op (verified hashes still collided) — so the folded
+  `multimodal_config.limit_per_prompt` is keyed explicitly via
+  `normalize_value` (determinism verified). Live since 2026-10-02, verified
+  in-container: image:0 vs image:99 hashes DIFFER. Behavior-neutral here
+  (all runs share cap 99; one-time cache invalidation on adoption). Drop
+  when a pinned `VLLM_REF` keys the compile cache on the multimodal config.
+
 ### AITER source-build patches (applied at image build time)
 
 `Dockerfile.fullbuild` applies `patches/aiter/*.patch` to the pinned

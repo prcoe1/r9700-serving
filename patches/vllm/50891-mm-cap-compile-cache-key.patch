@@ -1,0 +1,71 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: opencode <opencode@localhost>
+Date: Fri, 02 Oct 2026 00:00:00 +0000
+Subject: [PATCH] [Bugfix] Key the AOT compile cache on limit_mm_per_prompt
+ (upstream #50891)
+
+Version-locked to VLLM_REF=v0.31.0rc3. Upstream issue #50891 (open, no
+fix PR): ModelConfig.compute_hash() lists `limit_mm_per_prompt` in
+ignored_factors, so serving the same model with different image caps
+(e.g. image:0 vs image:99) collides on one torch-compile cache entry
+and crashes in profile_run (`AttributeError: 'NoneType' object has no
+attribute 'size'`). The mismatch is bidirectional and guard checking is
+disabled on cache hit, so a poisoned artifact can break a previously
+working deployment in either direction.
+
+Minimal variant: only the caps are keyed (as a structural
+MultiModalDummyOptions normalization — verified deterministic), leaving
+`multimodal_config` itself ignored. Subtlety that shaped this form:
+ModelConfig takes `limit_mm_per_prompt` as an InitVar, which is not a
+dataclass field and is never retained on the instance (it is folded
+into MultiModalConfig.limit_per_prompt at construction) — so merely
+dropping it from ignored_factors is a silent no-op (verified: hashes
+still collided). The fix keys the folded value explicitly. One-time
+effect on adoption: existing compile-cache entries are invalidated and
+rebuilt once (key change only, no runtime behavior change).
+
+Not currently exposed here (all qwen3.8-27b runs share image cap 99 —
+see the #50891 hygiene rule in AGENTS.md); carried as insurance and as
+an upstreamable fix. Drop when a pinned VLLM_REF keys the compile cache
+on the multimodal config.
+---
+diff --git a/vllm/config/model.py b/vllm/config/model.py
+index 15d046de7..5ed25002b 100644
+--- a/vllm/config/model.py
++++ b/vllm/config/model.py
+@@ -456,7 +456,6 @@ class ModelConfig:
+             "io_processor_plugin",
+             "pooler_config",
+             "multimodal_config",
+-            "limit_mm_per_prompt",
+             "media_io_kwargs",
+             "mm_processor_kwargs",
+             "mm_processor_cache_gb",
+@@ -468,7 +467,11 @@ class ModelConfig:
+             "mm_ipc_gpu_memory_gb",
+         }
+
+-        from vllm.config.utils import get_hash_factors, hash_factors
++        from vllm.config.utils import (
++            get_hash_factors,
++            hash_factors,
++            normalize_value,
++        )
+
+         factors = get_hash_factors(self, ignored_factors)
+
+@@ -477,6 +480,14 @@ class ModelConfig:
+         # here early.
+         if self.multimodal_config:
+             factors["language_model_only"] = self.multimodal_config.language_model_only
++            # The per-prompt multimodal caps change the model's forward
++            # signature (image-capable vs text-only graphs compile
++            # differently), so they must key the compile cache (upstream
++            # #50891). ModelConfig takes the caps as an InitVar, which is
++            # not a dataclass field, so key the folded value explicitly.
++            factors["limit_per_prompt"] = normalize_value(
++                self.multimodal_config.limit_per_prompt
++            )
+         return hash_factors(factors)
+
+     def _update_nested(

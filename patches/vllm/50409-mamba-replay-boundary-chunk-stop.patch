@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: opencode <opencode@localhost>
+Date: Fri, 02 Oct 2026 00:00:00 +0000
+Subject: [PATCH] [Bugfix] Stop mamba align prefill at the replay boundary
+ (upstream #50409)
+
+Version-locked to VLLM_REF=v0.31.0rc3 (ported; upstream #50409 was
+written against an older scheduler — rc3 grew tail_boundary Marconi
+junction stops and the stops-tuple structure since. Logic identical to
+upstream: compute replay_boundary, add it as a mandatory chunk stop).
+Upstream PR #50409 (https://github.com/vllm-project/vllm/pull/50409)
+still open, in no tag. Drop when VLLM_REF contains the fix.
+
+When the prompt length is an exact multiple of the scheduler block
+size, align prefill runs as one chunk and the only cached Mamba state
+sits at num_tokens, which get_computed_blocks caps below — the Mamba
+group then reports a 0-token hit and the reconciled hybrid hit is 0.
+Adding the replay boundary (min((num_tokens-1)//block_size*block_size,
+last_cache_position)) as a mandatory chunk stop materializes a state a
+later replay can resume from.
+
+Sorts after 40707-mamba-block-aligned-split-deadlock.patch in the
+ordered Dockerfile apply (same function, non-overlapping hunks).
+---
+diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
+index 8b188de13..72c1df350 100644
+--- a/vllm/v1/core/sched/scheduler.py
++++ b/vllm/v1/core/sched/scheduler.py
+@@ -482,6 +482,16 @@ class Scheduler(SchedulerInterface):
+                     end = aligned_end
+
+         next_block_boundary = (start // block_size + 1) * block_size
++        # A later request replaying this prompt resumes at `num_tokens - 1`
++        # at the latest (`get_computed_blocks` caps the hit there), so the
++        # block boundary at or below that must be a chunk end too: when
++        # `num_tokens` is an exact multiple of `block_size` the only state
++        # cached below it would otherwise sit one token above the cap,
++        # missing entirely (upstream #50409).
++        replay_boundary = min(
++            (request.num_tokens - 1) // block_size * block_size,
++            last_cache_position,
++        )
+         tail_boundary = (
+             request.num_prompt_tokens // self.hash_block_size * self.hash_block_size
+             if self.mamba_partial_cache_hit and not use_internal_checkpoint
+@@ -515,6 +525,9 @@ class Scheduler(SchedulerInterface):
+             else 0,
+             # Never run past the last cacheable block boundary mid-chunk.
+             last_cache_position,
++            # Keep the boundary a replay of this prompt can resume from
++            # (exact-multiple-of-block-size prefill; upstream #50409).
++            replay_boundary if start < replay_boundary < end else 0,
+             # Fine-grained hits: the prompt's partial-tail entry can only be
+             # registered by a chunk ending exactly at its last hash boundary.
+             tail_boundary
