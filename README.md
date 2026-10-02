@@ -591,6 +591,7 @@ Full methodology, per-run files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) a
 | Qwen3.8-27B (default, 2026-10-01)⁷ | **off** | fp8 | ~3550–3580 | ~34.1 | ~34.1 |
 | Qwen3.8-27B (default, 2026-10-01)⁸ | **MTP3** | fp8 | ~3418 | ~61.6 | ~70.8 |
 | Qwen3.8-27B (default, 2026-10-02)⁹ | **MTP3** | fp8 | ~3272–3348 | ~68.9 | ~71.1 |
+| Qwen3.8-27B (default, 2026-10-02)¹⁰ | **MTP1** | fp8 | ~3478–3482 | ~52.5 | ~54.1 |
 | Qwen3.8-27B-FP8 (2026-09-18, v0.29.0) | **MTP3** | fp8 |  ~3275 |   ~68 |    ~71 |
 | Qwen3.8-27B-FP8 (2026-08-28, pre-v0.29.0) | **MTP3** | fp8 |  ~3160 |   ~62 |    ~61 |
 | Qwen3.8-27B-FP8 (2026-08-25, pre-v0.29.0) | **MTP3** | bf16 |  ~3060 |   ~67 |    ~68 |
@@ -636,6 +637,12 @@ no-MTP numbers (old no-MTP expectation ~32–35) — not a regression.
  no re-tune). Settled second run: prefill −2–4% vs the ⁸ row (day noise),
  decode tg32 +12% / tg128 flat — no regression, small decode win as
  expected from GEMM rows. Prefix probe 0% / coherence PASS.
+ ¹⁰ Same day, MTP1 (`num_speculative_tokens: 1`, kept for long-context
+ perf): prefill +4–6%, decode −24% vs the ⁹ MTP3 row — but the depth
+ ladder shows MTP3's ~1.3x decode edge collapsing past 65K (#47602
+ acceptance decay: 35.3 vs 34.9 tg at ~110K, MTP1 parity) while MTP1
+ prefill stays +2–5% at every rung. Full record:
+ [`benchmarks/2026-10-02_qwen3.8-27b_mtp1_depth.md`](benchmarks/2026-10-02_qwen3.8-27b_mtp1_depth.md).
 
 ### Profile-following sweeps
 

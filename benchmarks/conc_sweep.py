@@ -71,6 +71,7 @@ def main() -> None:
     try:
         result = sc.parse_result(out)
         record.update({k: v for k, v in result.items() if k != "benchmarks"})
+        record["conc_results"] = sc.slim_conc_results(result)
         sc.print_conc_table(result)
     except Exception as e:
         print(f"[result parse failed: {e}]", flush=True)

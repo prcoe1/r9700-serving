@@ -106,6 +106,28 @@ def fmt(v, unit=""):
     return f"{v:.2f}{unit}" if isinstance(v, (int, float)) else "-"
 
 
+def slim_depth_results(result):
+    """Slim per-depth summaries for history records.
+
+    The CLI sweep scripts exclude the bulky `benchmarks` blob from the
+    stored record; without a slim replacement the dashboard (which reads
+    `depth_results`, falling back to `benchmarks`) shows no per-depth
+    points for CLI runs.
+    """
+    return [
+        {"depth": d, "pp": pp, "tg": tg, "ttft": tt}
+        for d, _c, pp, tg, tt in rows(result)
+    ]
+
+
+def slim_conc_results(result):
+    """Slim per-depth-per-concurrency summaries (see slim_depth_results)."""
+    return [
+        {"depth": d, "concurrency": c, "pp": pp, "tg": tg, "ttft": tt}
+        for d, c, pp, tg, tt in rows(result)
+    ]
+
+
 def print_depth_table(result):
     print("\n| depth | pp t/s | tg t/s | ttft s |", flush=True)
     print("|:------|-------:|-------:|-------:|", flush=True)
