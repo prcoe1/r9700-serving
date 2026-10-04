@@ -229,9 +229,7 @@ Local backports of upstream fixes not in `VLLM_REF` v0.31.0rc3, applied by
 `Dockerfile.fullbuild` from `patches/vllm/*.patch` (mirrors the aiter patch
 loop). Re-verify each patch applies cleanly on the new ref when bumping
 `VLLM_REF` — and drop any whose fix has since landed (see
-AGENTS.md §4). Retired patches stay in `archive/patches/` (#51812/#51837
-dropped at v0.28.0, #53877 at v0.29.0, 47137-content at v0.30.0, #48606 at
-v0.30.1rc0, #58368 at v0.31.0rc2; #58021 verified NOT in rc3, still carried.)
+AGENTS.md §4).
 
 - **Honor `drop_eagle_block` in `MambaManager`**
   (`48375-mamba-drop-eagle-block.patch`, open upstream): without it, MTP +
@@ -247,9 +245,6 @@ v0.30.1rc0, #58368 at v0.31.0rc2; #58021 verified NOT in rc3, still carried.)
   in a neighbour's row or past the table (IMA in
   `precopy_mamba_align_fused_kernel`). Version-locked to v0.31.0rc3
   (neighbouring `#58434`/`#59175`/`#51899` hunks verified disjoint).
-
-- **Restore prompt-tail prefix-cache hits with MTP** — DROPPED with the
-  v0.31.0rc2 bump (#58368 is in rc2, now rides stock).
 
 - **Reject a `prefix_match_unit` a single KV group cannot honor**
   (`58021-prefix-match-unit-single-group.patch`, merged to main 2026-09-29 —
@@ -294,9 +289,6 @@ v0.30.1rc0, #58368 at v0.31.0rc2; #58021 verified NOT in rc3, still carried.)
   answer in `reasoning` (`content=None`). Guard:
   `benchmarks/thinkoff_probe.py`. Drop when a pinned `VLLM_REF` derives
   `thinking_enabled` from the same kwargs.
-
-- **Native Quark W4A16 INT4/UINT4 export loading** — DROPPED with the
-  v0.30.1rc0 bump (#48606 is in the rc; retired patch in `archive/patches/`).
 
 - **Skip `libtorch_cpu` RTLD_GLOBAL promotion when `rocm_sdk` is installed**
   (`56190-rocm-skip-libtorch-global-promotion.patch`, no upstream fix): the
@@ -346,14 +338,9 @@ v0.30.1rc0, #58368 at v0.31.0rc2; #58021 verified NOT in rc3, still carried.)
 unified attention work and run well on RDNA4 (`gfx1201`):
 
 - **`unified-attention-gfx1201-tune.patch`** — per-arch launch-config tuning
-  for gfx1201, expressed as additive keys in the v0.1.24 per-arch JSON
-   config tree (`aiter/ops/triton/configs/gfx1201/triton/attention/
-   unified_attention/DEFAULT.json`; upstream entries untouched). v0.1.24
-   touches no UA/config-tree files (9 commits, all gfx950/Gluon/GEMM) and
-   the table is byte-identical to v0.1.23, so the tuning trivially still
-   wins — no `tune_ua_config.py` re-run on the bump. Same on the v0.1.24.post1
-   bump (post1 touches no gfx1201 UA files — gemm/conv/mla tables only;
-   both aiter patches apply clean, verified 2026-10-02). 3D decode
+  for gfx1201, expressed as additive keys in the per-arch JSON config tree
+  (`aiter/ops/triton/configs/gfx1201/triton/attention/
+  unified_attention/DEFAULT.json`; upstream entries untouched). 3D decode
   (`D_LEQ_256.DT_any_bf16`, where head-256 bf16 decode lands):
   `num_warps` 2 → 4, `waves_per_eu` 2 → 6 — **~1.4–1.9× faster** at
   16k–128k context, bitwise-identical, for both bs=1 and the MTP
@@ -367,10 +354,7 @@ unified attention work and run well on RDNA4 (`gfx1201`):
   GDN layers + MTP + TP, so the system-level effect is within noise (see
   the tuning doc). See
   [`benchmarks/2026-08-25_gfx1201_ua_tuning.md`](benchmarks/2026-08-25_gfx1201_ua_tuning.md)
-  for the full sweep. The retired code-level bf16-KV cap
-  (`unified-attention-bf16-kv.patch`, superseded by #4868 and unappliable
-  since the config-tree refactor) is kept in `archive/patches/` for
-  archaeology.
+  for the full sweep.
 - **`allowed-archs-gfx1201.patch`** — accept gfx1201 (and the rest of the RDNA
   family) in `csrc/cpp_itfs/utils.py` `allowed_archs` so a
   `GPU_ARCHS=gfx1201` build-time prebuild path doesn't hard-assert (matches the
