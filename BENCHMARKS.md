@@ -8,15 +8,16 @@ live in [`archive/benchmarks/`](archive/benchmarks/); older history in
 
 ## Setup (current)
 
-vLLM 0.30.0 + local patches (see README "Source-build patches"), torch 2.13,
-ROCm 10.0, AITER v0.1.20.post1 unified attention, froggeric chat template
-v22.5, MRV2 runner, `--no-async-scheduling` on MTP profiles. `-tp 2`,
-`--gpu-memory-utilization 0.95`, `GPU_MAX_HW_QUEUES=1`. KV cache is **bf16
-on qwen3.8-27b** (the live default profile, per 2026-09-21 operator decision;
-block 832 at 128k max-len) and **bf16 on the 3.6 profiles** (3.6-27b carries
-a calibrated fp8 sidecar on disk for opt-in via `VLLM_KV_CACHE_DTYPE=fp8`);
-`--max-num-seqs 2` everywhere (the #35288 cap); `--max-num-batched-tokens 1024` on qwen3.8-27b (concurrent-ITL A/B,
-2026-09-03), `4096` on 35B-A3B (block-size forced).
+vLLM 0.31.0rc3 + local patches (see README "Source-build patches"), torch 2.13,
+ROCm 10.0, AITER v0.1.24.post1 unified attention, froggeric chat template
+v22.5, MRV2 runner, `--no-async-scheduling` on MTP profiles (qwen3.8-27b
+currently runs spec-off, so async is on there). `-tp 2`,
+`--gpu-memory-utilization 0.95`, `GPU_MAX_HW_QUEUES=1`. KV cache is **fp8
+(calibrated) on qwen3.8-27b** (block 1600 at 128k max-len) and **bf16 on the
+3.6 profiles** (3.6-27b carries a calibrated fp8 sidecar on disk for opt-in via
+`VLLM_KV_CACHE_DTYPE=fp8`); `--max-num-seqs 4` on qwen3.8-27b (safe while spec
+is off), `2` elsewhere (the #35288 cap); `--max-num-batched-tokens 1024` on
+qwen3.8-27b (concurrent-ITL A/B), `4096` on 35B-A3B (block-size forced).
 
 Single-request numbers are invariant to `--max-num-seqs`; long-context
 concurrency degrades sharply (see the c1-vs-c2 head-to-head in
@@ -26,11 +27,17 @@ concurrency degrades sharply (see the c1-vs-c2 head-to-head in
 
 | file | contents |
 |:-----|:---------|
-| [`benchmarks/2026-09-24_qwen3.8-27b_rdna4_optimizations.md`](benchmarks/2026-09-24_qwen3.8-27b_rdna4_optimizations.md) | **RDNA4 optimization patch drop** (live: v0.30.0 + #56005 FlyDSL FP8 GEMM live / #57767 RDNA AR compiled-dormant, no P2P on 2×R9700 / #55996 SplitKV dormant, wrong backend + flydsl 0.3.4.1): bench on the 09-23 no-MTP profile pp2048 3354–3411 / tg32 33.8 / tg128 33.8 — first no-MTP d0 reference for the profile, recorded as-is (no A/B) |
-| [`benchmarks/2026-09-22_qwen3.8-27b_v0.30.0_bump.md`](benchmarks/2026-09-22_qwen3.8-27b_v0.30.0_bump.md) | **v0.30.0 bump validation**: 3 patch rebases + new #56190 import-abort fix, bench pp2048 ~3124 / tg32 ~67 / tg128 ~68 (bf16, MTP3), prefix-cache still 0%, nan-probe inconclusive/no-hit, thinkoff/tool-truncation/multi-image PASS, conc-ITL choke 17.2x |
+| [`benchmarks/2026-10-02_qwen3.8-27b_mtp1_depth.md`](benchmarks/2026-10-02_qwen3.8-27b_mtp1_depth.md) | **MTP1 depth ladder** (rc3 + post1): MTP3's decode edge collapses past 65K (#47602; parity at ~110K), MTP1 prefill +2–5% at every rung |
+| [`benchmarks/2026-10-01_qwen3.8-27b_v0.31.0rc3_bump.md`](benchmarks/2026-10-01_qwen3.8-27b_v0.31.0rc3_bump.md) | **v0.31.0rc3 bump validation** (spec-off fp8 row = live; MTP3 re-enable ~2x decode at −4% prefill) + post1 GEMM retune |
+| [`benchmarks/2026-09-30_qwen3.8-27b_v0.31.0rc2_bump.md`](benchmarks/2026-09-30_qwen3.8-27b_v0.31.0rc2_bump.md) | **v0.31.0rc2 bump validation** (spec-off) |
+| [`benchmarks/2026-09-28_qwen3.8-27b_v0.30.1rc0_bump.md`](benchmarks/2026-09-28_qwen3.8-27b_v0.30.1rc0_bump.md) | **v0.30.1rc0 bump validation** (spec-off; first no-MTP d0 reference) |
+| [`benchmarks/2026-09-24_qwen3.8-27b_rdna4_optimizations.md`](benchmarks/2026-09-24_qwen3.8-27b_rdna4_optimizations.md) | **RDNA4 optimization patch drop** (live: v0.30.0 + #56005 FlyDSL FP8 GEMM live / #57767 RDNA AR compiled-dormant, no P2P on 2×R9700 / #55996 SplitKV dormant, flydsl 0.3.4.1) |
+| [`benchmarks/2026-09-22_qwen3.8-27b_v0.30.0_bump.md`](benchmarks/2026-09-22_qwen3.8-27b_v0.30.0_bump.md) | **v0.30.0 bump validation** (bf16, MTP3): prefix-cache still 0%, thinkoff/tool-truncation/multi-image PASS, conc-ITL choke 17.2x |
 | [`benchmarks/2026-09-19_qwen3.8-27b_stability_depth_conc.md`](benchmarks/2026-09-19_qwen3.8-27b_stability_depth_conc.md) | **release validation** (v0.29.0 + #40709 patch, live): stability 400/400 + 10/10 + 10/10, depth d0–d256K matches 08-27 shape, conc-ITL p50 880 ms / p99 1.38 s, coherence PASS everywhere — no regressions |
 | [`benchmarks/2026-09-19_qwen3.8-27b_40707_multi_image_probe.md`](benchmarks/2026-09-19_qwen3.8-27b_40707_multi_image_probe.md) | #40707 4-large-image probe: PASS on the patched build (1-image limit lifted) |
-| [`benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md`](benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md) | `--max-num-batched-tokens` 8192/4096/2048 A/B: big-prompt prefill stalled the co-decoder 150–200x (ITL p99 up to 9.8 s) at 8192; 2048 → ~1 s ITL, flat big-prompt TTFT, −3.4% pp2048 → **2048 adopted** on qwen3.8-27b |
+| [`benchmarks/2026-09-21_qwen3.8-27b_chunk1024_ab.md`](benchmarks/2026-09-21_qwen3.8-27b_chunk1024_ab.md) | chunk 2048→1024 A/B: co-decode stall halves again (p50 801→429 ms) for +8% prefill TTFT → **1024 adopted** |
+| [`benchmarks/2026-09-21_qwen3.8-27b_fp8kv128k_c2_depth.md`](benchmarks/2026-09-21_qwen3.8-27b_fp8kv128k_c2_depth.md) | fp8-KV 128k c2 depth reference |
+| [`benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md`](benchmarks/2026-09-03_qwen3.8-27b_concurrent_itl.md) | `--max-num-batched-tokens` 8192/4096/2048 A/B: big-prompt prefill stalled the co-decoder 150–200x at 8192; 2048 → ~1 s ITL (later tightened to 1024, row above) |
 | [`benchmarks/2026-09-10_qwen3.8-27b_55766_nan_probe.md`](benchmarks/2026-09-10_qwen3.8-27b_55766_nan_probe.md) | #55766 NaN-checkpoint probe: CLEAN on v0.29.0 + MTP3 (masked by the 2-block hit back-off, not disproven) |
 | [`benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`](benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md) | AWQ-INT4 trial profile record (decode +30–50%, prefill −26%) |
 | [`benchmarks/2026-08-27_qwen3.8-27b_depth_no_async.md`](benchmarks/2026-08-27_qwen3.8-27b_depth_no_async.md) | Qwen3.8-27B full depth sweep 0–256K (live config family: fp8 KV, MTP3, no-async) |

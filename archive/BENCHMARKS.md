@@ -249,5 +249,23 @@ falls to 40.3 t/s at d128K, and full-context prefill degrades 2698 → 2032 t/s
 bytes moved per attention step — which deep-context decode is bound by — so
 decode at depth holds up against the 57.6 t/s d0 bf16-KV baseline
 ([`08_14_qwen3.8-27b_bf16_mtp4_bench.md`](benchmarks/08_14_qwen3.8-27b_bf16_mtp4_bench.md)).
-See [`08_18_qwen3.8-27b_fp8kv_mtp3_depth.md`](../benchmarks/08_18_qwen3.8-27b_fp8kv_mtp3_depth.md)
+See [`benchmarks/08_18_qwen3.8-27b_fp8kv_mtp3_depth.md`](benchmarks/08_18_qwen3.8-27b_fp8kv_mtp3_depth.md)
 for full tables and observations.
+
+## Superseded Qwen3.8-27B rows (Sept–Oct 2026, moved from README 2026-10-04)
+
+| model | MTP | KV | pp2048 t/s | tg32 t/s | tg128 t/s |
+|:------|:----|:---|-----------:|---------:|----------:|
+| 2026-09-22 (v0.30.0, bf16) | MTP3 | bf16 | ~3124 | ~67 | ~68 |
+| 2026-09-27 (v0.30.0+55390/58368, fp8) | MTP1 | fp8 | ~3440 | ~50 | ~52 |
+| 2026-09-28 (v0.30.1rc0, spec off) | off | fp8 | ~3045–3353 | ~34.6 | ~34.3 |
+| 2026-10-01 AM (v0.31.0rc3, bf16, spec off) | off | bf16 | ~3493–3519 | ~34.3 | ~34.5 |
+| 2026-10-01 PM (v0.31.0rc3, fp8, MTP3 re-enabled) | MTP3 | fp8 | ~3418 | ~61.6 | ~70.8 |
+| 2026-09-18 (v0.29.0, fp8) | MTP3 | fp8 | ~3275 | ~68 | ~71 |
+| 2026-08-28 (pre-v0.29.0, fp8) | MTP3 | fp8 | ~3160 | ~62 | ~61 |
+| 2026-08-25 (pre-v0.29.0, bf16) | MTP3 | bf16 | ~3060 | ~67 | ~68 |
+
+Notes: 09-22 delta vs 09-18 is the bf16 KV switch (operator decision), not a
+regression. 09-27 K was cut 3→1 for #47602 acceptance decay at depth. 10-01
+MTP3 re-enable: ~1.8–2.1x decode vs off at ~−4% prefill, acceptance ~64%.
+Per-run records in `benchmarks/2026-09-2*.md`, `benchmarks/2026-10-01_*.md`.

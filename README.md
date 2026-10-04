@@ -77,25 +77,26 @@ host render group gid for `/dev/dri` access — check with `getent group render`
 |:-------------|:--------|
 | ROCm         | 10.0.0 (`rocm/dev-ubuntu-24.04:10.0.0-full`, Python 3.12) |
 | PyTorch      | 2.13.0+rocm10.0.0 (`stable.repo.amd.com/whl-next`, `torch[device-gfx1201]`) |
-| vLLM         | 0.31.0rc3 (+ carried #58021 — verified NOT in rc3, behavior-neutral here) |
-| AITER        | v0.1.24 |
+| vLLM         | 0.31.0rc3 (+ carried #58021 — verified NOT in rc3 nor final, behavior-neutral here) |
+| AITER        | v0.1.24.post1 |
 | Flash Attention | @ 1cc7ff67 (source; official guide uses `flash-attn==2.8.3` wheel) |
 
 ROCm 10.0 is the TheRock 10.0 stream (successor to the 7.9/7.13/7.14 previews); the
-production 7.2.x line lacks RDNA4/`gfx1201` support. AITER `v0.1.24` carries
+production 7.2.x line lacks RDNA4/`gfx1201` support. AITER `v0.1.24.post1` carries
 the RDNA unified-attention LDS guard (#4868) and the UA config-tree
-tuning tables; vLLM is 0.31.0rc3, carrying the
-hybrid prefix-cache family (#54713, #55450, #58368, #59146, #59175),
-the draft-backend override
+tuning tables; vLLM 0.31.0rc3 carries the hybrid prefix-cache family
+(#54713, #55450, #55390, #58368, #59146, #59175), the draft-backend override
 (#54826), the trailing-block-drop opt-out (#53388), the last-block replay
-implementation (#53945), GDN warmup (#54251), W4A16 packed zero-points
-(#54965), multimodal prefix-cache worker paths (#54994), the GDN
+(#53945), GDN warmup (#54251), W4A16 packed zero-points (#54965), multimodal
+prefix-cache worker paths (#54994), incremental multimodal block hashing
+(#51694), source-tagged prefix-cache extra keys (#51899), the GDN
 stateless-chunk fix (#51565), the MRV2 padded-tail fix (#58434),
-incremental multimodal block hashing (#51694) and source-tagged
-prefix-cache extra keys (#51899) since `gfx1201`
-requires source builds. Post-rc3 #58021 still rides as a local patch
-(source-only, behavior-neutral — no profile passes `--prefix-match-unit`;
-verified NOT in the rc3 tag, drop at the v0.31.0 final). Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2.13.0+rocm10.0.0`
+padded-tail Mamba state (#55178), and the Quark W4A16 loader (#48606) — all formerly carried as local
+patches, all dropped on the v0.31 bump (see AGENTS.md §4).
+Post-rc3 #58021 still rides as a local patch (source-only,
+behavior-neutral — no profile passes `--prefix-match-unit`; verified NOT in
+rc3 nor the v0.31.0 final, which was separately skipped as out-of-scope —
+see AGENTS.md "Checking for Updates"). Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2.13.0+rocm10.0.0`
 `torchvision[device-gfx1201]==0.28.0+rocm10.0.0` `torchaudio==2.11.0+rocm10.0.0` via
 `--index-url https://stable.repo.amd.com/rocm/whl-next/` and `flash-attn==2.8.3`
 `amd-aiter==0.1.23` via `--extra-index-url https://rocm.frameworks.amd.com/whl-multi-arch/vllm/`.
@@ -190,26 +191,22 @@ restart anyway).
   (the live default), served from the calibrated local copy that `just up`
   builds via `ensure-kvscales` — the stock checkpoints ship no KV scales and
   uncalibrated scale-1.0 is miscalibrated (deep-layer V amax ~132 vs the
-  ~1-24 range scale 1.0 assumes). Calibration is a correctness fix, not a
-  measured quality win — the 2026-08-22 A/B found calibrated and scale-1.0
-  fp8 KV indistinguishable on PPL and long-context recall (see the `#52793`
-  note in AGENTS.md and
-  [`benchmarks/2026-08-22_kv_calibration_quality_ab.md`](benchmarks/2026-08-22_kv_calibration_quality_ab.md)).
-  The 3.6 profiles run **bf16 KV** (higher K/V fidelity at the cost of KV
-  bytes; the AITER bf16 LDS posture now comes from upstream #4868 in
-  AITER v0.1.24 plus the narrowed small-Q guard in
+  ~1-24 range scale 1.0 assumes). The 3.6 profiles run **bf16 KV** (higher K/V
+  fidelity at the cost of KV bytes; the AITER bf16 LDS posture now comes from
+  upstream #4868 plus the narrowed small-Q guard in
   `patches/aiter/unified-attention-gfx1201-tune.patch`), with a
   calibrated fp8 sidecar already on disk for 3.6-27b as the opt-in path when
-  context length is the binding constraint.
+  context length is the binding constraint. Calibration history:
+  [`benchmarks/2026-08-22_kv_calibration_quality_ab.md`](benchmarks/2026-08-22_kv_calibration_quality_ab.md).
 - **`--attention-backend ROCM_AITER_UNIFIED_ATTN`** + `--speculative-config`
   (MTP4 on both Qwen3.6 profiles via `qwen3.6.env.common`). Qwen3.8-27B
-  peaked at **MTP3** through 2026-09-26 (its MTP head accepts drafts poorly
-  past position 3, so more drafts waste compute) but currently runs with
-  spec decode **disabled** (09-27 MTP-off experiment — `VLLM_SPEC_DECODE`
-  empty; one-line rollback to MTP1 in `env/qwen3.8-27b.env`). DFlash2's
-  decode win is short-context only (it decays hard with depth) and was
-  rejected after a 2026-08-22 depth A/B — see
-  [`archive/DEADENDS.md`](archive/DEADENDS.md).
+  peaked at **MTP3** (its MTP head accepts drafts poorly past position 3 —
+  bf16-KV sweep: MTP3 57.6, MTP2 56.0, MTP1 45.6, MTP4 49.2, no-MTP 32.0
+  tg32) but currently runs with spec decode **disabled** (10-03 operator
+  decision — `VLLM_SPEC_DECODE` empty, `VLLM_MAX_NUM_SEQS=4`; rollback to
+  MTP1 is a one-liner in `env/qwen3.8-27b.env`). DFlash2 was rejected
+  after a 2026-08-22 depth A/B (decode win is short-context only, decays
+  with depth) — see [`archive/DEADENDS.md`](archive/DEADENDS.md).
 
 ### Runtime overlays (bind-mounted source fixes)
 
@@ -232,204 +229,115 @@ Local backports of upstream fixes not in `VLLM_REF` v0.31.0rc3, applied by
 `Dockerfile.fullbuild` from `patches/vllm/*.patch` (mirrors the aiter patch
 loop). Re-verify each patch applies cleanly on the new ref when bumping
 `VLLM_REF` — and drop any whose fix has since landed (see
-AGENTS.md §4). (#51812/#51837 were carried as patches on v0.27.1, merged
-upstream 2026-08-11, and dropped with the v0.28.0 bump; #53877 was carried on
-v0.28.1rc0 and dropped with the v0.29.0 bump — GDN decode beta FP32 is now
-upstream; the 47137 content half landed via #47562 and was dropped with the
-v0.30.0 bump; #48606 and #55390 were carried on v0.30.0 and dropped with the
-v0.30.1rc0 bump — both are in the rc; #58368 was carried on v0.30.1rc0 and
-dropped with the v0.31.0rc2 bump — in rc2; #58021 verified NOT in rc3,
-still carried.)
+AGENTS.md §4). Retired patches stay in `archive/patches/` (#51812/#51837
+dropped at v0.28.0, #53877 at v0.29.0, 47137-content at v0.30.0, #48606 at
+v0.30.1rc0, #58368 at v0.31.0rc2; #58021 verified NOT in rc3, still carried.)
 
 - **Honor `drop_eagle_block` in `MambaManager`**
-  (`patches/vllm/48375-mamba-drop-eagle-block.patch`,
-  [#48375](https://github.com/vllm-project/vllm/pull/48375), open upstream):
-  without it, MTP + prefix caching on hybrid GDN models can leave the final
-  matched page holding recurrent state written over draft positions that
-  verification later rejects — silent corruption spread to every later request
-  sharing the prefix (#43559, #50188). The fix lowers the cache-hit search
-  ceiling by one page. Version-locked to v0.31.0rc3 (applies cleanly; MambaManager
-  still ignores the flag).
+  (`48375-mamba-drop-eagle-block.patch`, open upstream): without it, MTP +
+  prefix caching on hybrid GDN can leave the final matched page holding
+  recurrent state written over rejected draft positions — silent corruption
+  on every later request sharing the prefix (#43559, #50188). Lowers the
+  cache-hit search ceiling by one page. Version-locked to v0.31.0rc3.
 
 - **Seed align-mode Mamba `state_idx` in Mamba blocks**
-  (`patches/vllm/53798-mamba-align-resume-seed.patch`,
-  [#53798](https://github.com/vllm-project/vllm/pull/53798), open upstream):
-  without it, a request resumed with `num_computed_tokens>0` (reachable via
-  prefix-cache hits — now dense by default #55760/#55861 — or internal
-  checkpoint resumption) seeds its align-table column with
-  `cache_config.block_size` (scheduler block, 832/1600/2112 here) instead of
-  `MambaSpec.block_size` (7168-scale after page unification), landing in a
-  neighbour's row or past the table (IMA in
-  `precopy_mamba_align_fused_kernel`). Version-locked to v0.31.0rc3 (re-anchored:
-  v0.30.0 builds `ModelState` in `load_model`, so the bind hook runs after
-   `kv_cache_config` assignment in `initialize_kv_cache`; neighbouring
-  upstream `#58434` touches the same file but the hunks are disjoint —
-  verified clean; rc3 neighbours `#59175`/`#51899`/`#59335` also disjoint).
+  (`53798-mamba-align-resume-seed.patch`, open upstream): without it, a
+  request resumed with `num_computed_tokens>0` seeds its align-table column
+  with the scheduler block size instead of `MambaSpec.block_size`, landing
+  in a neighbour's row or past the table (IMA in
+  `precopy_mamba_align_fused_kernel`). Version-locked to v0.31.0rc3
+  (neighbouring `#58434`/`#59175`/`#51899` hunks verified disjoint).
 
 - **Restore prompt-tail prefix-cache hits with MTP** — DROPPED with the
-  v0.31.0rc2 bump: [#58368](https://github.com/vllm-project/vllm/pull/58368)
-  is in rc2 (`d5051aba`), so the one-line `_cache_partial_tail_block` fix
-  now rides stock upstream (retired patch kept in `archive/patches/`).
-  Previously carried as `patches/vllm/58368-mamba-prompt-tail-hits-mtp.patch`
-  on v0.30.0/v0.30.1rc0 (verbatim upstream; verified live 2026-09-28 on rc0:
-  identical 3200-token repeat hits 1600, 1-block back-off).
+  v0.31.0rc2 bump (#58368 is in rc2, now rides stock).
 
 - **Reject a `prefix_match_unit` a single KV group cannot honor**
-  (`patches/vllm/58021-prefix-match-unit-single-group.patch`,
-   [#58021](https://github.com/vllm-project/vllm/pull/58021), merged to main
-  2026-09-29 ~2h after the v0.31.0rc2 cut — verified NOT in the rc3 tag
-  (release-branch cut; expected at the v0.31.0 final); fixes #58020):
-  without it, a single-group run with an explicit `--prefix-match-unit`
-  lets the Mamba prefill checkpoint builder write checkpoints off the
-  scheduler's grid (silent wrong-state resumes). Source-only carry
-  (upstream mooncake-test hunk dropped); behavior-neutral here — no
-  profile passes the flag (verified; flag-unset path byte-identical).
-  Drop when a pinned `VLLM_REF` contains the merge.
+  (`58021-prefix-match-unit-single-group.patch`, merged to main 2026-09-29 —
+  verified NOT in rc3 nor the v0.31.0 final): without it, a single-group run
+  with an explicit `--prefix-match-unit` lets the Mamba prefill checkpoint
+  builder write checkpoints off the scheduler's grid (silent wrong-state
+  resumes). Source-only carry; behavior-neutral here — no profile passes the
+  flag. Drop when a pinned `VLLM_REF` contains the merge.
 
 - **Fix `_mamba_block_aligned_split` deadlock on 2+ large images**
-  (`patches/vllm/40707-mamba-block-aligned-split-deadlock.patch`,
-  [#40709](https://github.com/vllm-project/vllm/pull/40709), open upstream):
-  without it, the encoder cache holds one large image while the second waits,
-  and a sub-`block_size` remainder floors to 0 new tokens — the scheduler
-  skips the request forever (hang, engine never recovers). The patch keeps
-  the unaligned chunk end for multimodal requests in that case (state simply
-  isn't block-cached that step). Version-locked to v0.31.0rc3 (applies cleanly).
+  (`40707-mamba-block-aligned-split-deadlock.patch`, verbatim upstream fix
+  `#40709`, open): without it, 2+ large images in one prompt hang the request
+  forever (align block-split collapses to 0). Live since 2026-09-19,
+  verified with `benchmarks/multi_image_probe.py`. Drop when a pinned
+  `VLLM_REF` contains the fix.
 
 - **Streaming/non-streaming tool-parser parity on truncated tool calls**
-  (`patches/vllm/47137-tool-truncation-parity.patch`,
-  [issue #47137](https://github.com/vllm-project/vllm/issues/47137);
-  content half fixed upstream by #46875 then #47562 (in v0.30.0 — local hunk
-  dropped on the v0.30.0 rebase), args half still open as
-  [#48007](https://github.com/vllm-project/vllm/pull/48007)): without it, a
-  tool call cut short by `max_tokens`/`stop` returns dropped (`{}`)
-  arguments non-streaming while streaming clients already received the
-  partial args. Adapted from magiccodingman/vllm-radiance
-  (`patch_qwen3_toolparse.py`); engine-parsers only (`qwen3_coder` here).
-  Verified live 2026-09-18 (`benchmarks/tool_truncation_probe.py` PASS);
-  re-verified 2026-09-30 on rc2 and 2026-10-01 on rc3: partial-args parity still holds both
-  sides, but finish parity now FAILS — upstream #46303 (in rc0) gated
-  *streaming* truncated tool calls to `finish_reason='length'` while the
-  non-streaming path still stamps `'tool_calls'` (`serving.py:1113` vs
-  `:774`; #46303's "non-streaming already correct" premise doesn't hold
-  on the engine-parser path). Upstream inconsistency, not a bump
-   regression (first re-run since v0.30.0); no server patch carried —
-   see `benchmarks/2026-09-30_qwen3.8-27b_v0.31.0rc2_bump.md`.
-   Drop when a pinned `VLLM_REF` contains the #48007 equivalent.
+  (`47137-tool-truncation-parity.patch`; content half fixed upstream by
+  #47562, args half still open as #48007): without it, a tool call cut short
+  by `max_tokens`/`stop` returns dropped (`{}`) arguments non-streaming while
+  streaming clients already received the partial args. Engine-parsers only
+  (`qwen3_coder`). Guard: `benchmarks/tool_truncation_probe.py`. Note: since
+  rc0, streaming truncated calls gate to `finish_reason='length'` while
+  non-streaming still stamps `'tool_calls'` (upstream #46303 inconsistency —
+  first observed on the rc2 bump, not a regression). Drop when a pinned
+  `VLLM_REF` contains the #48007 equivalent.
 
 - **Qwen3 parser drops malformed `<parameter>` elements instead of leaking
-  them** (`patches/vllm/55497-qwen3-malformed-parameter-drop.patch`,
-  [issue #55495](https://github.com/vllm-project/vllm/issues/55495), fix
-  [PR #55497](https://github.com/vllm-project/vllm/pull/55497) open +
-  conflicting, in no release): when the model writes a `<parameter=>`
-  element slightly off (name missing / `>` missing / stray `=` — typical
-  for shell-command values with `$`/newlines), the streamed partial
-  converter swallowed everything up to the closing tag's `>` as a key
-  while the final conversion did not, leaving the client with an
-  unterminated non-JSON `arguments` string and raw `</parameter>` tags in
-  content (seen live 2026-10-01 as a `<tool_call>` leak in an opencode
-  session). Both upstream commits carried source-only: a shared
-  `([^>\s<]+)` parameter-name group in both regexes so partial and final
-  conversion agree, plus a warning (tool name + lengths only) in
-  `_flush_arg_converter` instead of the silent `None`. Pre-build validation
-  2026-10-01: upstream `TestMalformedParameterElements` FAILS 7/10 against
-  the running v0.31.0rc3 container (positive control) and the full
-  `tests/parser/engine/test_qwen3.py` PASSES 61/61 with the fix applied at
-  runtime. Live no-regression guard: the complex-values check in
-  `benchmarks/tool_truncation_probe.py`. Drop when a pinned `VLLM_REF`
-  contains the #55497 merge.
+  them** (`55497-qwen3-malformed-parameter-drop.patch`, fix #55497 open +
+  conflicting, in no release): when the model writes a slightly-off
+  `<parameter=>` element, the streamed partial converter swallowed everything
+  up to the closing tag's `>` as a key while the final conversion did not —
+  unterminated non-JSON `arguments` string, raw tags in content (seen live
+  2026-10-01). Both upstream commits carried source-only. Guard: the
+  complex-values check in `benchmarks/tool_truncation_probe.py`. Drop when a
+  pinned `VLLM_REF` contains the merge.
 
 - **Qwen3 parser/template agreement on thinking-off**
-  (`patches/vllm/qwen3-thinkoff-kwarg-parity.patch`, no upstream fix as of
-  2026-09-18): the template pre-closes `<think>` in the prompt for
-  `reasoning_effort` in (`none`, `off`) and for
-  `auto_disable_thinking_with_tools`, but `Qwen3Parser` only read
-  `enable_thinking` — so thinking-off-by-any-other-route filed the whole
-  output as reasoning (`content=None`, answer stranded in `reasoning`).
-  Adapted from GGZ14/vllm-mxfp4 (`patch_qwen3_thinkoff.py`); engine parser
-  only. Verified live 2026-09-18 (`benchmarks/thinkoff_probe.py` PASS);
-  re-verified 2026-09-30 on rc2 (PASS) and 2026-10-01 on rc3 (PASS).
-  Drop when a pinned `VLLM_REF` derives `thinking_enabled` from the same
-  kwargs.
+  (`qwen3-thinkoff-kwarg-parity.patch`, no upstream fix): the template
+  pre-closes `<think>` for `reasoning_effort` none/off, but `Qwen3Parser`
+  only read `enable_thinking` — thinking-off-by-any-other-route stranded the
+  answer in `reasoning` (`content=None`). Guard:
+  `benchmarks/thinkoff_probe.py`. Drop when a pinned `VLLM_REF` derives
+  `thinking_enabled` from the same kwargs.
 
 - **Native Quark W4A16 INT4/UINT4 export loading** — DROPPED with the
-  v0.30.1rc0 bump: [#48606](https://github.com/vllm-project/vllm/pull/48606)
-  is in the rc, so the `qwen3.8-27b-awq` trial profile now loads Quark
-  W4A16 checkpoints from stock upstream (retired patch kept in
-  `archive/patches/`). Previously carried as
-  `patches/vllm/48606-quark-w4a16.patch` on v0.30.0 (kernel selects
-  `RDNAHybridW4A16` on gfx1201).
+  v0.30.1rc0 bump (#48606 is in the rc; retired patch in `archive/patches/`).
 
 - **Skip `libtorch_cpu` RTLD_GLOBAL promotion when `rocm_sdk` is installed**
-  (`patches/vllm/56190-rocm-skip-libtorch-global-promotion.patch`, upstream
-  #56190 new in v0.30.0, no fix yet): the upstream profiler fix preloads
-  `libtorch_cpu.so` globally at `import vllm` time, but the TheRock
-  `libtorch_cpu` statically links LLVM — `_rocm_sdk_core` (loaded later via
-  `torch._rocm_init`) then registers the same `cl::opt` options twice
-  (`Option 'spirv-expand-step' registered more than once` → LLVM ERROR →
-  abort, exit 139, crash-loop before logging). The skip restores v0.29.0
-  behavior where `rocm_sdk` is present and costs only kineto
-  GPU-profiling registration (unused here). Version-locked to v0.31.0rc3
-  (the #56190 preload is still present in rc3).
+  (`56190-rocm-skip-libtorch-global-promotion.patch`, no upstream fix): the
+  v0.30.0 profiler fix preloads `libtorch_cpu.so` globally at `import vllm`,
+  but TheRock's static LLVM then double-registers `cl::opt` options
+  (`spirv-expand-step` → LLVM ERROR → abort, exit 139, crash-loop before
+  logging). Costs only unused kineto GPU-profiling. Version-locked to
+  v0.31.0rc3. If startup crash-loops with no logs on any bump, check
+  `import vllm` in a throwaway container first.
 
-- **RDNA4 FlyDSL block-FP8 GEMM** (`patches/vllm/56005-rdna4-fp8-flydsl-gemm.patch`,
-   [#56005](https://github.com/vllm-project/vllm/pull/56005), not in v0.31.0rc3):
-  a vLLM-owned FlyDSL WMMA kernel family (prefill / wave32 / packed-row and
-  split-K small-M variants) replacing the Triton block-scaled FP8 GEMM on
-  gfx1200/gfx1201 for 1x128-activation/128x128-weight OCP-FP8 linears.
-  Requires `flydsl 0.3.4.1` at runtime (pinned as `FLYDSL_VERSION` in
-  `.env`/`.env.example`, installed `--no-deps` in the `Dockerfile.fullbuild`
-  runtime stage; aiter's own 0.3.1 build-time dep is untouched). **Live since 2026-09-24** — server log selects
-  `RDNA4Fp8BlockScaledMMKernel` for `Fp8LinearMethod`. Drop when a pinned
-  `VLLM_REF` contains the merge (and still ships the gfx1201 kernel variants).
+- **RDNA4 FlyDSL block-FP8 GEMM** (`56005-rdna4-fp8-flydsl-gemm.patch`, not in
+  v0.31.0rc3): vLLM-owned FlyDSL WMMA kernel family replacing the Triton
+  block-scaled FP8 GEMM on gfx1200/gfx1201. Requires `flydsl 0.3.4.1` at
+  runtime (`FLYDSL_VERSION` in `.env`). Live since 2026-09-24 — server log
+  selects `RDNA4Fp8BlockScaledMMKernel`. Drop when a pinned `VLLM_REF`
+  contains the merge (and still ships the gfx1201 variants).
 
-- **Native HIP RDNA custom all-reduce** (`patches/vllm/57767-rdna-all-reduce.patch`
-  + `57767-v030-port.patch`,
-   [#57767](https://github.com/vllm-project/vllm/pull/57767), not in v0.31.0rc3):
-  a HIP/C++ custom all-reduce for RDNA (`rdna_custom_all_reduce.cu`, built for
-  gfx1100/1200/1201, exposed as `torch.ops._rdna_custom_ar`) with a
-  `VLLM_ROCM_USE_RDNA_ALL_REDUCE` opt-in. **Compiled but dormant on this
-  hardware since 2026-09-24**: the 2× R9700 exposes no P2P
-  (`can_device_access_peer(0,1) == False`), so with the flag on the
-  communicators fall back to PYNCCL (`no visible P2P access to rank 1`); the
-  env flag stays unset. Re-enabling is one line if P2P ever appears. The
-  port patch adapts the `model_runner.py` hunk to the ref's
-  `make_forward_batch_descriptor` API (re-cut on the v0.31.0rc2 bump for
-  the collapsed `parallel_state` import + new `BatchExecutionDescriptor`
-  import; was re-cut on v0.30.1rc0 for import-block drift). Drop when a pinned `VLLM_REF`
-  contains the merge.
+- **Native HIP RDNA custom all-reduce** (`57767-rdna-all-reduce.patch` +
+  `57767-v030-port.patch`, not in v0.31.0rc3): HIP/C++ custom all-reduce for
+  RDNA (gfx1100/1200/1201) with a `VLLM_ROCM_USE_RDNA_ALL_REDUCE` opt-in.
+  **Compiled but dormant**: this board exposes no P2P, so it falls back to
+  PYNCCL; the flag stays unset. Drop when a pinned `VLLM_REF` contains the
+  merge.
 
 - **Stop mamba align prefill at the replay boundary**
-  (`patches/vllm/50409-mamba-replay-boundary-chunk-stop.patch`,
-  [#50409](https://github.com/vllm-project/vllm/pull/50409), open upstream,
-  in no tag): when the prompt length is an exact multiple of the scheduler
-  block size, align prefill's only cached Mamba state sits at `num_tokens`,
-  which `get_computed_blocks` caps below — the Mamba group reports a 0-token
-  hit and the reconciled hybrid hit is 0. Ported to rc3's stops-tuple
-  scheduler (upstream hunk predates the tail-boundary/Marconi stops; logic
-  identical). Live since 2026-10-02 — **measured inert under this stack's
-  `max_num_batched_tokens=1024` chunk cap**: windows never span a full
-  1600-block from an aligned start, so the replay stop always coincides
-  with the existing `aligned_end`/`next_block_boundary` stops (exact-multiple
-  identical repeats of 3200/4800/8000 tokens still hit 0/1600/4800 = the
-  1-block MTP back-off ladder, i.e. back-off arithmetic, not missing
-  states). Kept carrying: 13 lines, harmless if the chunk cap ever grows
-  past the block size. Drop when a pinned `VLLM_REF` contains the merge.
+  (`50409-mamba-replay-boundary-chunk-stop.patch`, open, in no tag): exact
+  block-multiple prompts cache their only Mamba state at `num_tokens`, which
+  `get_computed_blocks` caps below → 0-token Mamba hit. **Measured inert
+  here** (`max_num_batched_tokens=1024` < 1600 block — the replay stop always
+  coincides with existing stops). Kept: 13 lines, binds correctly if the
+  chunk cap ever grows past the block size. Drop when a pinned `VLLM_REF`
+  contains the merge.
 
 - **Key the AOT compile cache on `limit_mm_per_prompt`**
-  (`patches/vllm/50891-mm-cap-compile-cache-key.patch`,
-  [issue #50891](https://github.com/vllm-project/vllm/issues/50891), open
-  upstream, no fix PR): `ModelConfig.compute_hash()` ignored the image caps,
-  so same-model runs with different caps collided on one torch-compile
-  cache entry and crashed in `profile_run` (`'NoneType' has no attribute
-  'size'` — bidirectional poisoning, guard checking disabled on cache hit).
-  Own fix (no upstream PR to carry): the caps arrive as an InitVar — not a
-  dataclass field, never retained, merely dropping the ignore entry is a
-  silent no-op (verified hashes still collided) — so the folded
-  `multimodal_config.limit_per_prompt` is keyed explicitly via
-  `normalize_value` (determinism verified). Live since 2026-10-02, verified
-  in-container: image:0 vs image:99 hashes DIFFER. Behavior-neutral here
-  (all runs share cap 99; one-time cache invalidation on adoption). Drop
-  when a pinned `VLLM_REF` keys the compile cache on the multimodal config.
+  (`50891-mm-cap-compile-cache-key.patch`, open issue, no upstream PR):
+  `ModelConfig.compute_hash()` ignored the image caps, so runs with different
+  caps collided on one torch-compile cache entry and crashed in `profile_run`.
+  Own fix: keys the folded `multimodal_config.limit_per_prompt` explicitly
+  (dropping the ignore entry alone is a silent no-op — caps arrive as an
+  InitVar). Behavior-neutral here (all runs share cap 99). Drop when a pinned
+  `VLLM_REF` keys the compile cache on the multimodal config.
 
 ### AITER source-build patches (applied at image build time)
 
@@ -573,76 +481,29 @@ stale triage snapshots live in
 
 ## Performance
 
-Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.30.1rc0 +
-local patches, torch 2.13 (ROCm 10.0), tuned MoE/dense GEMM configs. The
-newest Qwen3.8-27B row is the current live stack (**MTP3**, 131K context,
-**fp8 KV** — spec decode re-enabled at K=3 mid-day 10-01), benched 2026-10-01 on vLLM 0.31.0rc3. Since 2026-08-27 the MTP profiles
-also pass `--no-async-scheduling` (vLLM turns async on by default for MTP,
-which is the open `#51571` accepted-count race + the `#54039`/`#32275` ROCm-CI
-hang combination); re-bench shows decode parity — see
-[`benchmarks/2026-08-27_qwen3.8-27b_no_async_scheduling.md`](benchmarks/2026-08-27_qwen3.8-27b_no_async_scheduling.md).
-Full methodology, per-run files, and history: [`BENCHMARKS.md`](BENCHMARKS.md) and [`archive/`](archive/).
+Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.31.0rc3
++ local patches, torch 2.13 (ROCm 10.0), tuned MoE/dense GEMM configs. The
+live profile runs spec decode **off** (fp8 KV, 131K context); MTP rows are
+the 10-01/10-02 experiments (rollback: one line in `env/qwen3.8-27b.env`).
+MTP profiles also pass `--no-async-scheduling` (vLLM turns async on by
+default for MTP — the open `#51571` accepted-count race + the
+`#54039`/`#32275` ROCm-CI hang combination). Full methodology, per-run
+files, and superseded rows: [`BENCHMARKS.md`](BENCHMARKS.md) and
+[`archive/`](archive/).
 
 | model                     | MTP (draft #) | KV   | pp2048 t/s | tg32 t/s | tg128 t/s |
 |:--------------------------|:--------------|:-----|-----------:|---------:|----------:|
-| Qwen3.8-27B (default, 2026-09-22)³ | **MTP3** | bf16 |  ~3124 |   ~67 |    ~68 |
-| Qwen3.8-27B (default, 2026-09-27)⁵ | **MTP1** | fp8 |  ~3440 |   ~50 |    ~52 |
-| Qwen3.8-27B (default, 2026-09-28)⁶ | **off** | fp8 | ~3045–3353 | ~34.6 | ~34.3 |
-| Qwen3.8-27B (default, 2026-10-01)⁷ | **off** | fp8 | ~3550–3580 | ~34.1 | ~34.1 |
-| Qwen3.8-27B (default, 2026-10-01)⁸ | **MTP3** | fp8 | ~3418 | ~61.6 | ~70.8 |
-| Qwen3.8-27B (default, 2026-10-02)⁹ | **MTP3** | fp8 | ~3272–3348 | ~68.9 | ~71.1 |
-| Qwen3.8-27B (default, 2026-10-02)¹⁰ | **MTP1** | fp8 | ~3478–3482 | ~52.5 | ~54.1 |
-| Qwen3.8-27B-FP8 (2026-09-18, v0.29.0) | **MTP3** | fp8 |  ~3275 |   ~68 |    ~71 |
-| Qwen3.8-27B-FP8 (2026-08-28, pre-v0.29.0) | **MTP3** | fp8 |  ~3160 |   ~62 |    ~61 |
-| Qwen3.8-27B-FP8 (2026-08-25, pre-v0.29.0) | **MTP3** | bf16 |  ~3060 |   ~67 |    ~68 |
-| Qwen3.8-27B-AWQ-INT4 (trial, 2026-09-10)⁴ | **MTP3** | fp8 | ~2130–2310 | ~81–95 | ~85–87 |
+| Qwen3.8-27B (live, 2026-10-01) | **off** | fp8 | ~3550–3580 | ~34.1 | ~34.1 |
+| Qwen3.8-27B +MTP3 (2026-10-02) | **MTP3** | fp8 | ~3272–3348 | ~68.9 | ~71.1 |
+| Qwen3.8-27B +MTP1 (2026-10-02) | **MTP1** | fp8 | ~3478–3482 | ~52.5 | ~54.1 |
+| Qwen3.8-27B-AWQ-INT4 (trial, 2026-09-10) | **MTP3** | fp8 | ~2130–2310 | ~81–95 | ~85–87 |
 
-² no-async scheduling. ³ vLLM 0.30.0 + all local patches; 09-22 live
-profile (bf16 KV, MRV2, chunk 1024); coherence PASSED. Delta vs the 09-18
-fp8 row is the KV-dtype switch (09-21 operator decision), not a version
-regression — see
-[`benchmarks/2026-09-22_qwen3.8-27b_v0.30.0_bump.md`](benchmarks/2026-09-22_qwen3.8-27b_v0.30.0_bump.md).
- ⁴ AWQ trial profile (`qwen3.8-27b`, backported #48606 loader, RDNAHybrid
-kernel): decode-optimized alternative, not the default — prefill −26%, decode
-+30–50%, weights 10.3 GiB. Full record:
-[`benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`](benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md).
-⁵ vLLM 0.30.0 + #55390/#58368 local patches, aiter v0.1.23 + rebased
-gfx1201 JSON tuning; live profile fp8 KV (restored 09-23) + MTP1 (K cut
-3→1 on 09-26, #47602 acceptance decay at depth). Decode consistent with
-MTP1 expectations (old bf16 sweep MTP3→MTP1 went 57.6→45.6 tg32) — no
-regression from the bump.
-⁶ vLLM 0.30.1rc0 + 10 local patches (#48606/#55390 now upstream, #58368
-still carried), aiter v0.1.24; live profile fp8 KV with spec decode
-**disabled** (09-27 MTP-off experiment — `VLLM_SPEC_DECODE` empty, so no
-`--speculative-config`/`--no-async-scheduling`). tg32/tg128 are the
-no-MTP numbers (old no-MTP expectation ~32–35) — not a regression.
- Coherence PASSED. Full record:
- [`benchmarks/2026-09-28_qwen3.8-27b_v0.30.1rc0_bump.md`](benchmarks/2026-09-28_qwen3.8-27b_v0.30.1rc0_bump.md).
- ⁷ vLLM 0.31.0rc3 + 10 carried patches (#58021 verified NOT in rc3),
- aiter v0.1.24; live profile c2 with spec decode **disabled**. Benched
- twice 10-01: morning bf16 run (pp2048 ~3493–3519, tg32 ~34.3, tg128
- ~34.5 — the 09-29 experiment geometry) then the fp8 row above after
- reverting to calibrated fp8 KV mid-day (block geometry back to 1600,
- prefix probe 0% / coherence PASS on both). Prefill up vs the 09-30 rc2
- row, decode within noise — no regression. Coherence PASSED; nan sweep
- CLEAN with live 8320-token restores (bf16 geometry). Full record:
- [`benchmarks/2026-10-01_qwen3.8-27b_v0.31.0rc3_bump.md`](benchmarks/2026-10-01_qwen3.8-27b_v0.31.0rc3_bump.md).
- ⁸ Same day, MTP3 re-enabled (`num_speculative_tokens: 3`, drafter UA —
- c2 cap covers #35288/#55533, `--no-async-scheduling` automatic,
- MRV2 covers #54498): decode ~1.8–2.1x vs the ⁷ off-row at a small
- prefill cost (~−4%), per-token acceptance ~64% (468/735). One stock
- warning at boot (`max_num_scheduled_tokens` 1024 vs draft slots —
- the #52872 ITL pin stands, functional).
- ⁹ aiter v0.1.24 → v0.1.24.post1 (gfx1201 GEMM retune; UA tree untouched,
- no re-tune). Settled second run: prefill −2–4% vs the ⁸ row (day noise),
- decode tg32 +12% / tg128 flat — no regression, small decode win as
- expected from GEMM rows. Prefix probe 0% / coherence PASS.
- ¹⁰ Same day, MTP1 (`num_speculative_tokens: 1`, kept for long-context
- perf): prefill +4–6%, decode −24% vs the ⁹ MTP3 row — but the depth
- ladder shows MTP3's ~1.3x decode edge collapsing past 65K (#47602
- acceptance decay: 35.3 vs 34.9 tg at ~110K, MTP1 parity) while MTP1
- prefill stays +2–5% at every rung. Full record:
- [`benchmarks/2026-10-02_qwen3.8-27b_mtp1_depth.md`](benchmarks/2026-10-02_qwen3.8-27b_mtp1_depth.md).
+MTP3 ≈ 2× decode at ~−4% prefill (acceptance ~64%); MTP1's edge collapses
+past 65K (#47602 acceptance decay — parity at ~110K) while keeping +2–5%
+prefill. AWQ-INT4 is the decode-optimized alternative (prefill −26%,
+weights 10.3 GiB). Per-run records: `benchmarks/2026-10-01_*`,
+`benchmarks/2026-10-02_*`, `benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`;
+older rows in [`archive/BENCHMARKS.md`](archive/BENCHMARKS.md).
 
 ### Profile-following sweeps
 
@@ -672,37 +533,16 @@ three accept `--dry-run` (sweeps) or explicit overrides (`--depth`,
 
 ### Depth sweep (Qwen3.8-27B-FP8)
 
-Live profile is MTP-off since 09-27, so the depth figures below (recorded
-with MTP3) describe the pre-experiment shape, not current throughput —
-re-run the sweep if MTP is re-enabled. Reference sweep: fp8 KV + **MTP3** +
-256K max-model-len, full-context
-prefill at depth (2026-08-27, `--no-async-scheduling`): pp256K 1277 t/s /
-TTFT 202 s, tg32 holds 41–60 t/s at every depth, coherence passed at every
-depth — full table in
+Reference sweep with MTP3 (fp8 KV, 256K max-model-len, full-context prefill
+at depth, 2026-08-27, `--no-async-scheduling`): pp256K 1277 t/s / TTFT 202 s,
+tg32 holds 41–60 t/s at every depth, coherence passed at every depth — full
+table in
 [`benchmarks/2026-08-27_qwen3.8-27b_depth_no_async.md`](benchmarks/2026-08-27_qwen3.8-27b_depth_no_async.md).
-
-Earlier bf16-KV sweep (2026-08-22) for comparison:
-
-| depth | pp2048 (t/s) | tg32 (t/s) | e2e TTFT (s) |
-|------:|-------------:|-----------:|-------------:|
-| 4096  |     2708.14 |     57.49 |          2.27 |
-| 8192  |     2654.98 |     54.53 |          3.86 |
-| 16384 |     2531.50 |     64.71 |          7.28 |
-| 32768 |     2290.63 |     59.00 |         15.20 |
-| 65536 |     1909.03 |     51.50 |         35.40 |
-| 128000|     1445.16 |     61.12 |         89.99 |
-| 200000|     1119.89 |     50.46 |        180.42 |
-| 256000|      953.17 |     44.97 |        270.73 |
-
-bf16 KV doubles the K/V bytes per attention step, so **deep prefill/TTFT is
-slower than the fp8 sweep** (pp256K 953 vs 1563 t/s, ~39% down; TTFT 271 vs
-165 s at d256K). Decode holds 51–65 t/s out to d200K and 45 t/s at d256K
-(recorded here higher than the old fp8 figures — see the cross-build caveat in
-the depth doc). Coherence passed at every depth; MTP acceptance ~33% unchanged.
-Full tables and the fp8-vs-bf16 comparison in
-[`benchmarks/2026-08-22_qwen3.8-27b_bf16kv_depth_mtp3.md`](benchmarks/2026-08-22_qwen3.8-27b_bf16kv_depth_mtp3.md);
-an earlier fp8-KV depth sweep is in
-[`benchmarks/08_19_qwen3.8-27b_fp8kv_mtp3_depth.md`](benchmarks/08_19_qwen3.8-27b_fp8kv_mtp3_depth.md).
+The live profile currently runs spec-off, so re-run the sweep if MTP is
+re-enabled. A bf16-KV comparison sweep is in
+[`benchmarks/2026-08-22_qwen3.8-27b_bf16kv_depth_mtp3.md`](benchmarks/2026-08-22_qwen3.8-27b_bf16kv_depth_mtp3.md)
+(deep prefill/TTFT slower on bf16: pp256K 953 vs 1563 t/s; decode holds
+51–65 t/s out to d200K).
 
 ### 35B-A3B depth sweep and concurrency (archived)
 
@@ -720,9 +560,15 @@ for the #35288 MTP bug, not throughput) are archived in
 
 The UI has two tabs (sticky, keyboard-navigable): **Stats** (default) and **Benchmarks**, so the live view stays compact on phones — the grid collapses to one column under 640 px (verified on iPhone 17 Pro Max, safe-area aware). Tab choice persists in `localStorage`/URL hash.
 
-**Live panels** (15-min sparklines, Stats tab): KV cache `%` + `max tokens`/`blocks × block_size`/`cache_dtype`/`gpu_memory_utilization`, requests `running`/`waiting`/`swapped`, prefix cache incremental `Δ hits/queries` per poll + cumulative `queries/hits/hitrate` and `block_size`/`mamba_cache_mode` (see `#45238` note). Throughput shows server-side EMA `prompt/gen t/s` (chunked-prefill spike-guarded; prompt t/s counts locally-computed prefill only, not prefix-cache-hit tokens, so cache hits don't read as prefill throughput) plus cumulative spec-decode acceptance when MTP runs. The requests chart is pinned to `max-num-seqs` (`/api/info` `max_conc`) so a full engine reads as full-scale. Rings are timestamped and seeded from `GET /api/metrics/history`, so charts survive reload/tab switches; polling pauses when the tab is hidden and backs off (1s→10s) while vLLM is unreachable.
+**Live panels** (15-min sparklines, Stats tab): KV cache %, requests
+running/waiting/swapped, prefix-cache incremental + cumulative hits/queries
+(see `#45238` note), server-side EMA prompt/gen t/s (chunked-prefill
+spike-guarded; prefix-cache hits don't count as prefill), cumulative
+spec-decode acceptance when MTP runs. Rings are timestamped and survive
+reloads; polling pauses when the tab is hidden and backs off while vLLM is
+unreachable.
 
-**Bench history** (`pp2048`/`tg32`/`tg128`, Benchmarks tab): table + chart from `observability/history.jsonl` (limit 20, also written by `just bench-json` on host — a single json run; `just bench` is the md report). Columns `download results` (blue `download` button, full JSON via `GET /api/history/download/{ts}`) + `modify` (red `delete` button, same style). `POST /api/bench` runs `llama-benchy` `pp2048 tg32/128 ×3` in-container (timeout 600s), cancellable via `Cancel` / `POST /api/bench/cancel`; stdout streams into the card's log panel live (the process is read line-by-line, not at exit). Payloads are truncated in the list view (`raw` 500B preview) to keep the UI responsive. API responses are `Cache-Control: no-store`; the history endpoints send an ETag so the periodic re-fetches can `304`.
+**Bench history** (`pp2048`/`tg32`/`tg128`, Benchmarks tab): table + chart from `observability/history.jsonl` (limit 20; `just bench-json` appends, `just bench` prints the md report). `POST /api/bench` runs llama-benchy in-container (timeout 600s, cancellable, live log stream); `409` if another bench is running. Payloads truncated to 500B previews; history endpoints send ETags for `304` re-fetches.
 
 > **Security note (deliberate):** the dashboard has no auth — it is meant for a
 > trusted home LAN. Anyone who can reach `:8083` can trigger a sweep (up to
