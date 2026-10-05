@@ -115,9 +115,11 @@ that affect this GPU setup and model combo** before recommending a bump.
 
 ```sh
 # vLLM — pin VLLM_REF=v0.31.0rc3 (2026-10-01; ROCm 10.0 + torch 2.13).
-# v0.31.0 final is out (2026-10-04) but skipped deliberately: rc3→final is
-# 6 commits, all HiSparse/minimax/transformers-bound — nothing in our paths
-# (checked 2026-10-04). Carries over v0.29.0/v0.30.0: #55760+#55861 (dense
+# v0.31.0 final published 2026-10-05, skipped deliberately: rc3→final is 6
+# commits, all HiSparse/minimax/transformers-bound — nothing in our paths
+# (re-verified 2026-10-05); the final's `transformers < 5.18.0` pin (#59614)
+# would downgrade the 5.18.0 our rc3 image runs. Carries over
+# v0.29.0/v0.30.0: #55760+#55861 (dense
 # retention default — the #53504-family root-cause fix), #53877 (packed GDN
 # decode FP32), #53821 (AITER unified-attn metadata across graph replay),
 # #54994 + #52041 (multimodal prefix-cache worker paths), ROCm perf #52033 +
@@ -173,7 +175,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533 54713 55450 48007 57580 50891 55495 55497 53739 58407 56077 58639 59933 59095 58882 59773; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533 54713 55450 48007 57580 50891 55495 55497 53739 58407 56077 58639 59933 59095 58882 59773 60008; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -542,6 +544,13 @@ touches one of:
     where supported. Monitor; may matter for UA tuning later.
   - `#59773` (RFC): Octave KV, native 3-bit KV cache for AMD GPUs. Monitor
     alongside the `#55196` capacity family.
+  - `#60008` (2026-10-05, open): align-mode hybrid prefix caching costs
+    11–16% throughput even at 0% hits — per-group eager block-table ops,
+    per-step align kernels outside CUDA graphs, block-boundary prefill splits
+    (Nemotron-3.5-Lightning repro). This is the tax this stack pays on every
+    multi-turn request while `#45238` holds at 0% hits; the `#45238` fix would
+    unmask the hits but the per-step align cost stands on its own. Monitor;
+    no fix PR yet.
   - `#48606` (PR — **MERGED to main 2026-09-18**, after the v0.30.0 cut;
     carried as a local patch on the v0.30.0 pin only):
     native Quark W4A16 INT4/UINT4 `real_quantized` (`reorder`)
