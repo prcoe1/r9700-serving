@@ -130,12 +130,12 @@ services:
       timeout: 5s
       retries: 3
       start_period: 600s
-    # NOTE: --max-num-seqs is capped at 2 UNIVERSALLY (compose default) until
-    # vllm-project/vllm#35288 is fixed: MTP spec-decode corrupts output (garbage
-    # header -> repetition loop) when a decode batch reaches 4+ sequences. It
-    # applies to ALL profiles, MTP-enabled or not, so the safe default lives here
-    # (see --max-num-seqs below) rather than only in per-profile env. Raise only
-    # after the upstream bug is addressed.
+    # NOTE: --max-num-seqs must be capped (v0.31.0rc3 hard-fails boot when
+    # max_num_seqs exceeds the available Mamba cache blocks: this profile has
+    # 249 at 131072 ctx / 0.95 util vs vLLM's 256 default). Compose default is
+    # 2 — also the vllm-project/vllm#35288 (MTP corruption at batch 4+) and
+    # #55533 (hybrid+MTP scheduler collapse) guard for MTP profiles.
+    # Per-profile override via VLLM_MAX_NUM_SEQS (qwen3.8-27b runs 4, MTP-off).
     # NOTE: --gpu-memory-utilization defaults to 0.95 (single-tenant): spends
     # nearly all VRAM on the KV pool (~1.4 GiB/card more than the 0.92
     # co-tenant target — vLLM's boot log prints the equivalent utilization that

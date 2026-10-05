@@ -185,8 +185,10 @@ restart anyway).
   **`-tp 2`**, **`--gpu-memory-utilization 0.95`** (`VLLM_GPU_MEM_UTIL`,
   single-tenant default; lower to 0.92 when a GPU co-tenant such as whisper.cpp
   is active so it keeps ~2-3 GiB of VRAM headroom), **`--max-num-seqs`**
-  (compose default 2 — the #35288 cap; qwen3.8-27b raises it to 4 for the
-  MTP-off experiment below, which is safe because #35288 needs MTP).
+  (compose default 2 — also the boot guard: v0.31.0rc3 hard-fails engine
+  init when max_num_seqs exceeds the Mamba cache blocks, 249 here vs the
+  256 vLLM default; qwen3.8-27b raises it to 4, safe MTP-off since #35288
+  needs MTP).
 - **`--kv-cache-dtype`** (`VLLM_KV_CACHE_DTYPE`): **fp8 on qwen3.8-27b**
   (the live default), served from the calibrated local copy that `just up`
   builds via `ensure-kvscales` — the stock checkpoints ship no KV scales and
@@ -448,9 +450,11 @@ Key tuning decisions:
 [#35288](https://github.com/vllm-project/vllm/issues/35288): MTP spec-decode
 corrupts output when 4+ decode sequences share a batch (garbage header →
 repetition loop → `max_tokens`). **Workaround**: `--max-num-seqs 2` on the
-MTP profiles (compose default), so the batch never reaches the threshold —
-verified with the #35288 repro (4/6/8 concurrent requests → all
-coherent) and the 400-request stress test. qwen3.8-27b currently runs
+MTP profiles (compose default — doubled as the rc3 boot guard, since the
+uncapped 256 exceeds the 249 Mamba cache blocks), so the batch never
+reaches the threshold — verified with the #35288 repro (4/6/8
+concurrent requests → all coherent) and the 400-request stress test.
+qwen3.8-27b currently runs
 `--max-num-seqs 4`, which is safe only because its spec decode is disabled
 (MTP-off experiment); re-apply the cap of 2 if MTP is re-enabled. See the
 AGENTS.md watchlist for status.
@@ -500,15 +504,16 @@ the server), so a config change never silently invalidates the test grid:
   (e.g. `[0 … 65536, 125952]` at 131072); logs to
   `observability/depth_history.jsonl`.
 - `just bench-conc` — concurrency ladder covers `1..VLLM_MAX_NUM_SEQS`
-  (powers of two plus the max: `[1, 2, 4]` at conc-4, `[1, 2, 4, 8]` at
-  conc-8) over the depth ladder; logs to
+  (powers of two plus the max: `[1, 2, 4]` on the live qwen3.8-27b profile,
+  `[1, 2]` elsewhere via the compose default) over the depth ladder; logs to
   `observability/conc_history.jsonl`.
 - `benchmarks/conc_itl_probe.py` — the prefill-stall probe fills
   `max_num_seqs − 1` victim slots plus one big-prefill bully, with the big
   prompt capped to fit under `VLLM_MAX_MODEL_LEN`.
 
 The dashboard's depth/conc sweep buttons follow the same rules (ladder from
-its `VLLM_MAX_MODEL_LEN` env, concurrency from `VLLM_MAX_NUM_SEQS`). All
+its `VLLM_MAX_MODEL_LEN` env, concurrency from `VLLM_MAX_NUM_SEQS` (4 on the
+live profile, compose-default 2 elsewhere). All
 three accept `--dry-run` (sweeps) or explicit overrides (`--depth`,
 `--levels`, probe argv) when a fixed grid is wanted instead.
 
@@ -562,7 +567,7 @@ Backend helpers have unit tests: `uv run --with "fastapi==0.115.*" --with "httpx
 
 **Depth sweep** — `full 0–200K corpus (pp2048/tg1024, TTFT in table) — est. 20min` (`observability/depth_history.jsonl`, limit 20, `POST /api/depth`, timeout 3600s). Runs `llama-benchy --depth 0 4096 8192 16384 32768 65536 128000 200000 --tg 1024 --no-cache --runs 2`. Chart + table show latest sweep; history rows collapsed with per-run `download results`/`modify`.
 
-**Concurrency sweep** — `same depths 0–200K at max concurrency (x parallel, pp2048/tg1024) — est. 40min` (`observability/conc_history.jsonl`, limit 20, `POST /api/conc`, timeout 3600s). Same depths but with `--concurrency max_num_seqs` (4 on the live qwen3.8-27b profile, 2 elsewhere via `VLLM_MAX_NUM_SEQS`, `#35288`) + `--no-cache --runs 2`. Same download/modify UX.
+**Concurrency sweep** — `same depths 0–200K at max concurrency (x parallel, pp2048/tg1024) — est. 40min` (`observability/conc_history.jsonl`, limit 20, `POST /api/conc`, timeout 3600s). Same depths but with `--concurrency max_num_seqs` (4 on the live qwen3.8-27b profile, 2 elsewhere) + `--no-cache --runs 2`. Same download/modify UX.
 
 Empty sweeps minimise to header+buttons (chart+table hidden, `minimised` class) so the page stays compact before first run. `Clear data` (red) wipes each history file; `Cancel` kills the sweep's whole process group (uvx *and* grandchildren — runs use `start_new_session` so nothing survives to keep hammering vLLM). All bench endpoints are `409` if another bench is running.
 
