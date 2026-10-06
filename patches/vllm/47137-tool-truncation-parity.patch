@@ -1,6 +1,6 @@
 # Version-locked to VLLM_REF=v0.30.0 (`git apply --check` clean).
 # Re-verified `git apply` clean on VLLM_REF=v0.30.1rc0, 2026-09-28.
-Re-verified `git apply` clean on VLLM_REF=v0.31.0rc3, 2026-10-01 (full ordered apply + py_compile in scratch clone).
+Re-verified `git apply` clean on VLLM_REF=v0.31.0, 2026-10-06 (full ordered apply + py_compile in scratch clone).
 # Streaming/non-streaming tool-parser parity on truncated tool calls
 # (vLLM issue #47137). Adapted from magiccodingman/vllm-radiance
 # patch_qwen3_toolparse.py (StillDeadcode/libr4d lineage).

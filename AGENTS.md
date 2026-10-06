@@ -114,11 +114,11 @@ that affect this GPU setup and model combo** before recommending a bump.
 ### 1. Upstream release state
 
 ```sh
-# vLLM — pin VLLM_REF=v0.31.0rc3 (2026-10-01; ROCm 10.0 + torch 2.13).
-# v0.31.0 final published 2026-10-05, skipped deliberately: rc3→final is 6
-# commits, all HiSparse/minimax/transformers-bound — nothing in our paths
-# (re-verified 2026-10-05); the final's `transformers < 5.18.0` pin (#59614)
-# would downgrade the 5.18.0 our rc3 image runs. Carries over
+# vLLM — pin VLLM_REF=v0.31.0 (2026-10-06; ROCm 10.1 + torch 2.13).
+# Final vs rc3 is 6 commits, all HiSparse/minimax/transformers-bound —
+# nothing in our paths; the final's `transformers < 5.18.0` pin (#59614)
+# downgrades the 5.18.0 the rc3 image ran to 5.17.x (accepted, upstream-tested
+# dep set). Carries over
 # v0.29.0/v0.30.0: #55760+#55861 (dense
 # retention default — the #53504-family root-cause fix), #53877 (packed GDN
 # decode FP32), #53821 (AITER unified-attn metadata across graph replay),
@@ -132,7 +132,7 @@ that affect this GPU setup and model combo** before recommending a bump.
 # reservation), #58434 (MRV2 padded tails as spec rows), #51694
 # (incremental multimodal hashing), #51899 (source-tagged extra keys),
 # #55178 (padded-tail Mamba state). Next target:
-# v0.30.1/v0.32 (watch #53479, #54076, #50409, #51599). MRV2 is the default
+# v0.32 (watch #53479, #54076, #50409, #51599). MRV2 is the default
 # for all our profiles (#53183).
 gh release list -R vllm-project/vllm --limit 8
 
@@ -151,9 +151,13 @@ gh release list -R ROCm/aiter --limit 8
 # (HEAD a369df7, 2 commits past pin, both Blackwell-only — no bump).
 git ls-remote https://github.com/ROCm/flash-attention.git HEAD
 
-# ROCm base image — ROCM_IMAGE=rocm/dev-ubuntu-24.04:10.0.0-full (only 10.0
-# tag so far). 10.0.x releases via TheRock releases page.
-curl -s "https://hub.docker.com/v2/repositories/rocm/dev-ubuntu-24.04/tags?page_size=100&name=10.0" | jq -r '.results[].name' | sort -V
+# ROCm base image — ROCM_IMAGE=rocm/dev-ubuntu-24.04:10.1.0-full (10.1.0
+# published 2026-10-05; torch 2.13.0+rocm10.1.0 / torchvision 0.28.0+rocm10.1.0
+# / torchaudio 2.11.0.2+rocm10.1.0 all on whl-next). 10.x releases via
+# TheRock releases page.
+# NOTE: torchaudio is hardcoded in Dockerfile.fullbuild (not from .env) —
+# bump its +rocm suffix together with ROCM_IMAGE.
+curl -s "https://hub.docker.com/v2/repositories/rocm/dev-ubuntu-24.04/tags?page_size=100&name=10." | jq -r '.results[].name' | sort -V
 
 # Froggeric chat template — pin is the first line of chat-templates/qwen.jinja
 # (currently qwen3.8-froggeric-v22.5). Compare against upstream main:

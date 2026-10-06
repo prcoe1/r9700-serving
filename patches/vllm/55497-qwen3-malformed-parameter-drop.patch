@@ -1,4 +1,4 @@
-# Version-locked to VLLM_REF=v0.31.0rc3 (`git apply --check` clean).
+# Version-locked to VLLM_REF=v0.31.0 (`git apply --check` clean).
 # Qwen3 parser: a malformed <parameter> element no longer leaks into
 # streamed arguments (vLLM issue #55495, fix PR #55497 — OPEN + CONFLICTING,
 # in no release as of 2026-10-01; both upstream commits carried verbatim,
@@ -22,11 +22,13 @@
 # _flush_arg_converter logs a warning (tool name + lengths only, never
 # argument content) instead of returning None in silence, so the next
 # occurrence of this class is visible in container logs instead of silent.
-# Verified 2026-10-01: cherry-picks cleanly onto v0.31.0rc3; upstream
+# Verified 2026-10-01: cherry-picks cleanly onto v0.31.0; upstream
 # TestMalformedParameterElements run inside the running v0.31.0rc3 container
 # FAILS 7/10 on stock code (positive control — bug present in our build)
 # and the full tests/parser/engine/test_qwen3.py PASSES 61/61 with the
 # regex half applied at runtime (no regressions in existing tests).
+# Re-verified `git apply` clean on VLLM_REF=v0.31.0, 2026-10-06 (sequential
+# ordered apply in a scratch final clone — #55497 still open upstream).
 # Drop when a pinned VLLM_REF contains the #55497 merge (check merge commit
 # vs tag — the PR is still OPEN + needs-rebase, so not in any rc/final yet).
 # Leading comments are ignored by `git apply`.

@@ -5,7 +5,7 @@ Subject: [PATCH] [BugFix] Honor drop_eagle_block in MambaManager (#48375)
 
 Adapted for VLLM_REF=v0.30.0 (also applies to v0.29.0/v0.28.1rc0).
 Re-verified `git apply` clean on VLLM_REF=v0.30.1rc0, 2026-09-28.
-Re-verified `git apply` clean on VLLM_REF=v0.31.0rc3, 2026-10-01 (full ordered apply + py_compile in scratch clone).
+Re-verified `git apply` clean on VLLM_REF=v0.31.0, 2026-10-06 (full ordered apply + py_compile in scratch clone).
 Upstream PR #48375 (still open upstream as of 2026-09-22) against vllm
 main; verified `git apply --check` clean on the v0.30.0 tag
 (vllm/v1/core/single_type_kv_cache_manager.py) — MambaManager.
