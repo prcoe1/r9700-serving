@@ -472,8 +472,9 @@ stale triage snapshots live in
 
 Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.31.0
 + local patches, torch 2.13 (ROCm 10.1), tuned MoE/dense GEMM configs. The
-live profile runs spec decode **off** (fp8 KV, 131K context); MTP rows are
-the 10-01/10-02 experiments (rollback: one line in `env/qwen3.8-27b.env`).
+live profile runs **MTP1** spec decode (fp8 KV, 131K context, cap 4 —
+4-wide hold verified 2026-10-06); MTP3/MTP1 experiment rows below are the
+10-01/10-02 trials (rollback: one line in `env/qwen3.8-27b.env`).
 MTP profiles also pass `--no-async-scheduling` (vLLM turns async on by
 default for MTP — the open `#51571` accepted-count race + the
 `#54039`/`#32275` ROCm-CI hang combination). Full methodology, per-run
@@ -482,7 +483,8 @@ files, and superseded rows: [`BENCHMARKS.md`](BENCHMARKS.md) and
 
 | model                     | MTP (draft #) | KV   | pp2048 t/s | tg32 t/s | tg128 t/s |
 |:--------------------------|:--------------|:-----|-----------:|---------:|----------:|
-| Qwen3.8-27B (live, 2026-10-06) | **off** | fp8 | ~3486–3493 | ~34.1 | ~34.1 |
+| Qwen3.8-27B (live, 2026-10-06) | **MTP1** | fp8 | ~3398–3426 | ~49.5 | ~52.6 |
+| Qwen3.8-27B spec-off (2026-10-06) | **off** | fp8 | ~3486–3493 | ~34.1 | ~34.1 |
 | Qwen3.8-27B +MTP3 (2026-10-02) | **MTP3** | fp8 | ~3272–3348 | ~68.9 | ~71.1 |
 | Qwen3.8-27B +MTP1 (2026-10-02) | **MTP1** | fp8 | ~3478–3482 | ~52.5 | ~54.1 |
 | Qwen3.8-27B-AWQ-INT4 (trial, 2026-09-10) | **MTP3** | fp8 | ~2130–2310 | ~81–95 | ~85–87 |
