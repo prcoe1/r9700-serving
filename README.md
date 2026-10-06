@@ -109,7 +109,8 @@ vision). Alternatives: `Qwen/Qwen3.6-27B-FP8` (`qwen3.6-27b`, dense),
 and `cyankiwi/Qwen3.8-27B-AWQ-BF16-INT4` (`qwen3.8-27b`, compressed-tensors
 W4A16 weight-only trial — decode-optimized alternative, MTP3 via a local
 HF-config snapshot (upstream `#53387` workaround) with calibrated fp8 KV
-when spec decode is on (currently off, mirroring live; rollback one-liner
+when spec decode is on (currently off in the trial profile; live is MTP1
+since 2026-10-06 — enable for the trial with the rollback one-liner
 in `env/qwen3.8-27b-awq.env`);
 earlier Quark trial in
 [`benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`](benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md)).
@@ -188,8 +189,8 @@ restart anyway).
   is active so it keeps ~2-3 GiB of VRAM headroom), **`--max-num-seqs`**
   (compose default 2 — also the boot guard: v0.31.0rc3 hard-fails engine
   init when max_num_seqs exceeds the Mamba cache blocks, 249 here vs the
-  256 vLLM default; qwen3.8-27b raises it to 4, safe MTP-off since #35288
-  needs MTP).
+  256 vLLM default; qwen3.8-27b raises it to 4 — MTP1-at-4 verified
+  2026-10-06, see `benchmarks/2026-10-06_mtp1_c4_hold.md).
 - **`--kv-cache-dtype`** (`VLLM_KV_CACHE_DTYPE`): **fp8 on qwen3.8-27b**
   (the live default), served from the calibrated local copy that `just up`
   builds via `ensure-kvscales` — the stock checkpoints ship no KV scales and
@@ -456,8 +457,11 @@ uncapped 256 exceeds the 249 Mamba cache blocks), so the batch never
 reaches the threshold — verified with the #35288 repro (4/6/8
 concurrent requests → all coherent) and the 400-request stress test.
 qwen3.8-27b currently runs
-`--max-num-seqs 4`, which is safe only because its spec decode is disabled
-(MTP-off experiment); re-apply the cap of 2 if MTP is re-enabled. See the
+`--max-num-seqs 4` with MTP1 live since 2026-10-06 — below the corruption
+threshold at K=1 depth (4-wide hold verified: acceptance 79–93%,
+`max_running=4`, no garbling; see
+`benchmarks/2026-10-06_mtp1_c4_hold.md`). Re-apply the cap of 2 if MTP
+depth ever exceeds K=1. See the
 AGENTS.md watchlist for status.
 
 ### Upstream issues
@@ -530,8 +534,8 @@ at depth, 2026-08-27, `--no-async-scheduling`): pp256K 1277 t/s / TTFT 202 s,
 tg32 holds 41–60 t/s at every depth, coherence passed at every depth — full
 table in
 [`benchmarks/2026-08-27_qwen3.8-27b_depth_no_async.md`](benchmarks/2026-08-27_qwen3.8-27b_depth_no_async.md).
-The live profile currently runs spec-off, so re-run the sweep if MTP is
-re-enabled. A bf16-KV comparison sweep is in
+The live profile runs MTP1 since 2026-10-06; this MTP3 reference still
+bounds the envelope (re-run the sweep if MTP depth ever exceeds K=1). A bf16-KV comparison sweep is in
 [`benchmarks/2026-08-22_qwen3.8-27b_bf16kv_depth_mtp3.md`](benchmarks/2026-08-22_qwen3.8-27b_bf16kv_depth_mtp3.md)
 (deep prefill/TTFT slower on bf16: pp256K 953 vs 1563 t/s; decode holds
 51–65 t/s out to d200K).

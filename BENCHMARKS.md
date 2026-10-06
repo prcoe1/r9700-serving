@@ -8,10 +8,10 @@ live in [`archive/benchmarks/`](archive/benchmarks/); older history in
 
 ## Setup (current)
 
-vLLM 0.31.0rc3 + local patches (see README "Source-build patches"), torch 2.13,
-ROCm 10.0, AITER v0.1.24.post1 unified attention, froggeric chat template
-v22.5, MRV2 runner, `--no-async-scheduling` on MTP profiles (qwen3.8-27b
-currently runs spec-off, so async is on there). `-tp 2`,
+vLLM 0.31.0 + local patches (see README "Source-build patches"), torch 2.13,
+ROCm 10.1, AITER v0.1.24.post1 unified attention, froggeric chat template
+v22.5, MRV2 runner, `--no-async-scheduling` (live qwen3.8-27b runs MTP1, so
+async stays off there). `-tp 2`,
 `--gpu-memory-utilization 0.95`, `GPU_MAX_HW_QUEUES=1`. KV cache is **fp8
 (calibrated) on qwen3.8-27b** (block 1600 at 128k max-len) and **bf16 on the
 3.6 profiles** (3.6-27b carries a calibrated fp8 sidecar on disk for opt-in via

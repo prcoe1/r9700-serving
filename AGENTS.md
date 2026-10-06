@@ -227,7 +227,11 @@ touches one of:
   tool-argument formatting for the `qwen3_coder` XML parser, or reasoning/
   tool-error heuristics. Template bumps need no rebuild (see step 1).
 - **Known-bug watchlist** (search/check these before recommending a vLLM bump):
-  - `#35288` MTP concurrency corruption — mitigated by `max-num-seqs 2`;
+  - `#35288` MTP concurrency corruption — mitigated by `max-num-seqs 2`
+    on MTP profiles; qwen3.8-27b runs MTP1 at cap 4 since 2026-10-06 after
+    a clean 4-wide hold check (acceptance 79–93%, no garbling —
+    benchmarks/2026-10-06_mtp1_c4_hold.md), below the 4+-decode-sequence
+    corruption threshold at K=1 depth;
     precise root cause is the async+MTP align race `#51571` (fix `#51599`),
     and the corruption requires async scheduling, which we disable.
   - `#47087` MTP token loops on Qwen3-MoE — **resolved** by #51113 (in
@@ -528,10 +532,11 @@ touches one of:
      scheduler caps at ~3 concurrent sequences at batch ≥ 4 — acceptance/
      throughput collapse (8-wide batch runs `[2,2,2]` only; `bs ≤ 3` healthy).
      Root: mamba cache budget shared between target states + MTP draft slots in
-     scheduler accounting (scales with GDN layer count). **Relevant** — we have
-     the `#35288` `max-num-seqs 2` cap so not hit today, but blocks any future
-    cap raise. WIP fix `PR #55617` (2026-09-06; 2026-09-12: still OPEN +
-    CONFLICTING/WIP). Monitor before raising `max-num-seqs`.
+     scheduler accounting (scales with GDN layer count). **Relevant** — the
+     cap was raised 2→4 with MTP1 on 2026-10-06 after a clean 4-wide hold
+     check (no cap-out, acceptance 79–93%; K=1 slips under the pathology).
+    WIP fix `PR #55617` (2026-09-06; 2026-09-12: still OPEN +
+    CONFLICTING/WIP). Re-probe before raising MTP depth past K=1 at 4-wide.
   - `#58639` (2026-09-25, open): V2-runner PP side streams ~2× slower on
     gfx1201 (PP=3/TP=1 repro; `broadcast_stream` + async output-copy stream
     both wait on main). PP half N/A (we run PP=1); stream-penalty half already
