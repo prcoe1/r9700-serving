@@ -1,0 +1,89 @@
+From 3d6853b32c7c872df00d9e3489f642dc22e974e000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: pondzikk <142788369+pondzikk@users.noreply.github.com>
+Date: Wed, 07 Oct 2026 19:09:50 +0200
+Subject: [PATCH] [Bugfix] Seed hybrid mamba state index with mamba_block_size
+ on prefix-cache hits (#55601)
+
+Verbatim cherry-pick of upstream commit 3d6853b32 (PR #55601, merged to
+main 2026-10-07 — after the v0.31.1rc0 tag of 2026-10-06, so in NEITHER
+v0.31.0 nor v0.31.1rc0; expected in the v0.31.1 final). Closes #55600.
+
+This is the upstream, merged form of our carried #53798 fix (co-authored
+here) and REPLACES 53798-mamba-align-resume-seed.patch. The #53798
+version seeded the align state block from MambaSpec.block_size via a
+set_kv_cache_config hook; #55601 seeds from
+cache_config.mamba_block_size directly. The two are numerically
+identical in every current geometry: MambaSpec.block_size is
+constructed from cache_config.mamba_block_size
+(mamba/abstract.py get_kv_cache_spec), and
+unify_kv_cache_spec_page_size PADS the mamba page (page_size_padded)
+without scaling MambaSpec.block_size, so the #53798 premise that page
+unification scales it past the scheduler block does not hold in
+v0.31.x code (ours: align mode, all groups 1600 — both compute the same
+column). #55601 additionally hard-asserts mamba_block_size is not None
+(cannot fire: MambaSpec construction asserts the same field). Dropping
+the #53798 hook machinery (interface.py set_kv_cache_config, eager spec
+binding in model_runner.py, _get_mamba_group_info rework) is the payoff.
+
+Re-verified `git apply` clean on VLLM_REF=v0.31.0 (current pin, full
+ordered apply + py_compile in scratch clone) and v0.31.1rc0,
+2026-10-07.
+
+Drop when a pinned VLLM_REF contains 3d6853b32.
+
+Signed-off-by: pondzikk <142788369+pondzikk@users.noreply.github.com>
+Signed-off-by: zjy0516 <riverclouds.zhu@qq.com>
+Co-authored-by: Claude Fable 5.1 <noreply@anthropic.com>
+Co-authored-by: zjy0516 <riverclouds.zhu@qq.com>
+Co-authored-by: ptorsten <1652174+ptorsten@users.noreply.github.com>
+---
+ tests/v1/worker/test_mamba_hybrid_model_state.py | 16 ++++++++++++++++
+ vllm/v1/worker/gpu/model_states/mamba_hybrid.py  |  7 ++++++-
+ 2 files changed, 22 insertions(+), 1 deletion(-)
+
+diff --git a/tests/v1/worker/test_mamba_hybrid_model_state.py b/tests/v1/worker/test_mamba_hybrid_model_state.py
+index f87201e48d..fa54ccfced 100644
+--- a/tests/v1/worker/test_mamba_hybrid_model_state.py
++++ b/tests/v1/worker/test_mamba_hybrid_model_state.py
+@@ -67,6 +67,22 @@ def test_prepare_attn_forwards_positions(monkeypatch: pytest.MonkeyPatch) -> Non
+     assert build_attn_metadata.call_args.kwargs["positions"] is positions
+ 
+ 
++def test_add_request_seeds_state_idx_in_mamba_blocks() -> None:
++    """A drafter group can lower cache_config.block_size below the mamba
++    block size; the seeded column must still be in mamba blocks."""
++    state = object.__new__(MambaHybridModelState)
++    state.cache_config = SimpleNamespace(block_size=16, mamba_block_size=880)
++    state._align_mode = True
++    state.rope_state = None
++    state.prompt_embeds_state = None
++    state.num_accepted_tokens_gpu = torch.ones(2, dtype=torch.int32)
++    state._mamba_state_idx_gpu = torch.zeros(2, dtype=torch.int32)
++
++    state.add_request(1, SimpleNamespace(num_computed_tokens=107_360))
++
++    assert state._mamba_state_idx_gpu[1] == 121
++
++
+ def test_padded_prompt_tail_builds_as_spec_decode(
+     monkeypatch: pytest.MonkeyPatch,
+ ) -> None:
+diff --git a/vllm/v1/worker/gpu/model_states/mamba_hybrid.py b/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
+index 1f8af07898..c45304efa5 100644
+--- a/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
++++ b/vllm/v1/worker/gpu/model_states/mamba_hybrid.py
+@@ -115,8 +115,13 @@ class MambaHybridModelState(DefaultModelState):
+         self.num_accepted_tokens_gpu[req_index].fill_(1)
+         if self._align_mode:
+             # Seed the running state block from the resumed/prefilled position.
++            # The column is in mamba blocks. cache_config.block_size is the
++            # min over prefix-cacheable groups, so a drafter group with its own
++            # smaller block (e.g. DFlash) pulls it below mamba_block_size.
++            mamba_block_size = self.cache_config.mamba_block_size
++            assert mamba_block_size is not None
+             self._mamba_state_idx_gpu[req_index].fill_(
+-                (new_req_data.num_computed_tokens - 1) // self.cache_config.block_size
++                (new_req_data.num_computed_tokens - 1) // mamba_block_size
+             )
+ 
+     def _get_mamba_group_info(

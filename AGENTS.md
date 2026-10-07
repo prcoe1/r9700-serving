@@ -179,7 +179,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 53798 50409 54163 55600 55533 54713 55450 48007 57580 50891 55495 55497 53739 58407 56077 58639 59933 59095 58882 59773 60008; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 50409 54163 55533 54713 55450 48007 57580 50891 55495 55497 53739 58407 56077 58639 59933 59095 58882 59773 60008; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -330,7 +330,7 @@ touches one of:
     bounding the prefix-cache win for MTP even after `#45238` is fixed.
     Implementation `#53945` landed 2026-09-16 and IS in v0.30.0 — re-run the
     prefix-cache + conc-ITL probes on the v0.30.0 bump to measure the bound;
-    follow-up `#57329` adapts it for Mamba2 (open).
+    follow-up `#57329` adapts it for Mamba2 (merged; in v0.31.1rc0 — Mamba2 scope, no action here).
   - `#51562` GDN metadata misclassifies stateless first chunk — **CLOSED as
     COMPLETED 2026-09-22** via merged fix `#51565` (in v0.31.0rc3 —
     verified in-image: state-availability classification at
@@ -345,7 +345,7 @@ touches one of:
     `--prefix-match-unit`; flag-unset path byte-identical). **Carried as a
     local patch** anyway (`patches/vllm/58021-prefix-match-unit-single-group.
     patch`, source-only) for in-tree documentation of the closure. Drop when
-    a pinned `VLLM_REF` contains the merge. Removed from the re-check loop.
+    a pinned `VLLM_REF` contains the merge — **in v0.31.1rc0** (verified 2026-10-07 in the rc0 tree); drop on the bump. Removed from the re-check loop.
   - `#52959` RFC: internal state checkpoints for Mamba align mode (same
     family as `#52789`; in flight, not merged)
   - `#40707` hybrid Mamba scheduling deadlock with 2+ large images in one
@@ -477,20 +477,30 @@ touches one of:
       patch is a proven no-op here (MTP drafter shares the target's block
       geometry, unlike the DFlash repro). Re-check only if a profile ever
       runs a small-block drafter.
-  - `#53798` (2026-09-01, PR, open): align-mode `add_request` seeds the
+  - `#53798` (2026-09-01, PR): align-mode `add_request` seeds the
     running-state block column by the scheduler block size instead of the
-    (page-unification-scaled) Mamba block size, so a request admitted with
+    Mamba block size, so a request admitted with
     `num_computed_tokens > 0` (reachable via prefix-cache resumes, now dense
     by default) points its precopy source into a neighbour's row (silent
     wrong-state read) or past the table (IMA in
-    `precopy_mamba_align_fused_kernel`). **Carried as a local patch**
-    (patches/vllm/53798-mamba-align-resume-seed.patch, rebased to v0.30.0:
-    v0.30.0 builds ModelState in load_model, so the bind hook runs after
-    `kv_cache_config` assignment in `initialize_kv_cache`).
-    Drop when a release contains the fix. Sibling `#55600` (2026-09-06,
-    open) shows the same line crashes with a small-block drafter (DFlash2
-    block 64/1024 vs `mamba_block_size` 7168) — no PR yet; reinforces the
-    fix is incomplete on `main`.
+    `precopy_mamba_align_fused_kernel`). **Superseded 2026-10-07**: fixed
+    upstream by `#55601` (merged to main 2026-10-07, `3d6853b32` — after
+    the v0.31.1rc0 tag, so in no release yet; expected in the v0.31.1
+    final). **Carried as a local patch**
+    (`patches/vllm/55601-mamba-align-resume-seed.patch`, verbatim upstream
+    cherry-pick, source + test) **in place of** the old
+    53798-mamba-align-resume-seed.patch (deleted 2026-10-07). The two seeds
+    are numerically identical in every current geometry:
+    `MambaSpec.block_size` is constructed from
+    `cache_config.mamba_block_size` (mamba/abstract.py
+    `get_kv_cache_spec`), and `unify_kv_cache_spec_page_size` PADS the
+    mamba page (`page_size_padded`) without scaling
+    `MambaSpec.block_size` — the old patch's page-unification premise does
+    not hold in v0.31.x code. #55601 drops the hook machinery
+    (`set_kv_cache_config` / eager spec binding in model_runner.py) for 7
+    lines + a regression test. PR #53798 itself is functionally superseded
+    — close it upstream when convenient. Drop the patch when a pinned
+    `VLLM_REF` contains `3d6853b32`.
   - `#50409` (2026-08-31, PR, open): when the prompt length is an exact
     multiple of the block size, align prefill runs as one chunk and the only
     cached Mamba state sits at `num_tokens`, which `get_computed_blocks`
@@ -519,15 +529,19 @@ touches one of:
      capacity expectations (alongside the `#52793` calibration note).
      Proposed levers (quantize Mamba state, decouple per-group page size)
      unimplemented anywhere in vLLM. Monitor; no action.
-   - `#55600` (2026-09-06, open): hybrid mamba prefix-cache hit reads out of
-     bounds — `add_request` seeds the state index with `cache_config.block_size`
-     after it was lowered to the min prefix-cacheable group (small-block drafter
-     64/1024 vs `mamba_block_size` 7168) → `precopy_mamba_align_fused_kernel`
-     IMA (Xid 31) or silent wrong-state read. GLM-5.3-Flash/DFlash2 repro on
-      `main`; same `mamba_hybrid.py` line as `#53798` — DFlash2 variant of that
-      bug. N/A for this stack (MTP drafter not small-block; we are `block_size`
-      1600) but sibling proof `#53798` fix still incomplete — monitor;
-     no PR yet.
+   - `#55600` (2026-09-06): hybrid mamba prefix-cache hit reads out of
+     bounds — `add_request` seeds the state index with
+     `cache_config.block_size` after it was lowered to the min
+     prefix-cacheable group (small-block drafter 64/1024 vs
+     `mamba_block_size` 7168) → `precopy_mamba_align_fused_kernel`
+     IMA (Xid 31) or silent wrong-state read. GLM-5.3-Flash/DFlash2 repro
+     on `main`; same `mamba_hybrid.py` line as `#53798` — DFlash2 variant
+     of that bug. **CLOSED 2026-10-07** via fix `#55601` (merged
+     2026-10-07, `3d6853b32`; post-dates the v0.31.1rc0 tag — in no
+     release yet). Carried as the local patch (see `#53798` entry).
+     N/A for this stack (MTP drafter not small-block; we are
+     `block_size` 1600, all groups equal, so the old and new seed
+     coincide).
    - `#55533` (2026-09-06, open): Hybrid GDN (Qwen3.5/3.8 27B-class) + MTP
      scheduler caps at ~3 concurrent sequences at batch ≥ 4 — acceptance/
      throughput collapse (8-wide batch runs `[2,2,2]` only; `bs ≤ 3` healthy).
@@ -616,8 +630,8 @@ touches one of:
   a bounded 0.28.0 repro attempt found zero collapses; N/A, but tracked model
   + sticky corruption: glance if a modern repro appears), #56736 (hybrid
   Mamba/GDN + spec decode Xid 31 in the align precopy path — DFlash2 drafter
-  on a v0.13-era NVIDIA fork with async on; same precopy family as carried
-  #53798, signal only), #57838 (RowWise FP8 linear 5–24% slower than
+  on a v0.13-era NVIDIA fork with async on; same precopy family as the
+  carried #55601 fix (ex-#53798), signal only), #57838 (RowWise FP8 linear 5–24% slower than
   ChannelWise on gfx1201 — requires per-tensor/channel dynamic FP8 weights;
   our Qwen FP8 checkpoints are block-scaled → live log selects
   `TritonFp8BlockScaledMMKernel`, different path; re-check if a non-block
@@ -661,9 +675,10 @@ touches one of:
  (#28649 — OP retracted: already routes to W8A8).
 
  Requires an option we never pass: #53142 (align precopy IMA — needs
- explicit `--block-size`; #54199 retracted as its duplicate; a cluster of
- related fix variants #55507/#55601/#55688 is forming around our carried
- #53798 line — reinforces upstream is unsettled, keep carrying ours),
+ explicit `--block-size`; #54199 retracted as its duplicate; the cluster
+ of fix variants #55507/#55601/#55688 around our carried #53798 line
+ settled when #55601 merged 2026-10-07 — adopted as our carried patch,
+ see the #53798 entry),
   #57032 (dflash drafter KV group — we run MTP; same annotation family as
   #54360), #58080 (MTP draft doesn't inherit `--hf-overrides`/YaRN — we pass
   no overrides; both 27B models run native context).

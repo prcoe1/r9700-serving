@@ -242,13 +242,17 @@ AGENTS.md §4).
   on every later request sharing the prefix (#43559, #50188). Lowers the
   cache-hit search ceiling by one page. Version-locked to v0.31.0.
 
-- **Seed align-mode Mamba `state_idx` in Mamba blocks**
-  (`53798-mamba-align-resume-seed.patch`, open upstream): without it, a
-  request resumed with `num_computed_tokens>0` seeds its align-table column
-  with the scheduler block size instead of `MambaSpec.block_size`, landing
-  in a neighbour's row or past the table (IMA in
-  `precopy_mamba_align_fused_kernel`). Version-locked to v0.31.0
-  (neighbouring `#58434`/`#59175`/`#51899` hunks verified disjoint).
+- **Seed align-mode Mamba `state_idx` in mamba blocks**
+  (`55601-mamba-align-resume-seed.patch`, verbatim upstream cherry-pick,
+  merged to main 2026-10-07 — in neither v0.31.0 nor v0.31.1rc0, expected
+  in the v0.31.1 final): without it, a request resumed with
+  `num_computed_tokens>0` seeds its align-table column with
+  `cache_config.block_size` (the min over prefix-cacheable groups) instead
+  of `cache_config.mamba_block_size`, landing in a neighbour's row or past
+  the table (IMA in `precopy_mamba_align_fused_kernel`) on small-block
+  drafter geometries. Replaces the old #53798 local patch — numerically
+  identical here, no hook machinery (see AGENTS.md `#53798` entry).
+  Version-locked to v0.31.0; also verified clean on v0.31.1rc0.
 
 - **Reject a `prefix_match_unit` a single KV group cannot honor**
   (`58021-prefix-match-unit-single-group.patch`, merged to main 2026-09-29 —
