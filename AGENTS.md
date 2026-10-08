@@ -131,9 +131,18 @@ that affect this GPU setup and model combo** before recommending a bump.
 # #59175 (sparse-retention prompt-end checkpoint + prefill checkpoint
 # reservation), #58434 (MRV2 padded tails as spec rows), #51694
 # (incremental multimodal hashing), #51899 (source-tagged extra keys),
-# #55178 (padded-tail Mamba state). Next target:
-# v0.32 (watch #53479, #54076, #50409, #51599). MRV2 is the default
-# for all our profiles (#53183).
+# #55178 (padded-tail Mamba state). v0.31.1rc0 exists (tagged 2026-10-07,
+# e37e51dd2 — full main snapshot, 466 commits past v0.31.0): contains #58021
+# (→ drops 58021-prefix-match-unit-single-group.patch) but NOT #55601
+# (3d6853b32 merged 10-07, after the rc0 tag) — the v0.31.1 FINAL is the
+# bump where both carried patches drop. In-scope rc0 content: #59536 (MRV2
+# GDN checkpoint metadata per cache group), #59759 (stale Mamba spec blocks
+# in prefill-checkpoint steps), #58457 (block-size validation hardening),
+# #59132 (new opt-in ROCM_SEGMENTED_ATTN backend — future A/B candidate);
+# #56531 is ngram-only (we run MTP, N/A); #59781 removed no VLLM_* envs;
+# #58997 drops mamba_cache_mode "all" (no profile passes it). Next target:
+# v0.31.1 final, else v0.32 (watch #53479, #54076, #50409, #51599). MRV2
+# is the default for all our profiles (#53183).
 gh release list -R vllm-project/vllm --limit 8
 
 # AITER — pin AITER_REF=v0.1.24.post1 (2026-10-02; carries the RDNA UA LDS guard
@@ -143,8 +152,10 @@ gh release list -R vllm-project/vllm --limit 8
 # JSON). Next bump: re-check the tune patch + re-run
 # tools/tune_ua_config.py (config-tree API since the v0.1.23 rebase).
 # aiter#5035 (3D LDS clamp on gfx1201) still open — residual risk noted.
-# aiter#5790 (gfx1201 UA-2D D=256 tune) MERGED 2026-10-01 — our additive keys
-# still apply cleanly on post1, but re-verify they still win on the next bump.
+# aiter#5790 (gfx1201 UA-2D D=256 tune) MERGED 2026-10-01 — verified
+# 2026-10-08 NOT in post1 (the tag cut before the merge), so our additive
+# keys stand alone on the current pin; any bump past post1 carries #5790 →
+# re-run tools/tune_ua_config.py + re-check the LDS guard first.
 gh release list -R ROCm/aiter --limit 8
 
 # Flash Attention — pinned to a commit; compare HEAD to FLASH_ATTN_REF
@@ -179,7 +190,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 50409 54163 55533 54713 55450 48007 57580 50891 55495 55497 53739 58407 56077 58639 59933 59095 58882 59773 60008; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 50409 54163 55533 54713 55450 48007 57580 50891 55495 55497 53739 58407 58639 59933 59095 58882 59773 60008 60160; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -363,7 +374,14 @@ touches one of:
     before removing. Fix PR `#51599` (open, retargeted `[Bugfix][MRv1]` — all
     our profiles run MRV2, which shrinks the exposed surface, but
     `--no-async-scheduling` stays): if it lands in a release we adopt, re-test
-    before dropping `--no-async-scheduling`.
+    before dropping `--no-async-scheduling`. **New external repro 2026-10-06**
+    (NVIDIA RTX 4090, `dbirks/Qwen3.8-27B-W4A16-AutoRound` — our model arch,
+    V1 runner + async + align): repeated tokens at temp 0; root-caused to a
+    double-permutation of the accepted counts after a row reorder (`#53613`'s
+    wait-earlier alone is insufficient — removing the `prev_positions`
+    gather is the fix); reporter: "still present in 0.31.0, patch applies
+    cleanly to 0.28/0.30/0.31/main". Our mitigations (MRV2 +
+    `--no-async-scheduling`) still hold — monitor.
   - `#54039` (question): vLLM's own ROCm CI disables async+MTP (#32275,
     unroot-caused shm-broadcast hang) while the default still enables that
     combination. Same combination we disable via `--no-async-scheduling`;
@@ -406,7 +424,11 @@ touches one of:
      v0.31.0rc3 container (positive control) and the full
      `tests/parser/engine/test_qwen3.py` PASSES 61/61 with the fix applied
      at runtime. Related open (same `_flush` area, alternate strategies —
-     not carried): `#53739`, `#58407`. Live no-regression guard:
+     not carried): `#53739` (actively developing as of 2026-10-05: measured
+     blast radius 13 parsers/7 converters incl. qwen3 — when generation ends
+     with a parameter open, non-partial re-derivation drops it → unterminated
+     streamed args; if it merges, re-run the guard below and check
+     interaction with the #55497 patch), `#58407`. Live no-regression guard:
      `benchmarks/tool_truncation_probe.py` complex-values check.
   - `#54498` (2026-08-27, open): V1 EAGLE/MTP drafter feeds the M-RoPE
     **temporal** dim to the KV-slot computation on `SupportsMRoPE` targets —
@@ -574,6 +596,37 @@ touches one of:
     multi-turn request while `#45238` holds at 0% hits; the `#45238` fix would
     unmask the hits but the per-step align cost stands on its own. Monitor;
     no fix PR yet.
+  - `#60160` (2026-10-06, open, signal only): **Qwen3.8-27B-FP8** TP4
+    MI355X — GSM8K 96%→64% at c≥128 with `VLLM_ROCM_USE_AITER=1`;
+    `VLLM_ROCM_USE_AITER=0` restores 96.7%. Attention backend, runner,
+    prefix caching and AITER FP8 linear all ruled out — AITER **RMSNorm and
+    custom all-reduce remain un-isolated**. N/A today: gfx950/TP4/c≥128, and
+    our profile disables every AITER component except UA
+    (`env/aiter-unified-attention.env`: MHA/MLA/MOE/LINEAR/FP8BMM/FP4BMM/
+    TRITON_GEMM/RMSNORM all 0). Glance if a gfx1201 or low-concurrency repro
+    appears. Related signal: `#60408` (gfx950 UA decode −19% in v0.31.0 via
+    the AITER 0.1.23 Gluon backend — CDNA3-only path; an in-tree revert of
+    the Gluon PA decode is already in v0.31.1rc0).
+  - aiter#5683 (open, AMD gfx12 team): gfx1201 AITER unified attention
+    returns wrong results on image input (non-causal attention path).
+    Measured by a #57838 commenter on an R9700 2026-10-08: a 6-item
+    vision/OCR check drops 6/6→3/6 with `VLLM_ROCM_USE_AITER=1`, text-only
+    unaffected; AMD confirmed (2026-09-20) they will work on the non-causal
+    path. **Our path does not reproduce it**:
+    `benchmarks/ua_image_correctness_probe.py` PASS 12/12 + two-image on the
+    live v0.31.0 server 2026-10-08 (record:
+    `benchmarks/2026-10-08_qwen3.8-27b_ua_image_correctness.md`). Re-run the
+    probe on any bump touching the UA or vision path, and when aiter#5683
+    lands (a fix must keep it green).
+  - `#59132` (merged 2026-10-06, in v0.31.1rc0): new opt-in
+    `ROCM_SEGMENTED_ATTN` backend — segmented Triton attention for
+    RDNA3/3.5/4, paged decode/prefill/verification, native FP16/BF16 KV,
+    FP8 KV gated to gfx12, heads 64/128/256, GQA 1–16, causal + non-causal;
+    startup autotune OFF by default (enable via
+    `--kernel-config.enable_rocm_segmented_attn_autotune=True`). Upstream's
+    suggested answer to `#50264`. Monitor; future A/B candidate against
+    pinned UA — attractive as a hedge while aiter#5683's non-causal gfx12
+    gap is open.
   - `#48606` (PR — **MERGED to main 2026-09-18**, after the v0.30.0 cut;
     carried as a local patch on the v0.30.0 pin only):
     native Quark W4A16 INT4/UINT4 `real_quantized` (`reorder`)
@@ -623,7 +676,9 @@ touches one of:
  with ROCM_ATTN drafter — we run pinned-UA MTP), #54094 (DFlash2+YaRN zero
  prefix reuse — we run MTP), #52539/#53462 (fused GDN MTP decode kernel —
  CUDA-only, N/A on gfx1201 despite our v/k ratio now being supported),
- #50264 (Triton paged-attention fallback — we run AITER unified attn),
+ #50264 (Triton paged-attention fallback — we run AITER unified attn;
+ upstream's 2026-10-06 answer is the new #59132 ROCM_SEGMENTED_ATTN
+ backend, tracked in the watchlist),
  #54906 (`thinking_token_budget` ignored — field we never send), #56419 (CPU
  backend), #56701 (KV offload+MTP — no offload), #56774 (hidden-state
   extraction), #55291 (Qwen3.6-27B-FP8 "!"-collapse — v0.21.0/L20 report, and
@@ -635,7 +690,10 @@ touches one of:
   ChannelWise on gfx1201 — requires per-tensor/channel dynamic FP8 weights;
   our Qwen FP8 checkpoints are block-scaled → live log selects
   `TritonFp8BlockScaledMMKernel`, different path; re-check if a non-block
-  FP8 checkpoint is ever served).
+  FP8 checkpoint is ever served; the 2026-10-08 thread's image/OCR
+  corruption finding — tracked in aiter#5683, our probe does NOT reproduce
+  it — and the `aiter.gemm_a8w8`-on-gfx1201 dev are recorded in the watchlist
+  entries above).
 
  Non-Qwen models (different arch/checkpoint format): #52833/#48568 (GLM),
  #51530 (DeepSeek), #56605 (GLM-5.3 word salad), #55280 (GLM kpool split IMA,
@@ -670,7 +728,8 @@ touches one of:
  layer-0 reuse (#52688/#53397 — both 27B models have
  `mtp_num_hidden_layers=1`, so N/A), in-flight model PR metadata
  (#53983/#53982 — QSA/Kpool side caches not on main), ngram spec decode
- (#56077 — we run MTP), ROCm 7.2.x libhsa (#56521 — we're on 10.0),
+ (#56077 — we run MTP; CLOSED 2026-10-08 via #56531, in v0.31.1rc0),
+ ROCm 7.2.x libhsa (#56521 — we're on 10.0),
  gfx1151 (#57493/#57494 — different GPU), gfx1201 FP8 fall-through request
  (#28649 — OP retracted: already routes to W8A8).
 
@@ -736,9 +795,11 @@ applied at build time. Before bumping any pin:
    the tuning still wins — re-run `tools/tune_ua_config.py` (config-tree
    API; with `just down` first) and re-check the LDS guard. See
    `benchmarks/2026-08-25_gfx1201_ua_tuning.md`. (v0.1.24.post1 touches no
-   gfx1201 UA files — gemm/conv/mla only — so no re-tune was needed;
-   watch aiter#5790, the gfx1201 UA-2D D=256 tune on main: our D=256
-   head-dim bucket, may collide with our additive keys on rebase.)
+   gfx1201 UA files — gemm/conv/mla only — so no re-tune was needed.
+   aiter#5790, the gfx1201 UA-2D D=256 tune on main — our D=256 head-dim
+   bucket — merged 2026-10-01 but verified 2026-10-08 NOT in post1 (the tag
+   cut before the merge); any bump past post1 carries it: re-tune and check
+   for collision with our additive keys first.)
 - Check whether a newer `VLLM_REF` **already contains** a carried patch (the
   fix landed upstream). If so, the patch should be **dropped**, not kept.
   Verify: `gh pr view <pr> --repo vllm-project/vllm` and check the PR's merged
