@@ -339,6 +339,17 @@ AGENTS.md §4).
   InitVar). Behavior-neutral here (all runs share cap 99). Drop when a pinned
   `VLLM_REF` keys the compile cache on the multimodal config.
 
+- **Route medium-skinny W4A16 shapes to the HIP kernel**
+  (`52619-rdna-w4a16-medium-skinny.patch`, merged to main 2026-10-07 — in
+  neither v0.31.0 nor v0.31.1rc0, expected in the v0.31.1 final): the C++
+  `wvSplitK_int4_g` medium kernel (LDS-overflow path, `K·M ≤ 39321`) already
+  ships in v0.31.0, but the Python dispatch cap sat at 32768, so shapes in
+  (32768, 39321] fell back to Triton. Source-only carry (2 lines). Verified
+  on gfx1201 at the AWQ profile's `down_proj` M=2 shape (34816 elements):
+  correct vs FP32 dequant and 2.43× vs Triton. Only the AWQ trial profile
+  selects this kernel — inert on live FP8. Drop when a pinned `VLLM_REF`
+  contains the merge.
+
 ### AITER source-build patches (applied at image build time)
 
 `Dockerfile.fullbuild` applies `patches/aiter/*.patch` to the pinned
