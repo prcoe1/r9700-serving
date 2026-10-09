@@ -190,7 +190,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 50409 54163 55533 54713 55450 48007 57580 50891 55495 55497 53739 58407 58639 59933 59095 58882 59773 60008 60160; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 50409 54163 55533 54713 55450 48007 57580 50891 55495 55497 53739 58407 58639 59933 59095 58882 59773 60008 60160 50551 60603 60760; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -285,7 +285,14 @@ touches one of:
     confirms the head is a superseded branch since merged `#54713` touched
     the same path — correctly NOT carried as a local patch)**,
     `#52789` (internal prefill checkpoints — merged 2026-08-22, Kimi-K3/
-    FlashKDA TTFT win, not a fix for this geometry). **When a real fix
+    FlashKDA TTFT win, not a fix for this geometry),
+    **`#50551`/`#60603`/`#60760` stack (finalized Mamba decode checkpoints
+    [1/N base since 2026-07-31, unreviewed] + hidden-state drafting [2/N,
+    conflicting/needs-rebase] + match-unit-aligned retention [3/N, 2026-10-09,
+    no reviews, empty validation] — evaluated 2026-10-09: NOT carried, ~1900
+    lines of unreviewed core scheduler/KV-manager + worker changes colliding
+    with our `#50409`/`#55601`/`#48375` patches; monitor for merge, then take
+    via version bump)**. **When a real fix
     merges**: prefer the version bump; carry a local patch only if no
     available release contains it. Related: `#52897` (priority-scheduling
     variant — N/A, we don't use priority), `#53749` (same family on two more
