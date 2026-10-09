@@ -27,6 +27,7 @@ concurrency degrades sharply (see the c1-vs-c2 head-to-head in
 
 | file | contents |
 |:-----|:---------|
+| [`benchmarks/2026-10-09_qwen3.8-27b_40707_patch_drop.md`](benchmarks/2026-10-09_qwen3.8-27b_40707_patch_drop.md) | **#40707 local patch dropped**: fix is in the pin via #51603 (v0.28.0+); clean no-patch multi-image probe PASS; 50409 patch rebased off the 40707 dependency |
 | [`benchmarks/2026-10-02_qwen3.8-27b_mtp1_depth.md`](benchmarks/2026-10-02_qwen3.8-27b_mtp1_depth.md) | **MTP1 depth ladder** (rc3 + post1): MTP3's decode edge collapses past 65K (#47602; parity at ~110K), MTP1 prefill +2–5% at every rung |
 | [`benchmarks/2026-10-01_qwen3.8-27b_v0.31.0rc3_bump.md`](benchmarks/2026-10-01_qwen3.8-27b_v0.31.0rc3_bump.md) | **v0.31.0rc3 bump validation** (spec-off fp8 row = live; MTP3 re-enable ~2x decode at −4% prefill) + post1 GEMM retune |
 | [`benchmarks/2026-09-30_qwen3.8-27b_v0.31.0rc2_bump.md`](benchmarks/2026-09-30_qwen3.8-27b_v0.31.0rc2_bump.md) | **v0.31.0rc2 bump validation** (spec-off) |

@@ -5,30 +5,34 @@ Subject: [PATCH] [Bugfix] Stop mamba align prefill at the replay boundary
  (upstream #50409)
 
 Version-locked to VLLM_REF=v0.31.0 (rebased; the final grew Marconi
-junction stops and a conditional tail_boundary entry since rc3 — pure
+junction stops and a conditional tail_boundary entry since rc3 - pure
 context shift, pre-image blob unchanged. Logic identical to upstream:
 compute replay_boundary, add it as a mandatory chunk stop).
 Upstream PR #50409 (https://github.com/vllm-project/vllm/pull/50409)
 still open, in no tag. Drop when VLLM_REF contains the fix.
+Rebased 2026-10-09 onto the PRISTINE v0.31.0 tag when the 40707
+deadlock patch was dropped: hunk 1's old context line was the
+20-space-indented `end = aligned_end` inside the 40707 patch's else
+branch, so the patch hard-depended on 40707 being applied first. The
+context line is now pristine's 16-space `end = aligned_end` and the
+hunks shifted -11 lines (491->480, 524->513); final-state identity with
+the old ordered apply was verified by full-tree diff.
 
 When the prompt length is an exact multiple of the scheduler block
 size, align prefill runs as one chunk and the only cached Mamba state
-sits at num_tokens, which get_computed_blocks caps below — the Mamba
+sits at num_tokens, which get_computed_blocks caps below - the Mamba
 group then reports a 0-token hit and the reconciled hybrid hit is 0.
 Adding the replay boundary (min((num_tokens-1)//block_size*block_size,
 last_cache_position)) as a mandatory chunk stop materializes a state a
 later replay can resume from.
-
-Sorts after 40707-mamba-block-aligned-split-deadlock.patch in the
-ordered Dockerfile apply (same function, non-overlapping hunks).
 ---
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index a4a7627..72c1df3 100644
+index 8b188de..a81364a 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
-@@ -491,6 +491,16 @@ class Scheduler(SchedulerInterface):
-                     end = aligned_end
-
+@@ -480,6 +480,16 @@ class Scheduler(SchedulerInterface):
+                 end = aligned_end
+ 
          next_block_boundary = (start // block_size + 1) * block_size
 +        # A later request replaying this prompt resumes at `num_tokens - 1`
 +        # at the latest (`get_computed_blocks` caps the hit there), so the
@@ -43,7 +47,7 @@ index a4a7627..72c1df3 100644
          tail_boundary = (
              request.num_prompt_tokens // self.hash_block_size * self.hash_block_size
              if self.mamba_partial_cache_hit and not use_internal_checkpoint
-@@ -524,6 +534,9 @@ class Scheduler(SchedulerInterface):
+@@ -513,6 +523,9 @@ class Scheduler(SchedulerInterface):
              else 0,
              # Never run past the last cacheable block boundary mid-chunk.
              last_cache_position,

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Multi-image probe for the #40707 scheduler-deadlock fix
-(patches/vllm/40707-mamba-block-aligned-split-deadlock.patch).
+"""Multi-image probe for the #40707 scheduler deadlock (regression guard).
 
-Unpatched, 2+ large images in one prompt hang the engine forever: the
+Fixed in every release from v0.28.0 by upstream #51603 (in the v0.31.0 pin);
+the carried #40709 local patch was dropped 2026-10-09 after a clean no-patch
+run of this probe (record: 2026-10-09_qwen3.8-27b_40707_patch_drop.md).
+
+Before #51603, 2+ large images in one prompt hang the engine forever: the
 encoder cache holds one image while the second waits, and
 _mamba_block_aligned_split floors the sub-block inter-image gap to 0 new
 tokens, so the scheduler skips the request and Image 1's cache entry is

@@ -151,7 +151,8 @@ gh release list -R vllm-project/vllm --limit 8
 # tree refactor (#4761/#5106, in v0.1.22) moved all tuning into per-arch
 # JSON). Next bump: re-check the tune patch + re-run
 # tools/tune_ua_config.py (config-tree API since the v0.1.23 rebase).
-# aiter#5035 (3D LDS clamp on gfx1201) still open — residual risk noted.
+# aiter#5035 (3D LDS clamp on gfx1201) CLOSED as resolved 2026-10-07 —
+# covered by #4868 in the pinned v0.1.24.post1 (per-arch JSON config).
 # aiter#5790 (gfx1201 UA-2D D=256 tune) MERGED 2026-10-01 — verified
 # 2026-10-08 NOT in post1 (the tag cut before the merge), so our additive
 # keys stand alone on the current pin; any bump past post1 carries #5790 →
@@ -368,11 +369,18 @@ touches one of:
     family as `#52789`; in flight, not merged)
   - `#40707` hybrid Mamba scheduling deadlock with 2+ large images in one
     prompt (align block-split collapses to 0 → request hangs forever, engine
-    never recovers). **Carried as a local patch**
-    (`patches/vllm/40707-mamba-block-aligned-split-deadlock.patch`, verbatim
-    upstream fix `#40709`, open as of 2026-09-22 — applies cleanly on v0.30.0).
-    Drop when a pinned `VLLM_REF` contains the fix. Live since the 2026-09-19
-    rebuild; verified with `benchmarks/multi_image_probe.py` (PASS).
+    never recovers). **Fixed in every release from v0.28.0** by `#51603`
+    (merged 2026-08-10, `243c63baf` — apply Mamba alignment before the
+    encoder cap so the collapse geometry is unreachable; verified in the
+    v0.31.0 pin, upstream closed `#40709` as superseded 2026-10-07). The
+    carried local patch (verbatim `#40709`) was **dropped 2026-10-09** after
+    a clean no-patch `benchmarks/multi_image_probe.py` run (record:
+    `benchmarks/2026-10-09_qwen3.8-27b_40707_patch_drop.md`). Note the drop
+    forced a rebase of the 50409 patch (its hunk-1 context assumed the
+    40707 hunk — see the `#50409` entry). The currently running image still
+    has the (inert) 40707 hunk baked in until the next rebuild; the live
+    container's scheduler was reverted in place 2026-10-09 to match the new
+    patch set.
   - `#51571` async MTP align accepted-count race (open): async scheduling +
     MTP + hybrid GDN + `mamba-cache-mode align` → accepted-token D2H counts
     gathered from a mutated `InputBatch` after `condense()` (repeated/dropped/
@@ -463,7 +471,8 @@ touches one of:
     attribute 'size'`; can also flip attention-backend selection — wrong
     twice over). Surfaced via dup `#58203` (Qwen3.8-27B-FP8 + images + MTP,
     NVIDIA/B200). **Not exposed here today**: all qwen3.8-27b runs share
-    image-cap 99 (raised from 1 on 09-19 once the #40707 patch landed;
+    image-cap 99 (raised from 1 on 09-19 once the #40707 fix landed — then
+    via the local #40709 patch, now via #51603 in the pin;
     `multi_image_probe.py` PASS) and profile model names differ, so hashes
     don't collide.
     Hygiene rule: never alternate image caps / `--language-model-only` for
@@ -537,7 +546,12 @@ touches one of:
     reconciled hybrid hit is 0. Adds the replay boundary as a mandatory
     chunk stop. **Carried as a local patch since 2026-10-02**
     (`patches/vllm/50409-mamba-replay-boundary-chunk-stop.patch`, ported to
-    rc3's stops-tuple scheduler). **Measured inert here**: with
+    rc3's stops-tuple scheduler; **rebased onto pristine v0.31.0 on
+    2026-10-09** — hunk 1's old context line was the 20-space
+    `end = aligned_end` inside the 40707 patch's else branch, a hard
+    apply-order dependency that broke when the 40707 patch dropped; final
+    tree verified byte-identical to the old ordered apply). **Measured inert
+    here**: with
     `max_num_batched_tokens=1024` < 1600 block, windows never span a full
     block from an aligned start, so the replay stop always coincides with
     the existing stops (exact-multiple 3200/4800/8000 identical repeats hit

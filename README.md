@@ -174,10 +174,10 @@ restart anyway).
   the 2+-large-images engine deadlock on these GDN hybrids (upstream #40707,
   see AGENTS.md watchlist): with 2+ large images the align block-split
   collapses to 0, the request hangs forever, and the engine never recovers.
-  The upstream fix #40709 is now carried as a local build patch
-  (`patches/vllm/40707-mamba-block-aligned-split-deadlock.patch`, live since
-  the 2026-09-19 rebuild — verified with `benchmarks/multi_image_probe.py`);
-  drop it when a pinned `VLLM_REF` contains the fix.
+  Fixed in every release from v0.28.0 by upstream #51603 (in the v0.31.0
+  pin) — the carried #40709 local patch was dropped 2026-10-09 after a clean
+  no-patch `benchmarks/multi_image_probe.py` run (regression guard: the
+  probe, kept in `benchmarks/`).
 - **`--override-generation-config`**: server-side sampling defaults
   (`temperature` 1.0, `top_p` 0.95, `top_k` 20, `min_p` 0, no penalties).
 - **`--enable-prefix-caching`**: reuse KV for shared prompt prefixes (known
@@ -261,13 +261,6 @@ AGENTS.md §4).
   builder write checkpoints off the scheduler's grid (silent wrong-state
   resumes). Source-only carry; behavior-neutral here — no profile passes the
   flag. Drop when a pinned `VLLM_REF` contains the merge.
-
-- **Fix `_mamba_block_aligned_split` deadlock on 2+ large images**
-  (`40707-mamba-block-aligned-split-deadlock.patch`, verbatim upstream fix
-  `#40709`, open): without it, 2+ large images in one prompt hang the request
-  forever (align block-split collapses to 0). Live since 2026-09-19,
-  verified with `benchmarks/multi_image_probe.py`. Drop when a pinned
-  `VLLM_REF` contains the fix.
 
 - **Streaming/non-streaming tool-parser parity on truncated tool calls**
   (`47137-tool-truncation-parity.patch`; content half fixed upstream by
