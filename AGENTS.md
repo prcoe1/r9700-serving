@@ -280,7 +280,9 @@ touches one of:
     `vllm:prefix_cache_hits_total` is non-zero: caching *does* hit on
     repeated-identical-prompt workloads — the failure is specific to the
     incremental shared-prefix pattern, not a global no-op. Fixes in flight:
-    `#52527` (metrics), `#48815` (MTP align retention), **`#53479`
+    `#52527` (metrics; author pinged a reviewer 2026-09-30 as mergeable,
+    mergify flagged conflicts 2026-10-08), `#48815` (MTP align retention),
+    **`#53479`
     (the leading candidate — retention-aware boundary materialization +
     removal of the speculative one-block back-off; open, conflicting, author
     confirms the head is a superseded branch since merged `#54713` touched
@@ -288,7 +290,8 @@ touches one of:
     `#52789` (internal prefill checkpoints — merged 2026-08-22, Kimi-K3/
     FlashKDA TTFT win, not a fix for this geometry),
     **`#50551`/`#60603`/`#60760` stack (finalized Mamba decode checkpoints
-    [1/N base since 2026-07-31, unreviewed] + hidden-state drafting [2/N,
+    [1/N base since 2026-07-31, unreviewed — last human activity 2026-08-14]
+    + hidden-state drafting [2/N,
     conflicting/needs-rebase] + match-unit-aligned retention [3/N, 2026-10-09,
     no reviews, empty validation] — evaluated 2026-10-09: NOT carried, ~1900
     lines of unreviewed core scheduler/KV-manager + worker changes colliding
@@ -633,11 +636,16 @@ touches one of:
     Measured by a #57838 commenter on an R9700 2026-10-08: a 6-item
     vision/OCR check drops 6/6→3/6 with `VLLM_ROCM_USE_AITER=1`, text-only
     unaffected; AMD confirmed (2026-09-20) they will work on the non-causal
-    path. **Our path does not reproduce it**:
+    path. **Isolated 2026-10-09** (#57838 thread): `VLLM_ROCM_USE_AITER=1`
+    + `--attention-backend TRITON_ATTN` restores 6/6 — the corruption is the
+    UA non-causal path, not AITER FP8 linear. AMD's fix work: aiter#6108
+    '[Triton/Gluon] Add non-causal support to unified attention' (OPEN; the
+    feature request aiter#5827 was closed 2026-10-01 in favor of it).
+    **Our path does not reproduce it**:
     `benchmarks/ua_image_correctness_probe.py` PASS 12/12 + two-image on the
     live v0.31.0 server 2026-10-08 (record:
     `benchmarks/2026-10-08_qwen3.8-27b_ua_image_correctness.md`). Re-run the
-    probe on any bump touching the UA or vision path, and when aiter#5683
+    probe on any bump touching the UA or vision path, and when aiter#6108
     lands (a fix must keep it green).
   - `#59132` (merged 2026-10-06, in v0.31.1rc0): new opt-in
     `ROCM_SEGMENTED_ATTN` backend — segmented Triton attention for
@@ -712,14 +720,20 @@ touches one of:
   our Qwen FP8 checkpoints are block-scaled → live log selects
   `TritonFp8BlockScaledMMKernel`, different path; re-check if a non-block
   FP8 checkpoint is ever served; the 2026-10-08 thread's image/OCR
-  corruption finding — tracked in aiter#5683, our probe does NOT reproduce
-  it — and the `aiter.gemm_a8w8`-on-gfx1201 dev are recorded in the watchlist
-  entries above).
+  corruption finding — tracked in aiter#5683, isolated to the UA non-causal
+  path 2026-10-09 (TRITON_ATTN + AITER on → 6/6), fix work aiter#6108 (open)
+  — our probe does NOT reproduce it; the `aiter.gemm_a8w8`-on-gfx1201 dev
+  thread targets per-token/per-channel checkpoints (gemma4) — N/A: our Qwen
+  FP8 checkpoints are block-scaled and the profile disables AITER linear — is
+  recorded in the watchlist entries above), #59724 (SM120
+  FLASHINFER_MLA_SPARSE MTP acceptance 0%), #58422 (Qwen3.8 GDN-hybrid MoE
+  TP1 engine wedge — SM120/NVFP4/FlashInfer path, signal only).
 
  Non-Qwen models (different arch/checkpoint format): #52833/#48568 (GLM),
  #51530 (DeepSeek), #56605 (GLM-5.3 word salad), #55280 (GLM kpool split IMA,
  gfx942), #54924/#54451/#56380 (GLM ROCm), #56506/#52911/#57149/#57230
- (DeepSeek/gfx950 perf), #54114 (GLM-5.1 reasoning), #55357 (Flash-Next MTP
+ (DeepSeek/gfx950 perf), #58409/#59575/#59820/#58606 (GLM-5.3/gemma/Hy4
+ gfx950 perf tracking), #54114 (GLM-5.1 reasoning), #55357 (Flash-Next MTP
  collapse — #54928-family signal only), #56088/#55922 (Flash-Next), #56832
  (Flash-Next NVFP4 + marlin moe-backend — we set no moe-backend), #57532
  (GLM NVFP4 MTP load on main), #55496 (ModelOpt NVFP4 MTP experts), #54926
@@ -730,20 +744,26 @@ touches one of:
   (Mamba2 mamba-page padding ignores `num_spec` → loud startup assert with
   spec decode at K≥2 — Granite/Mamba2 + ngram repro; our servers start fine,
   so the GDN path + padding slack covers us; monitor if a fix PR touches GDN
-  scope).
+  scope), #60791 (MiniMax-M3 PP/NIXL), #60333 (MiMoV2MTP FP8 KV scales),
+  #59151 (mxfp4 MoE gfx90a backend), #60581 (gfx950 Quark W4A16 slow Triton),
+  #47277 (Qwen3.5 native MTP vs no-MTP baseline — not a tracked model; our
+  own benches show MTP wins on this stack).
 
  Paths not reached here: PP ranks (#51752, #55951, #54709), DP attention
  (#51957, #48255), DCP (#54761, #57228), P/D disaggregation (#54392, #54926),
  KV connectors (#51805/#51766/#40017/#53505/#53514, #56972 Mooncake,
- #45407 LMCache, #54165), priority scheduling (#52897, #57580 —
+ #45407 LMCache, #54165, #60124 MultiConnector/NIXL hybrid, #60316
+ connector-forced ROCM_ATTN decode), priority scheduling (#52897, #57580 —
  priority-preemption checkpoint visibility, same family), EP (#41862),
  GPTQ qzeros on gfx1201 (#51971 — we run FP8), gfx950 MLA (#52312),
  turboquant (#53180, #53334), numa-bind (#55416), XPU (#55425), prebuilt
- rocm/vllm image (#56945 — we build from source), GLM page-align/offload
+ rocm/vllm image (#56945 — we build from source; #58937 ROCm nightly image
+ publication gap same reason), GLM page-align/offload
  (#54458, #54831), gfx1030/gfx1100 (#54728, #54438), DeepEP (#54281),
  MTP `n_predict`/token auto-defaults (#55322/#55323 — we pass explicitly),
  client `stop` strings in think output (#53066 — our clients don't send
- stop), KV offloading (#52773), `VLLM_ROCM_QUICK_REDUCE_QUANTIZATION`
+ stop), KV offloading (#52773, #58653 SimpleCPU offload block-size
+ misalignment, #58034 CPU P/D conv-layout assert), `VLLM_ROCM_QUICK_REDUCE_QUANTIZATION`
  (#53136 — never set; fault was gfx942 TP=8-specific), embedding/rerank-only
  kernels (#58060 — generative-only stack), multi-layer MTP
  layer-0 reuse (#52688/#53397 — both 27B models have
@@ -761,7 +781,12 @@ touches one of:
  see the #53798 entry),
   #57032 (dflash drafter KV group — we run MTP; same annotation family as
   #54360), #58080 (MTP draft doesn't inherit `--hf-overrides`/YaRN — we pass
-  no overrides; both 27B models run native context).
+  no overrides; both 27B models run native context), #60838
+  (`--mamba-block-size` inert after the `mamba_cache_mode="all"` removal —
+  we never pass block sizes), #60346 (ReplaySSM ring assert on non-divisible
+  group counts — use_replayssm=False), #58692 (dynamic SD
+  `num_speculative_tokens_per_batch_size` + MTP ZeroDivision — we pass
+  explicit K).
 
   Already resolved/stale for this stack: #40980 (R9700 TP2 deadlock —
   v0.19-era; AMD confirmed TP2 working, ours serves), #49851 (multimodal
