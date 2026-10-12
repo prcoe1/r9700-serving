@@ -12,11 +12,12 @@ vLLM 0.31.0 + local patches (see README "Source-build patches"), torch 2.13,
 ROCm 10.1, AITER v0.1.25 unified attention, froggeric chat template
 v22.5, MRV2 runner, `--no-async-scheduling` (live qwen3.8-27b runs MTP1, so
 async stays off there). `-tp 2`,
-`--gpu-memory-utilization 0.95`, `GPU_MAX_HW_QUEUES=1`. KV cache is **fp8
-(calibrated) on qwen3.8-27b** (block 1600 at 128k max-len) and **bf16 on the
+`--gpu-memory-utilization 0.95`, `GPU_MAX_HW_QUEUES=1`. KV cache is **bf16
+on qwen3.8-27b** (block 832 at 128k max-len; fp8 era was 09-23→10-08, block
+1600 — calibrated scales inert under bf16) and **bf16 on the
 3.6 profiles** (3.6-27b carries a calibrated fp8 sidecar on disk for opt-in via
-`VLLM_KV_CACHE_DTYPE=fp8`); `--max-num-seqs 4` on qwen3.8-27b (safe while spec
-is off), `2` elsewhere (the #35288 cap); `--max-num-batched-tokens 1024` on
+`VLLM_KV_CACHE_DTYPE=fp8`); `--max-num-seqs 2` everywhere (the #35288 cap;
+qwen3.8-27b held 4-wide briefly 10-06→10-08); `--max-num-batched-tokens 1024` on
 qwen3.8-27b (concurrent-ITL A/B), `4096` on 35B-A3B (block-size forced).
 
 Single-request numbers are invariant to `--max-num-seqs`; long-context

@@ -319,9 +319,11 @@ AGENTS.md §4).
   (`50409-mamba-replay-boundary-chunk-stop.patch`, open, in no tag): exact
   block-multiple prompts cache their only Mamba state at `num_tokens`, which
   `get_computed_blocks` caps below → 0-token Mamba hit. **Measured inert
-  here** (`max_num_batched_tokens=1024` < 1600 block — the replay stop always
-  coincides with existing stops). Kept: 13 lines, binds correctly if the
-  chunk cap ever grows past the block size. Drop when a pinned `VLLM_REF`
+  here on fp8/1600 geometry** (`max_num_batched_tokens=1024` < 1600 block — the replay stop always
+  coincides with existing stops). **Caveat 2026-10-12**: live is bf16 KV
+  (block 832) since 2026-10-08, so the chunk cap now exceeds the block —
+  inertness needs re-measurement on 832 geometry; patch stays carried
+  (13 lines, binds correctly either way). Drop when a pinned `VLLM_REF`
   contains the merge.
 
 - **Key the AOT compile cache on `limit_mm_per_prompt`**
@@ -470,11 +472,12 @@ uncapped 256 exceeds the 249 Mamba cache blocks), so the batch never
 reaches the threshold — verified with the #35288 repro (4/6/8
 concurrent requests → all coherent) and the 400-request stress test.
 qwen3.8-27b currently runs
-`--max-num-seqs 4` with MTP1 live since 2026-10-06 — below the corruption
-threshold at K=1 depth (4-wide hold verified: acceptance 79–93%,
-`max_running=4`, no garbling; see
-`benchmarks/2026-10-06_mtp1_c4_hold.md`). Re-apply the cap of 2 if MTP
-depth ever exceeds K=1. See the
+`--max-num-seqs 2` with MTP1 live (bf16 KV + c2 since the 2026-10-08 operator
+decision; the 2026-10-06 4-wide hold was verified: acceptance 79–93%,
+`max_running=4`, no garbling — below the corruption
+threshold at K=1 depth, see
+`benchmarks/2026-10-06_mtp1_c4_hold.md`). Keep the cap at 2 if MTP
+depth ever exceeds K=1 (the 4-wide evidence supports a future raise at K=1 only). See the
 AGENTS.md watchlist for status.
 
 ### Upstream issues
@@ -489,7 +492,7 @@ stale triage snapshots live in
 
 Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.31.0
 + local patches, torch 2.13 (ROCm 10.1), tuned MoE/dense GEMM configs. The
-live profile runs **MTP1** spec decode (fp8 KV, 131K context, cap 4 —
+live profile runs **MTP1** spec decode (bf16 KV since 2026-10-08, 131K context, cap 2 —
 4-wide hold verified 2026-10-06); MTP3/MTP1 experiment rows below are the
 10-01/10-02 trials (rollback: one line in `env/qwen3.8-27b.env`).
 MTP profiles also pass `--no-async-scheduling` (vLLM turns async on by
@@ -501,7 +504,7 @@ files, and superseded rows: [`BENCHMARKS.md`](BENCHMARKS.md) and
 | model                     | MTP (draft #) | KV   | pp2048 t/s | tg32 t/s | tg128 t/s |
 |:--------------------------|:--------------|:-----|-----------:|---------:|----------:|
 | Qwen3.8-27B (live, 2026-10-06) | **MTP1** | fp8 | ~3398–3426 | ~49.5 | ~52.6 |
-| Qwen3.8-27B (live, 2026-10-12, aiter v0.1.25) | **MTP1** | fp8 | ~3335 | ~52.9 | ~53.7 |
+| Qwen3.8-27B (live, 2026-10-12, aiter v0.1.25) | **MTP1** | bf16 | ~3335 | ~52.9 | ~53.7 |
 | Qwen3.8-27B spec-off (2026-10-06) | **off** | fp8 | ~3486–3493 | ~34.1 | ~34.1 |
 | Qwen3.8-27B +MTP3 (2026-10-02) | **MTP3** | fp8 | ~3272–3348 | ~68.9 | ~71.1 |
 | Qwen3.8-27B +MTP1 (2026-10-02) | **MTP1** | fp8 | ~3478–3482 | ~52.5 | ~54.1 |

@@ -271,10 +271,12 @@ touches one of:
   tool-error heuristics. Template bumps need no rebuild (see step 1).
 - **Known-bug watchlist** (search/check these before recommending a vLLM bump):
   - `#35288` MTP concurrency corruption — mitigated by `max-num-seqs 2`
-    on MTP profiles; qwen3.8-27b runs MTP1 at cap 4 since 2026-10-06 after
-    a clean 4-wide hold check (acceptance 79–93%, no garbling —
-    benchmarks/2026-10-06_mtp1_c4_hold.md), below the 4+-decode-sequence
-    corruption threshold at K=1 depth;
+    on MTP profiles; qwen3.8-27b runs MTP1 at cap 2 since the 2026-10-08
+    operator decision (bf16 KV + c2; the 2026-10-06 4-wide hold check —
+    acceptance 79–93%, no garbling —
+    benchmarks/2026-10-06_mtp1_c4_hold.md — stands as evidence for any
+    future raise, still below the 4+-decode-sequence corruption threshold
+    at K=1 depth);
     precise root cause is the async+MTP align race `#51571` (fix `#51599`),
     and the corruption requires async scheduling, which we disable.
   - `#47087` MTP token loops on Qwen3-MoE — **resolved** by #51113 (in
@@ -286,9 +288,10 @@ touches one of:
     corrupts hybrid recurrent state, #43559/#50188) — **carried as a local
     patch** (upstream PR open). Drop when a release contains the fix.
    - `#52872` GDN/hybrid prefill peak under-predicted; `--max-num-batched-tokens`
-     also sizes the CUDA-graph pool. qwen3.8-27b pins 2048 (concurrent-ITL A/B:
-     8192 default stalled the co-decoder 150–200x; 2048 → ~1 s ITL, −3.4%
-     pp2048). Re-check headroom + re-run `benchmarks/conc_itl_probe.py` on any
+     also sizes the CUDA-graph pool. qwen3.8-27b pins 1024 (concurrent-ITL A/B:
+     8192 default stalled the co-decoder 150–200x; 2048 → ~1 s ITL, tightened
+     to 1024 on 2026-09-21, reaffirmed by the 2026-10-07/10-08 chunk ladders;
+     −3.4% pp2048 at the 2048 step). Re-check headroom + re-run `benchmarks/conc_itl_probe.py` on any
      bump that changes chunk/graph-pool sizing.
   - `#47602` MTP draft acceptance decays with context length (Qwen3.6-27B)
   - `#51250` prefix caching is a silent no-op on GDN hybrid (same family as
@@ -304,10 +307,11 @@ touches one of:
     binding constraint on this stack. Root cause:
     `BlockPool.cache_full_blocks` skips Mamba align-mode null blocks, so only
     ~1 checkpoint hash per request is registered and a missing Mamba
-    checkpoint vetoes every attention-group hit. Live geometry: `block_size=1600`
-    on fp8 KV (832 on bf16), so incremental multi-turn prefixes never hit —
-    measured **0% on the multi-turn probe (most recently 2026-10-04, 4-turn,
-    v0.31.0rc3, spec-off)**. Note the cumulative
+    checkpoint vetoes every attention-group hit. Live geometry: `block_size=832`
+    on bf16 KV (1600 on fp8; live moved bf16 on 2026-10-08), so incremental
+    multi-turn prefixes never hit —
+    measured **0% on the multi-turn probe (most recently 2026-10-12, 4-turn,
+    v0.31.0 + aiter v0.1.25, MTP1, bf16)**. Note the cumulative
     `vllm:prefix_cache_hits_total` is non-zero: caching *does* hit on
     repeated-identical-prompt workloads — the failure is specific to the
     incremental shared-prefix pattern, not a global no-op. Fixes in flight:
@@ -354,8 +358,9 @@ touches one of:
       writes a bad Mamba/GDN checkpoint; a later block-aligned prefix-cache hit
       restores it → **NaN logits** from step 1 (token-0 `"!"` spam to
       max_tokens; identical retries fail until the cache turns over).
-      **This stack's exact model + cache mode + TP2 + fp8** (repro at block
-      816 on v0.28.0; ours is 1600). **Currently masked**: the carrier is a
+      **This stack's exact model + cache mode + TP2 + bf16** (repro at block
+      816 on v0.28.0; ours is 832 on bf16 KV since 2026-10-08, was 1600 on
+      fp8). **Currently masked**: the carrier is a
       prefix-cache *restore*, and our incremental multi-turn pattern is the
       `#45238` 0%-hit no-op (repeated-identical prompts DO hit — the window
       is narrow but real). No in-repo mitigation; the client-side workaround
@@ -600,13 +605,16 @@ touches one of:
     `end = aligned_end` inside the 40707 patch's else branch, a hard
     apply-order dependency that broke when the 40707 patch dropped; final
     tree verified byte-identical to the old ordered apply). **Measured inert
-    here**: with
+    here on fp8/1600 geometry**: with
     `max_num_batched_tokens=1024` < 1600 block, windows never span a full
     block from an aligned start, so the replay stop always coincides with
     the existing stops (exact-multiple 3200/4800/8000 identical repeats hit
     0/1600/4800 = the 1-block MTP back-off ladder — back-off arithmetic, not
-    missing states). Kept (13 lines; binds correctly if the chunk cap ever
-    exceeds the block size). Drop when a pinned `VLLM_REF` contains the
+    missing states). **Caveat 2026-10-12**: live moved to bf16 KV (block 832)
+    on 2026-10-08, so the chunk cap (1024) now EXCEEDS the block and the
+    old mechanism note no longer holds — the patch stays carried (13 lines,
+    binds correctly either way) but the inertness claim needs re-measurement
+    on 832 geometry (exact-multiple 832/1664/2496 repeat ladder). Drop when a pinned `VLLM_REF` contains the
     merge. 2026-10-10: mergify re-flagged merge conflicts on the PR (last
     rebase 2026-07-30) — expect a rebase on the bump, and `#60533` now
     lands in the same scheduler territory.
@@ -634,7 +642,7 @@ touches one of:
      2026-10-07, `3d6853b32`; post-dates the v0.31.1rc0 tag — in no
      release yet). Carried as the local patch (see `#53798` entry).
      N/A for this stack (MTP drafter not small-block; we are
-     `block_size` 1600, all groups equal, so the old and new seed
+     `block_size` 832 on bf16 KV (1600 on fp8), all groups equal, so the old and new seed
      coincide).
    - `#55533` (2026-09-06, open): Hybrid GDN (Qwen3.5/3.8 27B-class) + MTP
      scheduler caps at ~3 concurrent sequences at batch ≥ 4 — acceptance/
@@ -642,7 +650,9 @@ touches one of:
      Root: mamba cache budget shared between target states + MTP draft slots in
      scheduler accounting (scales with GDN layer count). **Relevant** — the
      cap was raised 2→4 with MTP1 on 2026-10-06 after a clean 4-wide hold
-     check (no cap-out, acceptance 79–93%; K=1 slips under the pathology).
+     check (no cap-out, acceptance 79–93%; K=1 slips under the pathology),
+     then returned to 2 on 2026-10-08 (bf16 KV + c2 operator decision; the
+     hold evidence stands for any future raise).
     WIP fix `PR #55617` (2026-09-06; 2026-09-12: still OPEN +
     CONFLICTING/WIP). Re-probe before raising MTP depth past K=1 at 4-wide.
   - `#58639` (2026-09-25, open): V2-runner PP side streams ~2× slower on
