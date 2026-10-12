@@ -4,11 +4,10 @@ Date: Sun, 27 Sep 2026 00:00:00 +0000
 Subject: [PATCH] gfx1201 unified-attention tuning + bf16 small-Q LDS guard
  (config-tree rebase)
 
-Version-locked to AITER_REF=v0.1.23 (verified `git apply --check`
-clean on v0.1.23, 2026-09-27). Re-verified `git apply` clean on
-AITER_REF=v0.1.24, 2026-09-28 (v0.1.24 touches no UA/config-tree files),
-and on v0.1.24.post1, 2026-10-02 (post1 touches no gfx1201 UA files —
-only gemm/conv/mla tables — so the tuning stands, no re-tune). RDNA4-local launch-config tuning, not an
+Version-locked to AITER_REF=v0.1.25 (verified `git apply --check`
+clean on v0.1.25, 2026-10-12; rebased from the v0.1.23/v0.1.24/post1
+variant, which additionally carried a 2D prefill key dropped here —
+see below). RDNA4-local launch-config tuning, not an
 upstream cherry-pick. Replaces unified-attention-gfx1201-tune.patch AND
 unified-attention-bf16-kv.patch from the v0.1.20.post1 era: v0.1.22
 moved all UA launch config into the per-arch JSON config tree
@@ -21,10 +20,6 @@ applies these with plain `git apply`).
 
 What this carries, as additive gfx1201 DEFAULT.json keys (upstream
 entries untouched; lookup precedence verified key-by-key):
-- attn_2d Q_GEQ_256.DT_bf16_bf16: num_warps 8 (rest = Q_GEQ_256 copy).
-  The measured 2026-08-25 win: 8 warps/workgroup beats the default 4 by
-  ~7% on 2048-token bf16 prefill with bitwise-identical output (2x
-  R9700). Scoped to bf16/bf16; fp8 prefills stay on upstream Q_GEQ_256.
 - attn_3d D_LEQ_256.DT_any_bf16: num_warps 4, waves_per_eu 6 (BLOCK_M 16,
   stages 1 = upstream D_LEQ_1024.DT_any_bf16 values). The measured win:
   4 warps + 6 waves gives ~1.4x decode at 16k-128k context, identical
@@ -38,23 +33,27 @@ entries untouched; lookup precedence verified key-by-key):
   TILE-32 protection for exactly that bucket; every other bucket keeps
   upstream bounds.
 
----
+Dropped on the v0.1.25 rebase (2026-10-12): the old attn_2d
+Q_GEQ_256.DT_bf16_bf16 warps-8 key (~7% on 2048-token bf16 prefill under
+the v0.1.24.post1 tree). v0.1.25 merged upstream #5790, which adds D/SW
+schema axes: D-axis-first lookup now always prefers upstream's narrower
+D_LEQ_* keys for every realistic shape, so the old key is unreachable —
+and direct measurement (post1 kernels, D=256/Q=2048 bf16, 3 runs) shows
+upstream's operative D_LEQ_256.Q_GEQ_64.DT_bf16_any (w4/s1/eu2, TILE 16)
+beats it 1.06x on long-context chunked prefill (p2k_c64k; ties 1.02x on
+short p2k). A w8/eu6/TILE-16 hybrid collapses to 0.78x, so the two
+cannot be combined — take upstream's key as-is. Raw:
+  ~/.vllm-workspace/ua_compare125.json. If a future tree re-opens this
+  bucket, re-tune before re-adding.
+
 diff --git a/aiter/ops/triton/configs/gfx1201/triton/attention/unified_attention/DEFAULT.json b/aiter/ops/triton/configs/gfx1201/triton/attention/unified_attention/DEFAULT.json
-index 67fc077..7edd552 100644
+index df93372..a880f12 100644
 --- a/aiter/ops/triton/configs/gfx1201/triton/attention/unified_attention/DEFAULT.json
 +++ b/aiter/ops/triton/configs/gfx1201/triton/attention/unified_attention/DEFAULT.json
-@@ -30,6 +30,22 @@
+@@ -120,6 +120,14 @@
        "TILE_SIZE_MIN": 32,
        "TILE_SIZE_MAX": 32
      },
-+    "Q_GEQ_256.DT_bf16_bf16": {
-+      "BLOCK_M": 64,
-+      "num_warps": 8,
-+      "num_stages": 1,
-+      "waves_per_eu": 6,
-+      "TILE_SIZE_MIN": 32,
-+      "TILE_SIZE_MAX": 32
-+    },
 +    "Q_LEQ_1.DT_any_bf16": {
 +      "BLOCK_M": 16,
 +      "num_warps": 4,
@@ -66,7 +65,7 @@ index 67fc077..7edd552 100644
      "Q_LEQ_1": {
        "BLOCK_M": 16,
        "num_warps": 4,
-@@ -72,6 +88,12 @@
+@@ -162,6 +170,12 @@
        "num_stages": 1,
        "waves_per_eu": 2
      },

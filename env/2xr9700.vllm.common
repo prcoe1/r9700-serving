@@ -10,6 +10,15 @@ AMDGPU_TARGETS=gfx1201
 GPU_ARCHS=gfx1201
 HSA_ENABLE_IPC_MODE_LEGACY=1
 HSA_NO_SCRATCH_RECLAIM=1
+# Prefer the classic /opt/rocm toolchain over the venv TheRock SDK shims:
+# the pip `rocm-sdk-core` hipcc cannot find its device library (10.1 stream
+# split device files into rocm-sdk-device-*/devel, and `rocm[devel]` is not
+# installed), so every GPU compile fails ("cannot find ROCm device library").
+# /opt/rocm/bin/hipcc is the same HIP 7.16 / clang 24 toolchain and compiles
+# gfx1201 fine. Without this, aiter's runtime JIT (module_aiter_core) cannot
+# build and `import aiter` aborts. Needed since the 2026-10-12 rebuild (fresh
+# pip resolve); harmless on images without /opt/rocm (dangling PATH entry).
+PATH=/opt/rocm/bin:/opt/venv/bin:/opt/rocm/llvm/bin:/opt/rocm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 SAFETENSORS_FAST_GPU=1
 PYTORCH_NVML_BASED_CUDA_CHECK=1
 NCCL_MIN_NCHANNELS=4

@@ -78,13 +78,14 @@ host render group gid for `/dev/dri` access — check with `getent group render`
 | ROCm         | 10.1.0 (`rocm/dev-ubuntu-24.04:10.1.0-full`, Python 3.12) |
 | PyTorch      | 2.13.0+rocm10.1.0 (`stable.repo.amd.com/whl-next`, `torch[device-gfx1201]`) |
 | vLLM         | 0.31.0 (+ carried #58021 — verified NOT in the final tag, behavior-neutral here) |
-| AITER        | v0.1.24.post1 |
+| AITER        | v0.1.25 |
 | Flash Attention | @ 1cc7ff67 (source; official guide uses `flash-attn==2.8.3` wheel) |
 
 ROCm 10.1 is the TheRock 10.1 stream (successor to the 10.0 / 7.9/7.13/7.14 previews); the
-production 7.2.x line lacks RDNA4/`gfx1201` support. AITER `v0.1.24.post1` carries
-the RDNA unified-attention LDS guard (#4868) and the UA config-tree
-tuning tables; vLLM 0.31.0 carries the hybrid prefix-cache family
+production 7.2.x line lacks RDNA4/`gfx1201` support. AITER `v0.1.25` carries
+the RDNA unified-attention LDS guard (#4868), the UA config-tree
+tuning tables (incl. upstream's gfx1201 UA-2D tune #5790), and the #3698
+V-mask fix; vLLM 0.31.0 carries the hybrid prefix-cache family
 (#54713, #55450, #55390, #58368, #59146, #59175), the draft-backend override
 (#54826), the trailing-block-drop opt-out (#53388), the last-block replay
 (#53945), GDN warmup (#54251), W4A16 packed zero-points (#54965), multimodal
@@ -346,7 +347,7 @@ AGENTS.md §4).
 ### AITER source-build patches (applied at image build time)
 
 `Dockerfile.fullbuild` applies `patches/aiter/*.patch` to the pinned
-`AITER_REF` (v0.1.24.post1, TheRock 10.0) before building the wheel. Together they make aiter's
+`AITER_REF` (v0.1.25) before building the wheel. Together they make aiter's
 unified attention work and run well on RDNA4 (`gfx1201`):
 
 - **`unified-attention-gfx1201-tune.patch`** — per-arch launch-config tuning
@@ -356,12 +357,16 @@ unified attention work and run well on RDNA4 (`gfx1201`):
   (`D_LEQ_256.DT_any_bf16`, where head-256 bf16 decode lands):
   `num_warps` 2 → 4, `waves_per_eu` 2 → 6 — **~1.4–1.9× faster** at
   16k–128k context, bitwise-identical, for both bs=1 and the MTP
-  batch-decode shape. 2D large-prefill (`Q_GEQ_256.DT_bf16_bf16`):
-  `num_warps` 4 → 8, ~7% on the attention prefill kernel. Plus a narrowed
+  batch-decode shape. Plus a narrowed
   LDS guard (`Q_LEQ_1.DT_any_bf16`, `TILE_SIZE_MAX` 64 → 32): upstream
   #4868 bounds the prefill bucket but leaves the small-Q 2D bucket at 64,
   which stages 2·64·256·2+scratch > 64 KiB for head-256 bf16 (the exact
   [ROCm/aiter#4329](https://github.com/ROCm/aiter/issues/4329) shape).
+  The 2D large-prefill slot is left to upstream's #5790
+  (`D_LEQ_256.Q_GEQ_64.DT_bf16_any`, w4/eu2/TILE-16): our old warps-8 key
+  was dropped on the v0.1.25 rebase — unreachable under D-first lookup and
+  measured 1.06x slower on long-context chunked prefill (see
+  [`benchmarks/2026-10-12_aiter-0.1.25_bump.md`](benchmarks/2026-10-12_aiter-0.1.25_bump.md)).
   These are attention-kernel wins; end-to-end decode is dominated by the 48
   GDN layers + MTP + TP, so the system-level effect is within noise (see
   the tuning doc). See
@@ -374,7 +379,7 @@ unified attention work and run well on RDNA4 (`gfx1201`):
   `PREBUILD_KERNELS=0`).
 
 Re-verify each patch applies cleanly on the new ref when bumping `AITER_REF`
-(they are version-locked to v0.1.24; verified `git apply --check` clean on `v0.1.24` 2026-09-28).
+(they are version-locked to v0.1.25; verified `git apply --check` clean on `v0.1.25` 2026-10-12).
 
 ### Runtime env knobs
 
@@ -496,6 +501,7 @@ files, and superseded rows: [`BENCHMARKS.md`](BENCHMARKS.md) and
 | model                     | MTP (draft #) | KV   | pp2048 t/s | tg32 t/s | tg128 t/s |
 |:--------------------------|:--------------|:-----|-----------:|---------:|----------:|
 | Qwen3.8-27B (live, 2026-10-06) | **MTP1** | fp8 | ~3398–3426 | ~49.5 | ~52.6 |
+| Qwen3.8-27B (live, 2026-10-12, aiter v0.1.25) | **MTP1** | fp8 | ~3335 | ~52.9 | ~53.7 |
 | Qwen3.8-27B spec-off (2026-10-06) | **off** | fp8 | ~3486–3493 | ~34.1 | ~34.1 |
 | Qwen3.8-27B +MTP3 (2026-10-02) | **MTP3** | fp8 | ~3272–3348 | ~68.9 | ~71.1 |
 | Qwen3.8-27B +MTP1 (2026-10-02) | **MTP1** | fp8 | ~3478–3482 | ~52.5 | ~54.1 |

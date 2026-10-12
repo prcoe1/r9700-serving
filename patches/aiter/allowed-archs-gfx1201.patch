@@ -1,14 +1,13 @@
-# Version-locked to AITER_REF=v0.1.23 (verified `git apply --check`
-# clean on v0.1.23, 2026-09-27; originally v0.1.20, 2026-08-29).
-# Re-verified `git apply` clean on AITER_REF=v0.1.24, 2026-09-28,
-# and on v0.1.24.post1, 2026-10-02.
+# Version-locked to AITER_REF=v0.1.25 (verified `git apply --check`
+# clean on v0.1.25, 2026-10-12; originally v0.1.20, 2026-08-29; rebased
+# 2026-10-12 for upstream's added "gfx1250" list entry).
 # RDNA-local: accepts the RDNA family in the build-time prebuild arch list;
 # inert here (PREBUILD_KERNELS=0). Leading comments are ignored by `git apply`.
 diff --git a/csrc/cpp_itfs/utils.py b/csrc/cpp_itfs/utils.py
 index 3fa8987..f14205d 100644
 --- a/csrc/cpp_itfs/utils.py
 +++ b/csrc/cpp_itfs/utils.py
-@@ -144,7 +144,15 @@ def hip_flag_checker(flag_hip: str) -> bool:
+@@ -216,7 +216,15 @@ def hip_flag_checker(flag_hip: str) -> bool:
  def validate_and_update_archs():
      archs = GPU_ARCH.split(";")
      archs = [arch.strip().split(":")[0] for arch in archs]
@@ -25,7 +24,7 @@ index 3fa8987..f14205d 100644
      allowed_archs = [
          "native",
          "gfx90a",
-@@ -152,7 +160,17 @@ def validate_and_update_archs():
+@@ -224,7 +232,16 @@ def validate_and_update_archs():
          "gfx941",
          "gfx942",
          "gfx950",
@@ -39,7 +38,6 @@ index 3fa8987..f14205d 100644
 +        "gfx1153",
 +        "gfx1200",
 +        "gfx1201",
-+        "gfx1250",
+         "gfx1250",
      ]
  
-     # Validate if each element in archs is in allowed_archs

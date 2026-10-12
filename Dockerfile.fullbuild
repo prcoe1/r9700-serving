@@ -13,7 +13,10 @@ ARG TORCH_VERSION
 ARG TORCHVISION_VERSION
 ENV GPU_ARCH=${GPU_ARCH}
 ENV ROCM_PATH=/opt/rocm
-ENV PATH=/opt/venv/bin:/opt/rocm/bin:/opt/rocm/llvm/bin:${PATH}
+# NOTE: keep /opt/rocm/bin first — the venv TheRock SDK hipcc shim cannot find
+# its device library (see env/2xr9700.vllm.common PATH override, 2026-10-12).
+# Compose env re-asserts this at runtime for images built before this line.
+ENV PATH=/opt/rocm/bin:/opt/venv/bin:/opt/rocm/llvm/bin:${PATH}
 ENV LD_LIBRARY_PATH=/opt/rocm/lib:/opt/rocm/lib64:${LD_LIBRARY_PATH}
 
 ENV PYTORCH_ROCM_ARCH=${GPU_ARCH}

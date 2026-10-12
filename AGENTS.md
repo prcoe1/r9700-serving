@@ -81,6 +81,18 @@ just --set model qwen3.6-27b up
   dying at exit leaves a stale aiter baton lock that deadlocks startup.
 - A stale baton lock (`~/.cache/aiter/jit/build/lock_*` referencing a dead
   PID/container) is not auto-cleared by aiter; `just prewarm` removes it first.
+- Toolchain: the runtime JIT must resolve `hipcc` to `/opt/rocm/bin`
+  (`env/2xr9700.vllm.common` pins `PATH` with `/opt/rocm/bin` first; the
+  `Dockerfile.fullbuild` ENV matches for future rebuilds). The venv TheRock
+  SDK shim (`rocm_sdk_core`, first in the stock PATH) cannot find its device
+  library on the 10.1 stream — device files moved to `rocm-sdk-device-*` +
+  devel reconcile and `rocm[devel]` is not installed — so every GPU compile
+  fails ("cannot find ROCm device library") and `import aiter` aborts at
+  `module_aiter_core`. Symptom since the 2026-10-12 rebuild (fresh pip
+  resolve); `/opt/rocm/bin/hipcc` is the same HIP 7.16 / clang 24 toolchain,
+  zero skew. Repro: `hipcc --offload-arch=gfx1201` on a trivial `.hip` file
+  in any throwaway container. If a future `rocm[devel]` flow stabilizes,
+  re-evaluate (benchmarks/2026-10-12_aiter-0.1.25_bump.md).
 
 ### Version Pins
 - All build pins live in `.env` (untracked) and `.env.example` (tracked template).
@@ -134,29 +146,48 @@ that affect this GPU setup and model combo** before recommending a bump.
 # #55178 (padded-tail Mamba state). v0.31.1rc0 exists (tagged 2026-10-07,
 # e37e51dd2 — full main snapshot, 466 commits past v0.31.0): contains #58021
 # (→ drops 58021-prefix-match-unit-single-group.patch) but NOT #55601
-# (3d6853b32 merged 10-07, after the rc0 tag) — the v0.31.1 FINAL is the
-# bump where both carried patches drop. In-scope rc0 content: #59536 (MRV2
+# (3d6853b32 merged 10-07, after the rc0 tag; re-verified on main
+# 2026-10-11) — the v0.31.1 FINAL is the bump where the carried 58021 +
+# 55601 patches drop. In-scope rc0 content: #59536 (MRV2
 # GDN checkpoint metadata per cache group), #59759 (stale Mamba spec blocks
 # in prefill-checkpoint steps), #58457 (block-size validation hardening),
 # #59132 (new opt-in ROCM_SEGMENTED_ATTN backend — future A/B candidate);
 # #56531 is ngram-only (we run MTP, N/A); #59781 removed no VLLM_* envs;
-# #58997 drops mamba_cache_mode "all" (no profile passes it). Next target:
+# #58997 drops mamba_cache_mode "all" (no profile passes it).
+# 2026-10-11 state: the v0.31.1 final is still UNTAGGED (latest tag =
+# rc0) and main is 272 commits past rc0 — #55601 (3d6853b32) and #52619
+# (medium-skinny W4A16 dispatch, our carried
+# 52619-rdna-w4a16-medium-skinny.patch) are now MERGED to main, so the
+# v0.31.1 final drops all three carried patches (58021 + 55601 + 52619).
+# New in-scope content since rc0: #60533 (hybrid Mamba prefix-cache
+# boundary fixes — see the #45238 entry), #55504 (GDN spec-decode
+# query-width bound), #59853 (Qwen3-VL/3.5/3.8 4x M-RoPE headroom drop —
+# bit-exact without YaRN, ~32 MiB/GPU win for Qwen3.8), #57560 (opt-in
+# AITER FlyDSL GDN prefill backend — gfx950-validated; future prefill A/B
+# candidate if gfx1201 support lands), #60736 (MRV2 int64 row-offset fix);
+# bump-time watch: #59447 (ROCm setup.py develop fail-fast build change),
+# #60381 (transformers 5.19). Next target:
 # v0.31.1 final, else v0.32 (watch #53479, #54076, #50409, #51599). MRV2
 # is the default for all our profiles (#53183).
 gh release list -R vllm-project/vllm --limit 8
 
-# AITER — pin AITER_REF=v0.1.24.post1 (2026-10-02; carries the RDNA UA LDS guard
-# #4868, so the code-level bf16-KV cap is retired — replaced by a narrowed
-# Q_LEQ_1 JSON guard inside the rebased gfx1201 tune patch; the UA config
-# tree refactor (#4761/#5106, in v0.1.22) moved all tuning into per-arch
-# JSON). Next bump: re-check the tune patch + re-run
-# tools/tune_ua_config.py (config-tree API since the v0.1.23 rebase).
+# AITER — pin AITER_REF=v0.1.25 (2026-10-12; carries upstream #5790, the
+# gfx1201 UA-2D D=256 tune, plus #3698 V-mask-by-value-head-size in the shared
+# UA kernel and the RDNA UA LDS guard #4868). The v0.1.25 rebase DROPPED our
+# old warps-8 2D-prefill key: #5790's D/SW schema axes make D-first lookup
+# prefer upstream's narrower D_LEQ_* keys for every realistic shape (old key
+# unreachable), and measurement shows upstream's operative
+# D_LEQ_256.Q_GEQ_64.DT_bf16_any (w4/eu2/TILE-16) beats it 1.06x on
+# long-context chunked prefill — see benchmarks/2026-10-12_aiter-0.1.25_bump.md
+# (a w8/TILE-16 hybrid collapses to 0.78x, so no combining). Kept: 3D decode
+# key + narrowed Q_LEQ_1 TILE-32 guard (stock v0.1.25 still selects TILE-64
+# Q_LEQ_1 for D=256 small-Q without it). Next bump: re-check the tune patch +
+# re-run tools/tune_ua_config.py (config-tree API since the v0.1.23 rebase).
 # aiter#5035 (3D LDS clamp on gfx1201) CLOSED as resolved 2026-10-07 —
-# covered by #4868 in the pinned v0.1.24.post1 (per-arch JSON config).
-# aiter#5790 (gfx1201 UA-2D D=256 tune) MERGED 2026-10-01 — verified
-# 2026-10-08 NOT in post1 (the tag cut before the merge), so our additive
-# keys stand alone on the current pin; any bump past post1 carries #5790 →
-# re-run tools/tune_ua_config.py + re-check the LDS guard first.
+# covered by #4868 in the pinned tree (per-arch JSON config).
+# aiter#6108 (non-causal UA support for the aiter#5683 image-input gap) still
+# OPEN — ua_image_correctness_probe.py stays the guard; re-run it on any bump
+# touching the UA or vision path.
 gh release list -R ROCm/aiter --limit 8
 
 # Flash Attention — pinned to a commit; compare HEAD to FLASH_ATTN_REF
@@ -191,7 +222,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 50409 54163 55533 54713 55450 48007 57580 50891 55495 55497 53739 58407 58639 59933 59095 58882 59773 60008 60160 50551 60603 60760; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 50409 54163 55533 54713 55450 48007 57580 50891 55495 55497 53739 58407 58639 59933 59095 58882 59773 60008 60160 50551 60603 60760 57707 60911; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -296,7 +327,16 @@ touches one of:
     no reviews, empty validation] — evaluated 2026-10-09: NOT carried, ~1900
     lines of unreviewed core scheduler/KV-manager + worker changes colliding
     with our `#50409`/`#55601`/`#48375` patches; monitor for merge, then take
-    via version bump)**. **When a real fix
+    via version bump), `#60533` (merged to main 2026-10-10, post-rc0 — in no
+    release: fixes inconsistent hybrid Mamba prefix-cache boundaries — the
+    Mamba prompt checkpoint no longer double-applies the `P-1` cap and the
+    EAGLE block drop, attention lookup may inspect the cached EAGLE proof
+    beyond the final hit limit, and Mamba checkpoint calc/registration is
+    made consistent across scheduler and workers; extracted from #59826.
+    NOT carried — unreviewed on our geometry and it lands in the same
+    scheduler/KV territory as our carried `#48375`/`#50409`/`#55601`
+    patches, so re-verify those against it on the bump; monitor for the
+    release that contains it). **When a real fix
     merges**: prefer the version bump; carry a local patch only if no
     available release contains it. Related: `#52897` (priority-scheduling
     variant — N/A, we don't use priority), `#53749` (same family on two more
@@ -420,7 +460,12 @@ touches one of:
      annotation warning gone from logs, identical 3200-token repeat hits
      1600 (1-block back-off — the pair removed the erroneous second eagle
      drop flag-all applied to Mamba groups), bench coherence PASSED, MTP1
-     acceptance 88–100%.
+     acceptance 88–100%. **New external data point 2026-10-10** (BenHamm):
+      the v0.31.0 release wheel with **DFlash** + NVFP4 on SM121 (DGX Spark,
+      `nvidia/Qwen3.8-27B-NVFP4`) still zeroes prefix hits — NVIDIA/DFlash/
+      NVFP4, out of our scope (we run MTP + FP8 + gfx1201, clean since
+      2026-09-27); signal that the family is not closed for all drafter
+      geometries.
    - `#55495` (open): qwen3_coder engine parser emits a truncated `arguments`
      string with a leaked `</parameter` tag when the model writes a
      `<parameter=>` element slightly off (name missing / `>` missing / stray
@@ -442,11 +487,12 @@ touches one of:
      v0.31.0rc3 container (positive control) and the full
      `tests/parser/engine/test_qwen3.py` PASSES 61/61 with the fix applied
      at runtime. Related open (same `_flush` area, alternate strategies —
-     not carried): `#53739` (actively developing as of 2026-10-05: measured
-     blast radius 13 parsers/7 converters incl. qwen3 — when generation ends
-     with a parameter open, non-partial re-derivation drops it → unterminated
-     streamed args; if it merges, re-run the guard below and check
-     interaction with the #55497 patch), `#58407`. Live no-regression guard:
+     not carried): `#53739` (re-scoped 2026-10-05 into per-parser PRs —
+      the qwen3 half is now `#57707` "Keep the trailing parameter when
+      qwen3 closes the function without it" [fixes #57699: a `</function>`
+      with an unclosed final `</parameter>` → lost/clipped arguments; open]
+      — when #57707 merges, re-run the guard below and check
+      interaction with the #55497 patch), `#58407`. Live no-regression guard:
      `benchmarks/tool_truncation_probe.py` complex-values check.
   - `#54498` (2026-08-27, open): V1 EAGLE/MTP drafter feeds the M-RoPE
     **temporal** dim to the KV-slot computation on `SupportsMRoPE` targets —
@@ -526,8 +572,8 @@ touches one of:
     wrong-state read) or past the table (IMA in
     `precopy_mamba_align_fused_kernel`). **Superseded 2026-10-07**: fixed
     upstream by `#55601` (merged to main 2026-10-07, `3d6853b32` — after
-    the v0.31.1rc0 tag, so in no release yet; expected in the v0.31.1
-    final). **Carried as a local patch**
+    the v0.31.1rc0 tag, so in no release yet; re-verified on main
+    2026-10-11 — expected in the v0.31.1 final). **Carried as a local patch**
     (`patches/vllm/55601-mamba-align-resume-seed.patch`, verbatim upstream
     cherry-pick, source + test) **in place of** the old
     53798-mamba-align-resume-seed.patch (deleted 2026-10-07). The two seeds
@@ -561,7 +607,9 @@ touches one of:
     0/1600/4800 = the 1-block MTP back-off ladder — back-off arithmetic, not
     missing states). Kept (13 lines; binds correctly if the chunk cap ever
     exceeds the block size). Drop when a pinned `VLLM_REF` contains the
-    merge.
+    merge. 2026-10-10: mergify re-flagged merge conflicts on the PR (last
+    rebase 2026-07-30) — expect a rebase on the bump, and `#60533` now
+    lands in the same scheduler territory.
   - `#54163` (2026-09-01, PR, open): removes the one-mamba-block back-off
     for DFlash/DSpark drafters (they never write target blocks, so the
      `#53388` `use_eagle_block_drop()` stand-in over-backs them). N/A for
@@ -746,6 +794,8 @@ touches one of:
   so the GDN path + padding slack covers us; monitor if a fix PR touches GDN
   scope), #60791 (MiniMax-M3 PP/NIXL), #60333 (MiMoV2MTP FP8 KV scales),
   #59151 (mxfp4 MoE gfx90a backend), #60581 (gfx950 Quark W4A16 slow Triton),
+   #58688 (Qwen3.8-Flash-Next-FP8 load — different model family), #59755
+   (GLM-5.3-Flash prefill checkpoints),
   #47277 (Qwen3.5 native MTP vs no-MTP baseline — not a tracked model; our
   own benches show MTP wins on this stack).
 
@@ -772,7 +822,10 @@ touches one of:
  (#56077 — we run MTP; CLOSED 2026-10-08 via #56531, in v0.31.1rc0),
  ROCm 7.2.x libhsa (#56521 — we're on 10.0),
  gfx1151 (#57493/#57494 — different GPU), gfx1201 FP8 fall-through request
- (#28649 — OP retracted: already routes to W8A8).
+ (#28649 — OP retracted: already routes to W8A8), RunAI ModelStreamer
+  (#60691 — we load from local disk), pooling-task prefix cache (#60947 —
+  generative-only stack), NIXL MLA descriptors (#60561), NixlConnector
+  heterogeneous TP (#59110), CI image build (#60258 ci_base layer size).
 
  Requires an option we never pass: #53142 (align precopy IMA — needs
  explicit `--block-size`; #54199 retracted as its duplicate; the cluster
@@ -786,7 +839,9 @@ touches one of:
   we never pass block sizes), #60346 (ReplaySSM ring assert on non-divisible
   group counts — use_replayssm=False), #58692 (dynamic SD
   `num_speculative_tokens_per_batch_size` + MTP ZeroDivision — we pass
-  explicit K).
+  explicit K), #52317 (mamba_cache_mode "all" + DSpark startup crash —
+  mode "all" removed in #58997, we run GDN/align + MTP), #61003 (DFlash
+  drafter fp8 `ignored_layers` load path — we run MTP).
 
   Already resolved/stale for this stack: #40980 (R9700 TP2 deadlock —
   v0.19-era; AMD confirmed TP2 working, ours serves), #49851 (multimodal
@@ -814,7 +869,10 @@ touches one of:
    profiling, unused here). Drop when a pinned `VLLM_REF` guards/reverts
    #56190. No upstream issue exists — the failure is silent (no log past
    the LLVM line), so check `import vllm` in a throwaway container first
-   on any bump if startup crash-loops.
+   on any bump if startup crash-loops. **Upstream fix in flight: PR
+    #60911** "[ROCm][Bugfix] Run TheRock's ROCm SDK preload before
+    promoting libtorch_cpu.so" (open, updated 2026-10-10) — drop the
+    patch when a pinned `VLLM_REF` contains it.
 
 ### 4. Local patches vs upstream
 
@@ -827,25 +885,24 @@ applied at build time. Before bumping any pin:
   (`benchmarks/tool_truncation_probe.py`, `benchmarks/thinkoff_probe.py`).
   Re-run its probe after any bump touching `vllm/parser/`.
 
-- The aiter patches (version-locked to `AITER_REF` v0.1.24.post1) are **RDNA4-local
+- The aiter patches (version-locked to `AITER_REF` v0.1.25) are **RDNA4-local
    work**, not upstream cherry-picks: `unified-attention-gfx1201-tune.patch`
    (additive gfx1201 JSON keys in the v0.1.22+ config tree: warps 4/waves 6
-   on `D_LEQ_256.DT_any_bf16` 3D decode ~1.4-1.9x, warps 8 on
-   `Q_GEQ_256.DT_bf16_bf16` 2D large-prefill ~7%, plus a narrowed
+   on `D_LEQ_256.DT_any_bf16` 3D decode ~1.4-1.9x, plus a narrowed
    `Q_LEQ_1.DT_any_bf16` TILE-32 LDS guard for the small-Q 2D bucket
    upstream #4868 leaves at 64) and `allowed-archs-gfx1201.patch`
-   (build-path arch acceptance). The old code-level
+   (build-path arch acceptance; rebased 2026-10-12 for upstream's added
+   `gfx1250` list entry). The old warps-8 `Q_GEQ_256.DT_bf16_bf16` 2D-prefill
+   key was dropped on the v0.1.25 rebase — superseded by upstream #5790
+   (unreachable under D-first lookup AND slower: 1.06x for
+   `D_LEQ_256.Q_GEQ_64.DT_bf16_any` on chunked prefill). The old code-level
    `unified-attention-bf16-kv.patch` was retired on the v0.1.23 bump
    (superseded by #4868; unappliable since the config-tree refactor —
    archived at `archive/patches/`). After any `AITER_REF` bump re-verify
    the tuning still wins — re-run `tools/tune_ua_config.py` (config-tree
    API; with `just down` first) and re-check the LDS guard. See
-   `benchmarks/2026-08-25_gfx1201_ua_tuning.md`. (v0.1.24.post1 touches no
-   gfx1201 UA files — gemm/conv/mla only — so no re-tune was needed.
-   aiter#5790, the gfx1201 UA-2D D=256 tune on main — our D=256 head-dim
-   bucket — merged 2026-10-01 but verified 2026-10-08 NOT in post1 (the tag
-   cut before the merge); any bump past post1 carries it: re-tune and check
-   for collision with our additive keys first.)
+   `benchmarks/2026-08-25_gfx1201_ua_tuning.md` and
+   `benchmarks/2026-10-12_aiter-0.1.25_bump.md`.
 - Check whether a newer `VLLM_REF` **already contains** a carried patch (the
   fix landed upstream). If so, the patch should be **dropped**, not kept.
   Verify: `gh pr view <pr> --repo vllm-project/vllm` and check the PR's merged
