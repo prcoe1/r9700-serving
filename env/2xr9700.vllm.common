@@ -8,7 +8,11 @@ PYTORCH_ROCM_ARCH=gfx1201
 HIP_ARCHITECTURES=gfx1201
 AMDGPU_TARGETS=gfx1201
 GPU_ARCHS=gfx1201
-HSA_ENABLE_IPC_MODE_LEGACY=1
+# dma-buf IPC (ROCr default since 7.0.2). =1 breaks every hipIpcGetMemHandle
+# on in-tree amdgpu kernels (this host) — vLLM #61055. Verified 2026-10-12:
+# =0 keeps TP2 healthy, PYNCCL selected, bench-neutral (pp2048 +1%, decode
+# within run noise), peer access stays False (board genuinely lacks P2P).
+HSA_ENABLE_IPC_MODE_LEGACY=0
 HSA_NO_SCRATCH_RECLAIM=1
 # Prefer the classic /opt/rocm toolchain over the venv TheRock SDK shims:
 # the pip `rocm-sdk-core` hipcc cannot find its device library (10.1 stream

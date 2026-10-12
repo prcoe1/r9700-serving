@@ -393,7 +393,7 @@ and `env/2xr9700.vllm.common` (loaded via `env_file`):
 | `GPU_MAX_HW_QUEUES` | `1` | required: multiple queues cause a 55-63% decode regression on RDNA4 |
 | `NCCL_P2P_DISABLE` | `1` | required on this host: the GPUs sit on separate PCIe root ports, and enabling P2P collapses decode ~10× even though RCCL establishes P2P channels (also rules out the P2P all-reduce HIP kernels) |
 | `NCCL_MIN/MAX_NCHANNELS` | `4` | bandwidth sweet spot for two PCIe 5.0 x8 root ports, P2P off (data in BENCHMARKS.md) |
-| `HSA_ENABLE_IPC_MODE_LEGACY` | `1` | needed for the ROCm stack |
+| `HSA_ENABLE_IPC_MODE_LEGACY` | `0` | `1` breaks `hipIpcGetMemHandle` on in-tree amdgpu kernels (vLLM #61055); `0` restores the dma-buf path, bench-neutral, verified 2026-10-12 |
 | `HSA_NO_SCRATCH_RECLAIM` | `1` | avoid scratch reallocation stalls |
 | `HIP_FORCE_DEV_KERNARG` | `1` | force device-side kernel args |
 | `LD_PRELOAD` | `libamd_smi.so` | expose GPU metrics via amd_smi |
