@@ -190,14 +190,18 @@ restart anyway).
   is active so it keeps ~2-3 GiB of VRAM headroom), **`--max-num-seqs`**
   (compose default 2 — also the boot guard: v0.31.0rc3 hard-fails engine
   init when max_num_seqs exceeds the Mamba cache blocks, 249 here vs the
-  256 vLLM default; qwen3.8-27b raises it to 4 — MTP1-at-4 verified
-  2026-10-06, see `benchmarks/2026-10-06_mtp1_c4_hold.md).
-- **`--kv-cache-dtype`** (`VLLM_KV_CACHE_DTYPE`): **fp8 on qwen3.8-27b**
-  (the live default), served from the calibrated local copy that `just up`
+  256 vLLM default; qwen3.8-27b stays at 2 — bf16 KV + c2 since the
+  2026-10-08 operator decision. The 2026-10-06 4-wide hold (acceptance
+  79–93%, no garbling) stands as evidence for a future raise at K=1 only,
+  see `benchmarks/2026-10-06_mtp1_c4_hold.md).
+- **`--kv-cache-dtype`** (`VLLM_KV_CACHE_DTYPE`): **bf16 everywhere**
+  (qwen3.8-27b back to the shared default since the 2026-10-08 operator
+  decision — c2 with it; fp8 era 09-23–10-08 kept for the ~2x KV headroom),
+  served from the calibrated local copy that `just up`
   builds via `ensure-kvscales` — the stock checkpoints ship no KV scales and
   uncalibrated scale-1.0 is miscalibrated (deep-layer V amax ~132 vs the
-  ~1-24 range scale 1.0 assumes). The 3.6 profiles run **bf16 KV** (higher K/V
-  fidelity at the cost of KV bytes; the AITER bf16 LDS posture now comes from
+  ~1-24 range scale 1.0 assumes); under bf16 KV the calibrated scales are
+  inert. bf16 costs more K/V bytes than fp8 (higher K/V fidelity; the AITER bf16 LDS posture now comes from
   upstream #4868 plus the narrowed small-Q guard in
   `patches/aiter/unified-attention-gfx1201-tune.patch`), with a
   calibrated fp8 sidecar already on disk for 3.6-27b as the opt-in path when
@@ -207,9 +211,10 @@ restart anyway).
   (MTP4 on both Qwen3.6 profiles via `qwen3.6.env.common`). Qwen3.8-27B
   peaked at **MTP3** (its MTP head accepts drafts poorly past position 3 —
   bf16-KV sweep: MTP3 57.6, MTP2 56.0, MTP1 45.6, MTP4 49.2, no-MTP 32.0
-  tg32) but currently runs with spec decode **disabled** (10-03 operator
-  decision — `VLLM_SPEC_DECODE` empty, `VLLM_MAX_NUM_SEQS=4`; rollback to
-  MTP1 is a one-liner in `env/qwen3.8-27b.env`). DFlash2 was rejected
+  tg32) but runs **MTP1** live (re-enabled 2026-10-06 after the 10-03–10-06
+  spec-off window; 4-wide hold verified same day, acceptance 79–93% —
+  `benchmarks/2026-10-06_mtp1_c4_hold.md`; back to c2 with the 10-08 bf16
+  switch). DFlash2 was rejected
   after a 2026-08-22 depth A/B (decode win is short-context only, decays
   with depth) — see [`archive/DEADENDS.md`](archive/DEADENDS.md).
 
@@ -418,17 +423,18 @@ Key tuning decisions:
   acceptance, ~doubles decode). Qwen3.8-27B peaked at **MTP3** (its MTP head
   accepts drafts poorly past position 3, so more drafts waste compute —
   bf16-KV sweep: MTP3 57.6, MTP2 56.0, MTP1 45.6, MTP4 49.2, no-MTP 32.0
-  tg32) but runs MTP-off since the 09-27 experiment (rollback: MTP1
-  one-liner in `env/qwen3.8-27b.env`). **MTP4 is now enabled on 35B-A3B** (2026-08-24): the #47087 MoE
+  tg32) but runs **MTP1** live (10-06 re-enable; the 09-27–10-06 windows ran
+  MTP-off/MTP3). **MTP4 is now enabled on 35B-A3B** (2026-08-24): the #47087 MoE
   token-loop bug (fixed upstream by #51113 in v0.27.1) was re-tested clean on
   the v0.28.0 build and delivers a ~2x decode win (tg32 194.9 vs 87.8 MTP-off);
   the old "disabled" state is documented in [`archive/DEADENDS.md`](archive/DEADENDS.md).
-- **KV dtype split**: **fp8 (calibrated) on qwen3.8-27B**, **bf16 on the
-  3.6 profiles**. bf16 costs more K/V bytes than fp8; fp8 (with the
+- **KV dtype split**: **bf16 everywhere** (qwen3.8-27b back to bf16 with the
+  2026-10-08 operator decision — c2 with it; fp8 era 09-23–10-08 kept for the
+  ~2x KV headroom). bf16 costs more K/V bytes than fp8; fp8 (with the
   calibrated-copy scale fix) remains the option when context length is the
-  binding constraint, and a calibrated sidecar is already on disk for
-  3.6-27b. The 2026-08-22 quality A/B found fp8 (calibrated or scale-1.0)
-  indistinguishable from bf16 on PPL and long-context recall, so the split
+  binding constraint, and calibrated sidecars are already on disk (3.6-27b;
+  the qwen3.8-27b copy's scales are inert under bf16). The 2026-08-22 quality A/B found fp8 (calibrated or scale-1.0)
+  indistinguishable from bf16 on PPL and long-context recall, so the choice
   is about capacity headroom per profile, not measured quality; the prior
   "garbage" output was MTP token loops, not the KV dtype.
 - **Tuned dense w8a8 block-FP8 configs** (`fp8_configs/N=*,K=*,device_name=AMD_Radeon_R9700,...json`):
