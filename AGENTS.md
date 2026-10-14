@@ -147,27 +147,31 @@ that affect this GPU setup and model combo** before recommending a bump.
 # e37e51dd2 — full main snapshot, 466 commits past v0.31.0): contains #58021
 # (→ drops 58021-prefix-match-unit-single-group.patch) but NOT #55601
 # (3d6853b32 merged 10-07, after the rc0 tag; re-verified on main
-# 2026-10-11) — the v0.31.1 FINAL is the bump where the carried 58021 +
-# 55601 patches drop. In-scope rc0 content: #59536 (MRV2
+# 2026-10-11) — a v0.31.1+ FINAL is the bump where the carried 58021 +
+# 55601 patches drop (plus carried 52619 — see 2026-10-14 state below). In-scope rc0 content: #59536 (MRV2
 # GDN checkpoint metadata per cache group), #59759 (stale Mamba spec blocks
 # in prefill-checkpoint steps), #58457 (block-size validation hardening),
 # #59132 (new opt-in ROCM_SEGMENTED_ATTN backend — future A/B candidate);
 # #56531 is ngram-only (we run MTP, N/A); #59781 removed no VLLM_* envs;
 # #58997 drops mamba_cache_mode "all" (no profile passes it).
-# 2026-10-11 state: the v0.31.1 final is still UNTAGGED (latest tag =
-# rc0) and main is 272 commits past rc0 — #55601 (3d6853b32) and #52619
-# (medium-skinny W4A16 dispatch, our carried
-# 52619-rdna-w4a16-medium-skinny.patch) are now MERGED to main, so the
-# v0.31.1 final drops all three carried patches (58021 + 55601 + 52619).
-# New in-scope content since rc0: #60533 (hybrid Mamba prefix-cache
-# boundary fixes — see the #45238 entry), #55504 (GDN spec-decode
-# query-width bound), #59853 (Qwen3-VL/3.5/3.8 4x M-RoPE headroom drop —
-# bit-exact without YaRN, ~32 MiB/GPU win for Qwen3.8), #57560 (opt-in
-# AITER FlyDSL GDN prefill backend — gfx950-validated; future prefill A/B
-# candidate if gfx1201 support lands), #60736 (MRV2 int64 row-offset fix);
-# bump-time watch: #59447 (ROCm setup.py develop fail-fast build change),
-# #60381 (transformers 5.19). Next target:
-# v0.31.1 final, else v0.32 (watch #53479, #54076, #50409, #51599). MRV2
+# 2026-10-14 state: the v0.31.1 final is still UNTAGGED (latest final =
+# v0.31.0); v0.32.0rc0 tagged 2026-10-12 (fe341a53 — verified 2026-10-14
+# via ancestor checks to contain #55601, #58021, #60533, #55504, #59853,
+# #60736, #57560, #59759, #59536, #58457, #59132, #60381, #59447 and
+# #52619, our carried 52619-rdna-w4a16-medium-skinny.patch) — so either
+# final (v0.31.1 or v0.32) drops all three carried patches
+# (58021 + 55601 + 52619).
+# New in-scope content since rc0: #60533 (merged 2026-10-08, post-rc0 —
+# hybrid Mamba prefix-cache boundary fixes, see the #45238 entry), #55504
+# (GDN spec-decode query-width bound), #59853 (Qwen3-VL/3.5/3.8 4x M-RoPE
+# headroom drop — bit-exact without YaRN, ~32 MiB/GPU win for Qwen3.8),
+# #57560 (opt-in AITER FlyDSL GDN prefill backend — gfx950-validated;
+# future prefill A/B candidate if gfx1201 support lands), #60736 (MRV2
+# int64 row-offset fix); bump-time watch: #59447 (ROCm setup.py develop
+# fail-fast build change), #60381 (transformers 5.19), #58918 (Transformers
+# AOT→graph cache rework — see the #50891 entry for the carried-patch
+# rebase risk). Next target:
+# v0.31.1 final, else v0.32 final (watch #53479, #54076, #50409, #51599). MRV2
 # is the default for all our profiles (#53183).
 gh release list -R vllm-project/vllm --limit 8
 
@@ -222,7 +226,7 @@ auto-apply fixes.
 
 ```sh
 # Re-check watchlist status (open/closed/resolved) + any new labels:
-for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 50409 54163 55533 54713 55450 48007 57580 50891 55495 55497 53739 58407 58639 59933 59095 58882 59773 60008 60160 50551 60603 60760 57707 60911; do
+for n in 35288 47087 48375 52872 47602 51250 52520 45238 51562 51812 51837 40707 52527 52789 48815 52817 52959 51198 49125 53479 51571 54039 54360 54498 53504 53488 51599 54076 50409 54163 55533 54713 55450 48007 57580 50891 55495 55497 53739 58407 58639 61281 59095 58882 59773 60008 60160 50551 60603 60760 57707 60911; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -331,8 +335,9 @@ touches one of:
     no reviews, empty validation] — evaluated 2026-10-09: NOT carried, ~1900
     lines of unreviewed core scheduler/KV-manager + worker changes colliding
     with our `#50409`/`#55601`/`#48375` patches; monitor for merge, then take
-    via version bump), `#60533` (merged to main 2026-10-10, post-rc0 — in no
-    release: fixes inconsistent hybrid Mamba prefix-cache boundaries — the
+    via version bump), `#60533` (merged to main 2026-10-08, post-rc0 — in
+    v0.32.0rc0 (verified 2026-10-14), in no final release yet: fixes
+    inconsistent hybrid Mamba prefix-cache boundaries — the
     Mamba prompt checkpoint no longer double-applies the `P-1` cap and the
     EAGLE block drop, attention lookup may inspect the cached EAGLE proof
     beyond the final hit limit, and Mamba checkpoint calc/registration is
@@ -340,7 +345,15 @@ touches one of:
     NOT carried — unreviewed on our geometry and it lands in the same
     scheduler/KV territory as our carried `#48375`/`#50409`/`#55601`
     patches, so re-verify those against it on the bump; monitor for the
-    release that contains it). **When a real fix
+    final release that contains it),
+    `#61281` (NEW 2026-10-12, open, kimi author — GPU-independent reproducer:
+    the align prompt-boundary Mamba state is freed mid-request via three
+    paths (`remove_skipped_blocks` retiring the hashed boundary block, the
+    running-state swap, the CoW-copy free) and recycled by concurrent
+    prefills before the next turn arrives, plus LRU-order eviction at
+    request end — a registration fix alone (`#53479` family) will NOT
+    restore multi-turn hits until this eviction race is fixed; no fix PR
+    yet). **When a real fix
     merges**: prefer the version bump; carry a local patch only if no
     available release contains it. Related: `#52897` (priority-scheduling
     variant — N/A, we don't use priority), `#53749` (same family on two more
@@ -540,7 +553,12 @@ touches one of:
     an InitVar, never retained on the instance; verified hashes still
     collided before the explicit factor, DIFFER after, in-container).
     Drop when a pinned `VLLM_REF` keys the compile cache on the multimodal
-    config.
+    config. **Bump-time risk 2026-10-14**: `#58918` (merged to main
+    post-v0.32.0rc0 — replaces Transformers AOT caching with graph caching)
+    lands in the same compile-cache territory; expect a rebase conflict or
+    an obsolete patch on the v0.32 bump — re-verify the hash-collision
+    behavior (InitVar `limit_per_prompt` vs `normalize_value` factor)
+    before rebuilding.
   - `#55894` (2026-09-08, open): hybrid Mamba + MTP silently corrupts
     requests (0.2–1% of a mixed workload, up to 7% targeted) when a
     request's first decode step is scheduled alongside a long chunked
@@ -660,11 +678,12 @@ touches one of:
     both wait on main). PP half N/A (we run PP=1); stream-penalty half already
     mitigated (`GPU_MAX_HW_QUEUES=1` in compose.yaml). Monitor for a merged
     main-stream option.
-  - `#59933` (2026-10-04, open): RecoverSSM align commits the final SSM state
+  - `#59933` (2026-10-04): RecoverSSM align commits the final SSM state
     to an unwritten block at exact block multiples (floor vs ceil-1) — KDA/
-    GLM-5 + recoverssm kernels, downstream fork. N/A here
-    (`use_replayssm=False`); signal for the exact-multiple boundary class
-    alongside carried `#50409`.
+    GLM-5 + recoverssm kernels, downstream fork. **CLOSED 2026-10-12.**
+    N/A here (`use_replayssm=False`); stays as signal for the
+    exact-multiple boundary class alongside carried `#50409`. Removed
+    from the re-check loop.
   - `#59095` (feature): Prefix-LM support for `ROCM_ATTN`/`ROCM_UNIFIED_ATTN`
     backends. Monitor; only matters if adopted for a served workload.
   - `#58882` (feature): allow LBNHC/NHD layouts for `ROCM_AITER_UNIFIED_ATTN`
