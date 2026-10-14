@@ -1,5 +1,8 @@
 .env
 SYSTEM.md
+# local agent skills setup (per-machine, not to be committed)
+.agents/
+skills-lock.json
 # dashboard historical data (local bench runs, not to be committed)
 observability/history.jsonl
 observability/**/*.jsonl
