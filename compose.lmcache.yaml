@@ -1,0 +1,109 @@
+# LMCache MP-mode experiment overlay. Loaded ONLY by the `just lmcache-*`
+# recipes (`-f compose.yaml -f compose.lmcache.yaml`); live recipes never see
+# it, so the production `vllm` service is untouched.
+#
+# Topology (all on the compose default network):
+#   lmcache (CPU sidecar, prebuilt test image, `lmcache server`) <- request
+#     port 5555 + HTTP frontend 8080. vllm-lmcache-test reaches it as `lmcache`.
+#   vllm-lmcache-test (GPUs, same flags as live + align + LMCacheMPConnector)
+#     on HOST port 8180 — intentionally the live port, so every existing
+#     probe/bench works unchanged. The LIVE server must be DOWN (`just down`):
+#     both engines need the GPUs and the port.
+services:
+  lmcache:
+    profiles: ["lmcache"]
+    image: localhost/vllm-lmcache-test:latest
+    container_name: lmcache
+    # GPU DEVICE VISIBILITY IS REQUIRED (not compute): the negotiated
+    # lmcache_driven zero-copy path makes the SERVER open the engine's GPU IPC
+    # handles, which needs /dev/kfd + /dev/dri. Without this, register_kv_cache
+    # fails with "Device UUID ... not found in the discovered devices" and the
+    # engine workers die in register_kv_caches ( WorkerProc exception ->
+    # restart loop). Block mirrors x-amd-devices in compose.yaml (anchors do
+    # not cross compose files, so it is repeated verbatim).
+    devices:
+      - /dev/kfd:/dev/kfd
+      - /dev/dri:/dev/dri
+    group_add:
+      - "video"
+      - "${RENDER_GID:-992}"
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - label=disable
+    ipc: host
+    # L1 lives in CPU RAM: cap above LMCACHE_L1_SIZE_GB + server overhead.
+    # Host has ~42 GiB free while vLLM runs; 20 GiB L1 + headroom fits, but
+    # lower LMCACHE_L1_SIZE_GB first if the box grows other tenants.
+    mem_limit: 24g
+    ports:
+      - "${LMCACHE_PORT:-5555}:5555"
+      - "${LMCACHE_HTTP_PORT:-8080}:8080"
+    environment:
+      - PYTHONHASHSEED=${PYTHONHASHSEED:-0}
+    # H1 (2026-10-13): pre-init torch HIP contexts in-process before the server
+    # starts. The server runs StubCPUDevice and may never create a HIP context,
+    # which makes hipIpcOpenMemHandle fail with hipErrorInvalidDevicePointer at
+    # register_kv_cache. If this doesn't change the error, the failure is in
+    # LMCache's ROCm IPC path itself (gfx1201 immaturity), not init order.
+    entrypoint: ["python"]
+    command: ["-c", "import torch; torch.cuda.init(); print('sidecar cuda init, devices:', torch.cuda.device_count(), flush=True); import sys; sys.argv=['lmcache','server','--host','0.0.0.0','--port','5555','--chunk-size','${LMCACHE_CHUNK_SIZE:-832}','--separate-object-groups','--l1-size-gb','${LMCACHE_L1_SIZE_GB:-20}','--eviction-policy','LRU']; from lmcache.cli.main import main; main()"]
+
+  vllm-lmcache-test:
+    profiles: ["lmcache"]
+    extends:
+      file: compose.yaml
+      service: vllm
+    container_name: vllm-lmcache-test
+    image: localhost/vllm-lmcache-test:latest
+    ports:
+      - "8180:8180"
+    env_file:
+      - env/2xr9700.vllm.common
+      - env/aiter-unified-attention.env
+      - env/qwen3.6.env.common
+      - ./env/${MODEL_PROFILE}.env
+      - env/lmcache.env
+    environment:
+      - PYTHONHASHSEED=${PYTHONHASHSEED:-0}
+      # Enables POST /reset_prefix_cache (local-only reset for the
+      # store -> reset-local -> retrieve correctness gate in lmcache-verify).
+      - VLLM_SERVER_DEV_MODE=1
+    depends_on:
+      - lmcache
+    # Mirror of the live command + exactly three experiment deltas:
+    #  --mamba-cache-mode align (mandatory for GDN; live gets it by default),
+    #  --max-num-batched-tokens from LMCACHE_MAX_BATCHED_TOKENS (in [N, 2N)),
+    #  --kv-transfer-config (LMCache-shipped MP connector + sidecar address).
+    # NOTE: mp_transfer_mode stays auto (=lmcache_driven). engine_driven was
+    # tried 2026-10-13 and hard-fails at worker init on multi-group hybrids:
+    # "engine-driven transfer does not support multiple KV transfer groups".
+    # Everything else (MTP1, max-num-seqs 2, UA backend, no-async) is identical
+    # to live so decode/acceptance comparisons are apples-to-apples.
+    command: >
+      ${VLLM_MODEL:?set in env/$MODEL_PROFILE.env; start the server with `just up`}
+      --tokenizer ${VLLM_TOKENIZER:?set in env/$MODEL_PROFILE.env}
+      ${VLLM_MODEL_REVISION:+--revision "${VLLM_MODEL_REVISION}"}
+      ${VLLM_HF_CONFIG_PATH:+--hf-config-path "${VLLM_HF_CONFIG_PATH}"}
+      --served-model-name ${VLLM_SERVED_NAME:?set in env/$MODEL_PROFILE.env}
+      --limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'
+      --chat-template /app/chat-templates/qwen.jinja
+      ${VLLM_TOOL_CHOICE:-}
+      --max-model-len ${VLLM_MAX_MODEL_LEN:-131072}
+      --max-num-batched-tokens ${LMCACHE_MAX_BATCHED_TOKENS:-1663}
+      --mamba-cache-mode align
+      --enable-prefix-caching
+      ${PREFIX_CACHE_RETENTION_INTERVAL:+--prefix-cache-retention-interval ${PREFIX_CACHE_RETENTION_INTERVAL}}
+      --override-generation-config '{"temperature": 1.0, "top_p": 0.95, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0, "repetition_penalty": 1.0}'
+      --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.95}
+      --host 0.0.0.0
+      --port 8180
+      --dtype auto
+      --max-num-seqs ${VLLM_MAX_NUM_SEQS:-2}
+      --kv-cache-dtype ${VLLM_KV_CACHE_DTYPE:-bfloat16}
+      -tp ${VLLM_TP:-2}
+      --attention-backend ROCM_AITER_UNIFIED_ATTN
+      ${VLLM_SPEC_DECODE:+--speculative-config '${VLLM_SPEC_DECODE}'}
+      ${VLLM_SPEC_DECODE:+--no-async-scheduling}
+      ${VLLM_PROFILER_ARGS:-}
+      --kv-transfer-config '{"kv_connector":"LMCacheMPConnector","kv_connector_module_path":"lmcache.integration.vllm.lmcache_mp_connector","kv_role":"kv_both","kv_connector_extra_config":{"lmcache.mp.host":"lmcache","lmcache.mp.port":5555}}'

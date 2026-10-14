@@ -1,0 +1,33 @@
+# LMCache experiment engine image: live vLLM fullbuild + LMCache from source.
+# Source build is REQUIRED: no gfx1201 wheel exists (ROCm wheels target
+# gfx942/gfx950 on torch 2.11/ROCm 7.2; this stack is torch 2.13/ROCm 10.1).
+# Built by `just lmcache-build` (LMCACHE_REF from env/lmcache.env); never used
+# by the live `vllm` service. Same image also runs the `lmcache` sidecar
+# (CPU-only `lmcache server`, no GPU devices attached there).
+ARG LMCACHE_REF=dev
+FROM localhost/vllm-fullbuild:latest
+ARG LMCACHE_REF
+# HIP toolchain first (same rationale as Dockerfile.fullbuild: the venv
+# TheRock SDK shim cannot find its device library on this stream).
+ENV PATH=/opt/rocm/bin:/opt/venv/bin:/opt/rocm/llvm/bin:${PATH} \
+    PYTORCH_ROCM_ARCH=gfx1201 \
+    BUILD_WITH_HIP=1 \
+    TORCH_DONT_CHECK_COMPILER_ABI=1 \
+    CXX=hipcc
+# Build-system deps for `pip install --no-build-isolation` (which skips
+# pyproject's build-system.requires). Mirror of upstream requirements/build.txt
+# at the pinned LMCACHE_REF — re-check on any ref bump. ninja/setuptools/
+# setuptools-scm/wheel/torch already in the base image; grpcio* is what's
+# missing (protoc codegen for the ZMQ/gRPC transport protos).
+# Mooncake (an lmcache runtime dep) dlopens RDMA libibverbs at import; the
+# ROCm base image doesn't ship it. Needed at RUNTIME too (the connector
+# import chain hits mooncake_te_impl on engine start), not just for the check.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libibverbs1 \
+    && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install "grpcio==1.78.0" "grpcio-tools==1.78.0"
+RUN --mount=type=cache,target=/root/.cache/pip \
+    python -m pip install --no-build-isolation \
+        "git+https://github.com/LMCache/LMCache.git@${LMCACHE_REF}" \
+    && python -c "import lmcache.cuda_ops, lmcache.integration.vllm.lmcache_mp_connector; print('lmcache ok')"

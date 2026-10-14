@@ -1,0 +1,39 @@
+# syntax=docker/dockerfile:1
+
+# Stage 1: Install dependencies
+FROM node:22-slim AS deps
+WORKDIR /app
+COPY --link package.json package-lock.json ./
+# Private registries: docker buildx build --secret id=npmrc,src="$HOME/.npmrc" .
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
+    npm ci
+
+# Stage 2: Development (used by compose with target: dev)
+FROM deps AS dev
+COPY --link . .
+CMD ["npm", "run", "dev"]
+
+# Stage 3: Build
+FROM deps AS build
+COPY --link . .
+RUN npm run build
+
+# Stage 4: Production
+FROM node:22-slim AS production
+WORKDIR /app
+
+# Create non-root user
+RUN groupadd --system appgroup && useradd --system --gid appgroup appuser
+
+# Copy only what is needed to run
+COPY --from=build /app/package.json /app/package-lock.json ./
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc,required=false \
+    npm ci --omit=dev
+COPY --from=build /app/dist ./dist
+
+USER appuser
+
+EXPOSE 3000
+
+ENTRYPOINT ["node"]
+CMD ["dist/server.js"]

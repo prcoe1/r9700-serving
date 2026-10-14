@@ -1,0 +1,6 @@
+interface:
+  display_name: Docker Project Foundations
+  short_description: Guidance for initializing and structuring a Dockerized project.
+  default_prompt: Use this skill when setting up or Dockerizing a project from scratch.
+policy:
+  allow_implicit_invocation: true

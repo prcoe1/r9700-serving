@@ -19,6 +19,10 @@ export MODEL_PROFILE := model
 # listed explicitly.
 compose := runtime + " compose --env-file .env --env-file env/2xr9700.vllm.common --env-file env/aiter-unified-attention.env --env-file env/qwen3.6.env.common --env-file env/" + model + ".env"
 
+# LMCache experiment overlay: same stack + overlay file + lmcache.env last
+# (its values win). Only used by the lmcache-* recipes below.
+lmcache_compose := runtime + " compose -f compose.yaml -f compose.lmcache.yaml --env-file .env --env-file env/2xr9700.vllm.common --env-file env/aiter-unified-attention.env --env-file env/qwen3.6.env.common --env-file env/" + model + ".env --env-file env/lmcache.env"
+
 _default:
     @just --list
 
@@ -282,3 +286,90 @@ down:
     @{{compose}} down
     -@{{compose}} --profile dashboard stop dashboard 2>/dev/null || true
     -@{{compose}} --profile dashboard rm -f dashboard 2>/dev/null || true
+
+# --- LMCache MP-mode experiment (qwen3.8-27b hybrid) ---
+# Gate 0: read the unified block size N from the LIVE server logs and reconcile
+# env/lmcache.env (CHUNK_SIZE=N, MAX_BATCHED_TOKENS=2N-1) before building.
+lmcache-probe-N:
+    # No --tail: the N line is printed once at engine startup, i.e. at the
+    # OLDEST end of the logs; a tail window misses it on long-lived servers.
+    # The trailing `grep .` fails closed (tail exits 0 even on empty input).
+    @{{compose}} logs --no-log-prefix vllm 2>/dev/null \
+        | grep -i "Setting attention block size" | tail -1 | grep . || \
+        (echo "N line not found — is the live server up? (just up, wait, retry)" >&2; exit 1)
+
+# Validate the overlay config (does not start anything).
+lmcache-check:
+    @{{lmcache_compose}} --profile lmcache config --quiet
+    @echo "LMCache overlay config OK."
+
+# Build the experiment engine image (live fullbuild + LMCache from source).
+# Highest-risk step: fails here (HIP compile) => stop, nothing else is valid.
+lmcache-build: lmcache-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ref="$(grep -m1 '^LMCACHE_REF=' env/lmcache.env | cut -d= -f2-)"
+    printf 'Building test image with LMCACHE_REF=%s ...\n' "$ref"
+    {{runtime}} build -f Dockerfile.lmcache-test \
+        --build-arg "LMCACHE_REF=$ref" \
+        -t localhost/vllm-lmcache-test:latest .
+
+# Start sidecar + test engine on host 8180. LIVE MUST BE DOWN (GPUs + port).
+lmcache-up: lmcache-check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ -n "$({{runtime}} ps -q --filter 'name=^vllm$')" ]; then
+        printf 'error: live vllm container is running. Run `just down` first.\n' >&2
+        exit 1
+    fi
+    # Bare `up -d` would ALSO start the base `vllm` service (it has no profile,
+    # and profiles only ADD services) — a rogue live engine on the same GPUs +
+    # port. Always name the two experiment services explicitly.
+    {{lmcache_compose}} --profile lmcache up -d lmcache vllm-lmcache-test
+    printf 'Waiting for test engine on :8180 ...\n'
+    ready=0
+    for _ in $(seq 1 300); do
+        if curl -sf --max-time 3 http://localhost:8180/health > /dev/null 2>&1; then
+            ready=1
+            break
+        fi
+        sleep 2
+    done
+    if [ "$ready" -ne 1 ]; then
+        printf 'error: test engine not ready in 600s. Run `just lmcache-logs`.\n' >&2
+        exit 1
+    fi
+    printf 'Test engine ready. Unified block size (must equal LMCACHE_CHUNK_SIZE):\n'
+    {{lmcache_compose}} logs --no-log-prefix --tail 20000 vllm-lmcache-test 2>/dev/null \
+        | grep -i "Setting attention block size" | tail -1 || true
+
+# Correctness + hit-rate gates on the test engine (:8180).
+# 1) store run 2) local-only reset (LMCache external preserved) 3) retrieve run
+# 4) NaN/tool/thinkoff no-regression probes. Reject on zero cross-restart
+# hits or any probe FAIL (see plan: score-level equivalence is not enough
+# for tool-calling traffic).
+lmcache-verify:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    curl -sf --max-time 3 http://localhost:8180/health > /dev/null
+    printf '=== 1. store run (cold) ===\n'
+    python3 benchmarks/prefix_cache_probe.py qwen3.8-27b 4
+    printf '=== 2. local-only prefix-cache reset (external LMCache kept) ===\n'
+    curl -sf -X POST http://localhost:8180/reset_prefix_cache
+    printf '\n=== 3. retrieve run (must show external hits) ===\n'
+    python3 benchmarks/prefix_cache_probe.py qwen3.8-27b 4
+    printf '=== 4. no-regression probes ===\n'
+    python3 benchmarks/nan_checkpoint_probe.py qwen3.8-27b
+    python3 benchmarks/tool_truncation_probe.py
+    python3 benchmarks/thinkoff_probe.py
+    printf 'VERIFY COMPLETE. Remaining manual gate: `just bench` parity\n'
+    printf '(pp2048/tg + MTP1 acceptance in the 79-93%% band) + cross-restart\n'
+    printf 'retrieve (lmcache-down, lmcache-up, re-run step 3 only).\n'
+
+lmcache-logs:
+    @{{lmcache_compose}} --profile lmcache logs -f lmcache vllm-lmcache-test
+
+lmcache-down:
+    -@{{lmcache_compose}} --profile lmcache stop lmcache vllm-lmcache-test 2>/dev/null || true
+    -@{{lmcache_compose}} --profile lmcache rm -f lmcache vllm-lmcache-test 2>/dev/null || true
+    @echo "LMCache experiment stopped (live untouched; restart with \`just up\`)."

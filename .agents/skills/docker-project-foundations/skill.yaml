@@ -1,0 +1,21 @@
+schema: v1
+id: docker-project-foundations
+version: 0.2.0
+title: Docker Project Foundations
+description: Guidance for initializing and structuring a Dockerized project.
+owns:
+  - initial-docker-setup
+  - project-layout
+  - dockerized-dev-dependencies
+use_when:
+  - The project does not yet have a Docker setup and needs an initial scaffold.
+  - The user wants to Dockerize a project from scratch or replace an incomplete setup.
+  - The task is to add baseline local development dependencies as Compose services.
+do_not_use_when:
+  - The main task is optimizing or hardening an existing Dockerfile.
+  - The main task is editing or debugging an existing Compose stack.
+  - The project already has a mature Docker setup and only needs targeted changes.
+delegates_to:
+  - docker-build-strategies
+  - docker-compose-patterns
+  - docker-destructive-guardrails
