@@ -42,7 +42,7 @@ cd r9700-serving
 cp .env.example .env  # Build version pins + default model profile (untracked)
 just build       # Build localhost/vllm-fullbuild:latest
 just check       # Validate the compose config for the selected profile
-just up          # Start vLLM in the background (default: Qwen3.8-27B-FP8) + dashboard on :8083
+just up          # Start vLLM in the background (default: Qwen3.8-27B, MTP1, bf16 KV) + dashboard on :8083
 just --set model qwen3.6-27b up     # Switch to Qwen3.6-27B-FP8 (dense)
 just --set model qwen3.6-35b-a3b up  # Switch to MoE 35B-A3B model
 just logs        # Follow service logs
@@ -110,15 +110,14 @@ Note rc0 runs transformers 5.19.0 (bound `< 5.20.0`); the v0.31.0 image ran
 `amd-aiter==0.1.23` via `--extra-index-url https://rocm.frameworks.amd.com/whl-multi-arch/vllm/`.
 
 The default (active) model is `Qwen/Qwen3.8-27B-FP8` (`qwen3.8-27b`, the
-newest dense 27B hybrid linear/full-attention architecture, MTP trained,
+newest 27B dense (non-MoE) hybrid linear/full-attention architecture, MTP trained,
 vision). Alternatives: `Qwen/Qwen3.6-27B-FP8` (`qwen3.6-27b`, dense),
 `Qwen/Qwen3.6-35B-A3B-FP8` (`qwen3.6-35b-a3b`, 35B total / 3B active MoE),
-and `cyankiwi/Qwen3.8-27B-AWQ-BF16-INT4` (`qwen3.8-27b`, compressed-tensors
-W4A16 weight-only trial — decode-optimized alternative, MTP3 via a local
-HF-config snapshot (upstream `#53387` workaround) with calibrated fp8 KV
-when spec decode is on (currently off in the trial profile; live is MTP1
-since 2026-10-06 — enable for the trial with the rollback one-liner
-in `env/qwen3.8-27b-awq.env`);
+and `cyankiwi/Qwen3.8-27B-AWQ-BF16-INT4` (`qwen3.8-27b-awq`,
+compressed-tensors W4A16 weight-only trial — decode-optimized alternative;
+MTP3 needs the local HF-config snapshot (upstream `#53387` hatch) plus
+calibrated fp8 KV, currently spec-off in the trial profile — enable with the
+rollback one-liner in `env/qwen3.8-27b-awq.env`);
 earlier Quark trial in
 [`benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`](benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md)).
 Model selection is controlled by `MODEL_PROFILE` in `.env` — override inline
@@ -131,9 +130,8 @@ Runtime environment is split across files:
 - `env/qwen3.6-35b-a3b.env` — MoE model config (path, tokenizer,
   `--max-num-batched-tokens 4096` cap)
 - `env/qwen3.6-27b.env` — dense 27B model config
-- `env/qwen3.8-27b.env` — Qwen3.8-27B-FP8 dense model config (same
-  architecture as 3.6-27B, so it shares the 3.6 common settings and tuned
-  per-shape fp8 GEMM configs)
+- `env/qwen3.8-27b.env` — Qwen3.8-27B-FP8 hybrid-GDN model config (shares
+  the 3.6 common settings and tuned per-shape fp8 GEMM configs)
 - `env/qwen3.8-27b-awq.env` — AWQ-INT4 trial profile (same settings as
   qwen3.8-27b, fp8 KV with calibrated scales, MTP3 via the HF-config snapshot);
   see the trial doc above
@@ -178,11 +176,11 @@ restart anyway).
   required for the template's `reasoning`/`content` split.
 - **`--limit-mm-per-prompt '{"image": 99, "audio": 0, "video": 0}'`**: up to
   99 images per prompt, audio/video disabled. Previously capped at 1 to block
-  the 2+-large-images engine deadlock on these GDN hybrids (upstream #40707,
-  see AGENTS.md watchlist): with 2+ large images the align block-split
-  collapses to 0, the request hangs forever, and the engine never recovers.
-  Fixed in every release from v0.28.0 by upstream #51603 (in the v0.31.0
-  pin) — the carried #40709 local patch was dropped 2026-10-09 after a clean
+  the 2+-large-images engine deadlock on these GDN hybrids (upstream #40707:
+  with 2+ large images the align block-split collapses to 0, the request
+  hangs forever, and the engine never recovers).
+  Fixed in every release from v0.28.0 by upstream #51603 (in-pin since
+  v0.31.0) — the carried #40709 local patch was dropped 2026-10-09 after a clean
   no-patch `benchmarks/multi_image_probe.py` run (regression guard: the
   probe, kept in `benchmarks/`).
 - **`--override-generation-config`**: server-side sampling defaults
@@ -194,24 +192,23 @@ restart anyway).
   **`-tp 2`**, **`--gpu-memory-utilization 0.95`** (`VLLM_GPU_MEM_UTIL`,
   single-tenant default; lower to 0.92 when a GPU co-tenant such as whisper.cpp
   is active so it keeps ~2-3 GiB of VRAM headroom), **`--max-num-seqs`**
-  (compose default 2 — also the boot guard: v0.31.0rc3 hard-fails engine
+  (compose default 2 — also the boot guard: v0.31.0rc3+ hard-fails engine
   init when max_num_seqs exceeds the Mamba cache blocks, 249 here vs the
   256 vLLM default; qwen3.8-27b stays at 2 — bf16 KV + c2 since the
   2026-10-08 operator decision. The 2026-10-06 4-wide hold (acceptance
   79–93%, no garbling) stands as evidence for a future raise at K=1 only,
-  see `benchmarks/2026-10-06_mtp1_c4_hold.md).
+  see `benchmarks/2026-10-06_mtp1_c4_hold.md`).
 - **`--kv-cache-dtype`** (`VLLM_KV_CACHE_DTYPE`): **bf16 everywhere**
   (qwen3.8-27b back to the shared default since the 2026-10-08 operator
-  decision — c2 with it; fp8 era 09-23–10-08 kept for the ~2x KV headroom),
-  served from the calibrated local copy that `just up`
-  builds via `ensure-kvscales` — the stock checkpoints ship no KV scales and
+  decision — c2 with it; fp8 era 09-23–10-08 kept for the ~2x KV headroom).
+  Served from the local `-kvscales` copy that `just up` builds via
+  `ensure-kvscales`: the stock checkpoints ship no KV scales, and
   uncalibrated scale-1.0 is miscalibrated (deep-layer V amax ~132 vs the
   ~1-24 range scale 1.0 assumes); under bf16 KV the calibrated scales are
-  inert. bf16 costs more K/V bytes than fp8 (higher K/V fidelity; the AITER bf16 LDS posture now comes from
-  upstream #4868 plus the narrowed small-Q guard in
-  `patches/aiter/unified-attention-gfx1201-tune.patch`), with a
-  calibrated fp8 sidecar already on disk for 3.6-27b as the opt-in path when
-  context length is the binding constraint. Calibration history:
+  inert, and they stay on disk if fp8 becomes the binding constraint again
+  (sidecar already present for 3.6-27b). The AITER bf16 LDS posture comes
+  from upstream #4868 plus the narrowed small-Q guard in
+  `patches/aiter/unified-attention-gfx1201-tune.patch`. Calibration history:
   [`benchmarks/2026-08-22_kv_calibration_quality_ab.md`](benchmarks/2026-08-22_kv_calibration_quality_ab.md).
 - **`--attention-backend ROCM_AITER_UNIFIED_ATTN`** + `--speculative-config`
   (MTP4 on both Qwen3.6 profiles via `qwen3.6.env.common`). Qwen3.8-27B
@@ -286,13 +283,15 @@ AGENTS.md §4).
   `thinking_enabled` from the same kwargs.
 
 - **Skip `libtorch_cpu` RTLD_GLOBAL promotion when `rocm_sdk` is installed**
-  (`56190-rocm-skip-libtorch-global-promotion.patch`, no upstream fix): the
-  v0.30.0 profiler fix preloads `libtorch_cpu.so` globally at `import vllm`,
-  but TheRock's static LLVM then double-registers `cl::opt` options
-  (`spirv-expand-step` → LLVM ERROR → abort, exit 139, crash-loop before
-  logging). Costs only unused kineto GPU-profiling. Version-locked to
-  v0.32.0rc0. If startup crash-loops with no logs on any bump, check
-  `import vllm` in a throwaway container first.
+  (`56190-rocm-skip-libtorch-global-promotion.patch`, upstream fix PR
+  #60911 open): the v0.30.0 profiler fix preloads `libtorch_cpu.so`
+  globally at `import vllm`, but TheRock's static LLVM then
+  double-registers `cl::opt` options (`spirv-expand-step` → LLVM ERROR →
+  abort, exit 139, crash-loop before logging). Costs only unused kineto
+  GPU-profiling. Version-locked to v0.32.0rc0. Drop when a pinned
+  `VLLM_REF` contains #60911 (or otherwise guards #56190). If startup
+  crash-loops with no logs on any bump, check `import vllm` in a throwaway
+  container first.
 
 - **RDNA4 FlyDSL block-FP8 GEMM** (`56005-rdna4-fp8-flydsl-gemm.patch`, not in
   v0.32.0rc0): vLLM-owned FlyDSL WMMA kernel family replacing the Triton
@@ -311,12 +310,11 @@ AGENTS.md §4).
 - **Stop mamba align prefill at the replay boundary**
   (`50409-mamba-replay-boundary-chunk-stop.patch`, open, in no tag): exact
   block-multiple prompts cache their only Mamba state at `num_tokens`, which
-  `get_computed_blocks` caps below → 0-token Mamba hit. **Measured inert
-  here on fp8/1600 geometry** (`max_num_batched_tokens=1024` < 1600 block — the replay stop always
-  coincides with existing stops). **Caveat 2026-10-12**: live is bf16 KV
-  (block 832) since 2026-10-08, so the chunk cap now exceeds the block —
-  inertness needs re-measurement on 832 geometry; patch stays carried
-  (13 lines, binds correctly either way). Drop when a pinned `VLLM_REF`
+  `get_computed_blocks` caps below → 0-token Mamba hit. **Caveat**: the old
+  inertness evidence was fp8/1600 geometry (`max_num_batched_tokens=1024` <
+  1600 block); live is bf16 KV (block 832) since 2026-10-08, so re-measure
+  on 832 geometry (exact-multiple 832/1664/2496 repeat ladder); patch stays
+  carried (binds correctly either way). Drop when a pinned `VLLM_REF`
   contains the merge.
 
 - **Key the AOT compile cache on `limit_mm_per_prompt`**
@@ -326,7 +324,9 @@ AGENTS.md §4).
   Own fix: keys the folded `multimodal_config.limit_per_prompt` explicitly
   (dropping the ignore entry alone is a silent no-op — caps arrive as an
   InitVar). Behavior-neutral here (all runs share cap 99). Drop when a pinned
-  `VLLM_REF` keys the compile cache on the multimodal config.
+  `VLLM_REF` keys the compile cache on the multimodal config. Bump-time
+  risk: `#58918` (in-pin since rc0 — Transformers AOT→graph-cache rework)
+  lands in the same territory; re-verify the hash behavior before rebuilding.
 
 ### AITER source-build patches (applied at image build time)
 
@@ -479,8 +479,8 @@ live profile runs **MTP1** spec decode (bf16 KV since 2026-10-08, 131K context, 
 4-wide hold verified 2026-10-06); MTP3/MTP1 experiment rows below are the
 10-01/10-02 trials (rollback: one line in `env/qwen3.8-27b.env`).
 MTP profiles also pass `--no-async-scheduling` (vLLM turns async on by
-default for MTP — the open `#51571` accepted-count race + the
-`#54039`/`#32275` ROCm-CI hang combination). Full methodology, per-run
+default for MTP — the open `#51571` accepted-count race, same combination
+as the `#54039`/`#32275` ROCm-CI question). Full methodology, per-run
 files, and superseded rows: [`BENCHMARKS.md`](BENCHMARKS.md) and
 [`archive/`](archive/).
 
@@ -512,16 +512,15 @@ the server), so a config change never silently invalidates the test grid:
   (e.g. `[0 … 65536, 125952]` at 131072); logs to
   `observability/depth_history.jsonl`.
 - `just bench-conc` — concurrency ladder covers `1..VLLM_MAX_NUM_SEQS`
-  (powers of two plus the max: `[1, 2, 4]` on the live qwen3.8-27b profile,
-  `[1, 2]` elsewhere via the compose default) over the depth ladder; logs to
-  `observability/conc_history.jsonl`.
+  (powers of two plus the max: `[1, 2]` on all current profiles) over the
+  depth ladder; logs to `observability/conc_history.jsonl`.
 - `benchmarks/conc_itl_probe.py` — the prefill-stall probe fills
   `max_num_seqs − 1` victim slots plus one big-prefill bully, with the big
   prompt capped to fit under `VLLM_MAX_MODEL_LEN`.
 
 The dashboard's depth/conc sweep buttons follow the same rules (ladder from
-its `VLLM_MAX_MODEL_LEN` env, concurrency from `VLLM_MAX_NUM_SEQS` (4 on the
-live profile, compose-default 2 elsewhere). All
+its `VLLM_MAX_MODEL_LEN` env, concurrency from `VLLM_MAX_NUM_SEQS` (2 on all
+current profiles)). All
 three accept `--dry-run` (sweeps) or explicit overrides (`--depth`,
 `--levels`, probe argv) when a fixed grid is wanted instead.
 
@@ -575,7 +574,7 @@ Backend helpers have unit tests: `uv run --with "fastapi==0.115.*" --with "httpx
 
 **Depth sweep** — `full 0–200K corpus (pp2048/tg1024, TTFT in table) — est. 20min` (`observability/depth_history.jsonl`, limit 20, `POST /api/depth`, timeout 3600s). Runs `llama-benchy --depth 0 4096 8192 16384 32768 65536 128000 200000 --tg 1024 --no-cache --runs 2`. Chart + table show latest sweep; history rows collapsed with per-run `download results`/`modify`.
 
-**Concurrency sweep** — `same depths 0–200K at max concurrency (x parallel, pp2048/tg1024) — est. 40min` (`observability/conc_history.jsonl`, limit 20, `POST /api/conc`, timeout 3600s). Same depths but with `--concurrency max_num_seqs` (4 on the live qwen3.8-27b profile, 2 elsewhere) + `--no-cache --runs 2`. Same download/modify UX.
+**Concurrency sweep** — `same depths 0–200K at max concurrency (x parallel, pp2048/tg1024) — est. 40min` (`observability/conc_history.jsonl`, limit 20, `POST /api/conc`, timeout 3600s). Same depths but with `--concurrency max_num_seqs` (2 on all current profiles) + `--no-cache --runs 2`. Same download/modify UX.
 
 Empty sweeps minimise to header+buttons (chart+table hidden, `minimised` class) so the page stays compact before first run. `Clear data` (red) wipes each history file; `Cancel` kills the sweep's whole process group (uvx *and* grandchildren — runs use `start_new_session` so nothing survives to keep hammering vLLM). All bench endpoints are `409` if another bench is running.
 
