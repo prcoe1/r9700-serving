@@ -18,6 +18,8 @@ Construction-site hunk unchanged (BatchDescriptor direct construction and
 uniform_tok_count/ubatch_slices still present).
 Re-verified `git apply` clean on VLLM_REF=v0.31.0, 2026-10-06
 (rc3's #58411 touches model_runner.py elsewhere; port hunk unaffected).
+Re-verified `git apply` clean on VLLM_REF=v0.32.0rc0, 2026-10-14
+(body unchanged — call-site context intact at rc0).
 ---
  vllm/v1/worker/gpu/model_runner.py | 10 ++++++++--
  1 file changed, 8 insertions(+), 2 deletions(-)

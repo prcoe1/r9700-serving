@@ -77,7 +77,7 @@ host render group gid for `/dev/dri` access — check with `getent group render`
 |:-------------|:--------|
 | ROCm         | 10.1.0 (`rocm/dev-ubuntu-24.04:10.1.0-full`, Python 3.12) |
 | PyTorch      | 2.13.0+rocm10.1.0 (`stable.repo.amd.com/whl-next`, `torch[device-gfx1201]`) |
-| vLLM         | 0.31.0 (+ carried #58021 — verified NOT in the final tag, behavior-neutral here) |
+| vLLM         | 0.32.0rc0 |
 | AITER        | v0.1.25 |
 | Flash Attention | @ 1cc7ff67 (source; official guide uses `flash-attn==2.8.3` wheel) |
 
@@ -85,7 +85,7 @@ ROCm 10.1 is the TheRock 10.1 stream (successor to the 10.0 / 7.9/7.13/7.14 prev
 production 7.2.x line lacks RDNA4/`gfx1201` support. AITER `v0.1.25` carries
 the RDNA unified-attention LDS guard (#4868), the UA config-tree
 tuning tables (incl. upstream's gfx1201 UA-2D tune #5790), and the #3698
-V-mask fix; vLLM 0.31.0 carries the hybrid prefix-cache family
+V-mask fix; vLLM 0.32.0rc0 carries the hybrid prefix-cache family
 (#54713, #55450, #55390, #58368, #59146, #59175), the draft-backend override
 (#54826), the trailing-block-drop opt-out (#53388), the last-block replay
 (#53945), GDN warmup (#54251), W4A16 packed zero-points (#54965), multimodal
@@ -93,12 +93,18 @@ prefix-cache worker paths (#54994), incremental multimodal block hashing
 (#51694), source-tagged prefix-cache extra keys (#51899), the GDN
 stateless-chunk fix (#51565), the MRV2 padded-tail fix (#58434),
 padded-tail Mamba state (#55178), and the Quark W4A16 loader (#48606) — all formerly carried as local
-patches, all dropped on the v0.31 bump (see AGENTS.md §4).
-Post-rc3 #58021 still rides as a local patch (source-only,
-behavior-neutral — no profile passes `--prefix-match-unit`; verified NOT in
-the v0.31.0 final tag, 2026-10-06 — see AGENTS.md "Checking for Updates").
-Note the final pins `transformers < 5.18.0` (#59614), so the rebuilt image
-runs transformers 5.17.x where the rc3 image ran 5.18.0. Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2.13.0+rocm10.1.0`
+patches, all dropped on the v0.31 bump (see AGENTS.md §4) — plus the
+v0.31.1rc0/v0.32.0rc0 wave: the prefix-match-unit guard (#58021), the
+mamba-align resume seed (#55601), medium-skinny W4A16 dispatch (#52619),
+GDN prefill checkpoint metadata (#59536), stale Mamba spec-block
+retirement (#59759), block-size validation (#58457), the opt-in
+ROCM_SEGMENTED_ATTN backend (#59132), hybrid Mamba prefix-boundary fixes
+(#60533), the GDN spec-decode query-width bound (#55504), the 4x M-RoPE
+headroom drop (#59853), the MRV2 int64 row-offset fix (#60736), and the
+transformers 5.19 bump (#60381) — the three carried patches they replace
+(58021 + 55601 + 52619) were dropped on this bump.
+Note rc0 runs transformers 5.19.0 (bound `< 5.20.0`); the v0.31.0 image ran
+5.17.x under the old `< 5.18.0` pin (#59614). Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2.13.0+rocm10.1.0`
 `torchvision[device-gfx1201]==0.28.0+rocm10.1.0` `torchaudio==2.11.0+rocm10.1.0` via
 `--index-url https://stable.repo.amd.com/rocm/whl-next/` and `flash-attn==2.8.3`
 `amd-aiter==0.1.23` via `--extra-index-url https://rocm.frameworks.amd.com/whl-multi-arch/vllm/`.
@@ -225,8 +231,10 @@ Version-locked patches applied at runtime by read-only bind-mounts in
 the pinned dependency.
 
 - **Tolerate empty `tools` arrays** (`patches/vllm/protocol.py`, overlay of
-  upstream at `VLLM_REF` v0.31.0 — base verified byte-identical on the final
-  (only the tolerance hunk differs); rc2 reworked
+  upstream at `VLLM_REF` v0.32.0rc0 — base is rc0's file plus the tolerance
+  hunk only (verified by diff); the v0.31.0 overlay broke on rc0 because rc0
+  removed `vllm/entrypoints/chat_utils.py`, which the old overlay imported —
+  crash-loop at `import vllm` until refreshed (2026-10-14). Upstream reworked
   sampling-params resolution (user → server default → OpenAI default) and
   `presence/frequency_penalty` None-defaults (#50769): some clients send `{"tools": [], "tool_choice":
   "none"}`, which upstream rejects with a 400. The overlay treats `tools: []`
@@ -235,7 +243,7 @@ the pinned dependency.
 
 ### Source-build patches (applied at image build time)
 
-Local backports of upstream fixes not in `VLLM_REF` v0.31.0, applied by
+Local backports of upstream fixes not in `VLLM_REF` v0.32.0rc0, applied by
 `Dockerfile.fullbuild` from `patches/vllm/*.patch` (mirrors the aiter patch
 loop). Re-verify each patch applies cleanly on the new ref when bumping
 `VLLM_REF` — and drop any whose fix has since landed (see
@@ -246,27 +254,7 @@ AGENTS.md §4).
   prefix caching on hybrid GDN can leave the final matched page holding
   recurrent state written over rejected draft positions — silent corruption
   on every later request sharing the prefix (#43559, #50188). Lowers the
-  cache-hit search ceiling by one page. Version-locked to v0.31.0.
-
-- **Seed align-mode Mamba `state_idx` in mamba blocks**
-  (`55601-mamba-align-resume-seed.patch`, verbatim upstream cherry-pick,
-  merged to main 2026-10-07 — in neither v0.31.0 nor v0.31.1rc0, expected
-  in the v0.31.1 final): without it, a request resumed with
-  `num_computed_tokens>0` seeds its align-table column with
-  `cache_config.block_size` (the min over prefix-cacheable groups) instead
-  of `cache_config.mamba_block_size`, landing in a neighbour's row or past
-  the table (IMA in `precopy_mamba_align_fused_kernel`) on small-block
-  drafter geometries. Replaces the old #53798 local patch — numerically
-  identical here, no hook machinery (see AGENTS.md `#53798` entry).
-  Version-locked to v0.31.0; also verified clean on v0.31.1rc0.
-
-- **Reject a `prefix_match_unit` a single KV group cannot honor**
-  (`58021-prefix-match-unit-single-group.patch`, merged to main 2026-09-29 —
-  verified NOT in the v0.31.0 final tag): without it, a single-group run
-  with an explicit `--prefix-match-unit` lets the Mamba prefill checkpoint
-  builder write checkpoints off the scheduler's grid (silent wrong-state
-  resumes). Source-only carry; behavior-neutral here — no profile passes the
-  flag. Drop when a pinned `VLLM_REF` contains the merge.
+  cache-hit search ceiling by one page. Version-locked to v0.32.0rc0.
 
 - **Streaming/non-streaming tool-parser parity on truncated tool calls**
   (`47137-tool-truncation-parity.patch`; content half fixed upstream by
@@ -303,18 +291,18 @@ AGENTS.md §4).
   but TheRock's static LLVM then double-registers `cl::opt` options
   (`spirv-expand-step` → LLVM ERROR → abort, exit 139, crash-loop before
   logging). Costs only unused kineto GPU-profiling. Version-locked to
-  v0.31.0. If startup crash-loops with no logs on any bump, check
+  v0.32.0rc0. If startup crash-loops with no logs on any bump, check
   `import vllm` in a throwaway container first.
 
 - **RDNA4 FlyDSL block-FP8 GEMM** (`56005-rdna4-fp8-flydsl-gemm.patch`, not in
-  v0.31.0): vLLM-owned FlyDSL WMMA kernel family replacing the Triton
+  v0.32.0rc0): vLLM-owned FlyDSL WMMA kernel family replacing the Triton
   block-scaled FP8 GEMM on gfx1200/gfx1201. Requires `flydsl 0.3.4.1` at
   runtime (`FLYDSL_VERSION` in `.env`). Live since 2026-09-24 — server log
   selects `RDNA4Fp8BlockScaledMMKernel`. Drop when a pinned `VLLM_REF`
   contains the merge (and still ships the gfx1201 variants).
 
 - **Native HIP RDNA custom all-reduce** (`57767-rdna-all-reduce.patch` +
-  `57767-v030-port.patch`, not in v0.31.0): HIP/C++ custom all-reduce for
+  `57767-v030-port.patch`, not in v0.32.0rc0): HIP/C++ custom all-reduce for
   RDNA (gfx1100/1200/1201) with a `VLLM_ROCM_USE_RDNA_ALL_REDUCE` opt-in.
   **Compiled but dormant**: this board exposes no P2P, so it falls back to
   PYNCCL; the flag stays unset. Drop when a pinned `VLLM_REF` contains the
@@ -339,17 +327,6 @@ AGENTS.md §4).
   (dropping the ignore entry alone is a silent no-op — caps arrive as an
   InitVar). Behavior-neutral here (all runs share cap 99). Drop when a pinned
   `VLLM_REF` keys the compile cache on the multimodal config.
-
-- **Route medium-skinny W4A16 shapes to the HIP kernel**
-  (`52619-rdna-w4a16-medium-skinny.patch`, merged to main 2026-10-07 — in
-  neither v0.31.0 nor v0.31.1rc0, expected in the v0.31.1 final): the C++
-  `wvSplitK_int4_g` medium kernel (LDS-overflow path, `K·M ≤ 39321`) already
-  ships in v0.31.0, but the Python dispatch cap sat at 32768, so shapes in
-  (32768, 39321] fell back to Triton. Source-only carry (2 lines). Verified
-  on gfx1201 at the AWQ profile's `down_proj` M=2 shape (34816 elements):
-  correct vs FP32 dequant and 2.43× vs Triton. Only the AWQ trial profile
-  selects this kernel — inert on live FP8. Drop when a pinned `VLLM_REF`
-  contains the merge.
 
 ### AITER source-build patches (applied at image build time)
 
@@ -496,8 +473,8 @@ stale triage snapshots live in
 
 ## Performance
 
-Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.31.0
-+ local patches, torch 2.13 (ROCm 10.1), tuned MoE/dense GEMM configs. The
+Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.32.0rc0
++ local patches (rows before 2026-10-14: v0.31.0), torch 2.13 (ROCm 10.1), tuned MoE/dense GEMM configs. The
 live profile runs **MTP1** spec decode (bf16 KV since 2026-10-08, 131K context, cap 2 —
 4-wide hold verified 2026-10-06); MTP3/MTP1 experiment rows below are the
 10-01/10-02 trials (rollback: one line in `env/qwen3.8-27b.env`).
@@ -511,6 +488,7 @@ files, and superseded rows: [`BENCHMARKS.md`](BENCHMARKS.md) and
 |:--------------------------|:--------------|:-----|-----------:|---------:|----------:|
 | Qwen3.8-27B (live, 2026-10-06) | **MTP1** | fp8 | ~3398–3426 | ~49.5 | ~52.6 |
 | Qwen3.8-27B (live, 2026-10-12, aiter v0.1.25) | **MTP1** | bf16 | ~3335 | ~52.9 | ~53.7 |
+| Qwen3.8-27B (live, 2026-10-14, v0.32.0rc0) | **MTP1** | bf16 | ~3278–3315 | ~51.8–54.7 | ~51.0–51.8 |
 | Qwen3.8-27B spec-off (2026-10-06) | **off** | fp8 | ~3486–3493 | ~34.1 | ~34.1 |
 | Qwen3.8-27B +MTP3 (2026-10-02) | **MTP3** | fp8 | ~3272–3348 | ~68.9 | ~71.1 |
 | Qwen3.8-27B +MTP1 (2026-10-02) | **MTP1** | fp8 | ~3478–3482 | ~52.5 | ~54.1 |

@@ -1,13 +1,16 @@
 From c2193933ba3d88ab7acb7f0a94419af4961be264 Mon Sep 17 00:00:00 2001
 From: opencode <opencode@localhost>
-Date: Thu, 24 Sep 2026 11:08:29 +0000
+Date: Wed, 14 Oct 2026 00:00:00 +0000
 Subject: [PATCH 3/5] [Perf][ROCm] RDNA4 FP8 block-scale FlyDSL GEMM (upstream
  #56005)
 
-Version-locked to VLLM_REF=v0.30.1rc0 (rebased 2026-09-28: ROCM
-FP8-block list hunk re-cut after upstream dropped the AiterPreshuffled
-kernel from _POSSIBLE_FP8_BLOCK_KERNELS; remainder applies cleanly). Re-verified
-`git apply` clean on VLLM_REF=v0.31.0, 2026-10-06. Upstream PR #56005 (open): 1.786x geomean vs Triton
+Version-locked to VLLM_REF=v0.32.0rc0 (re-cut 2026-10-14: rc0 grew the
+scaled_mm __all__ list (Fp8BlockScaled/CPUFp8/XPUFp8 entries), so the
+__all__ hunk was re-cut with TritonFP8 context; all other hunks applied
+with offset, new-file contents byte-identical — regenerated diffstat
+matches the original: 14 files, 2717 insertions, 3 deletions).
+Re-verified `git apply` clean on VLLM_REF=v0.32.0rc0, 2026-10-14.
+Upstream PR #56005 (open): 1.786x geomean vs Triton
 (min 1.257x, 18/18 shapes) on Radeon AI PRO R9700 with Qwen3.8-27B-FP8
 shapes, validated against FlyDSL main@65e5d8e (contained in flydsl
 0.3.4.1, the PyPI release used by the image). RDNA4Fp8BlockScaledMMKernel
@@ -15,33 +18,6 @@ is registered before the Aiter/Triton block-FP8 kernels, so it is
 auto-selected on gfx120x for OCP-FP8 1x128/128x128 block-scaled BF16
 layers when flydsl is importable.
 ---
- .../benchmark_rdna4_fp8_block_scaled_mm.py    | 148 +++++
- tests/kernels/quantization/test_block_fp8.py  | 303 ++++++++-
- .../model_executor/kernels/linear/__init__.py |   5 +
- .../kernels/linear/scaled_mm/__init__.py      |   4 +
- .../scaled_mm/flydsl_kernels/__init__.py      |   2 +
- .../scaled_mm/flydsl_kernels/gfx12_sync.py    |  24 +
- .../flydsl_kernels/rdna4_fp8_blockscale.py    | 143 ++++
- .../rdna4_fp8_blockscale_common.py            |  57 ++
- .../rdna4_fp8_blockscale_decode_split.py      | 238 +++++++
- .../rdna4_fp8_blockscale_prefill.py           | 581 ++++++++++++++++
- .../rdna4_fp8_blockscale_small_m.py           | 452 +++++++++++++
- .../rdna4_fp8_blockscale_wave32.py            | 625 ++++++++++++++++++
- .../scaled_mm/flydsl_kernels/runtime.py       |  24 +
- .../kernels/linear/scaled_mm/rdna4.py         | 114 ++++
- 14 files changed, 2717 insertions(+), 3 deletions(-)
- create mode 100644 benchmarks/kernels/benchmark_rdna4_fp8_block_scaled_mm.py
- create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/__init__.py
- create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/gfx12_sync.py
- create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale.py
- create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_common.py
- create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_decode_split.py
- create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_prefill.py
- create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_small_m.py
- create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/rdna4_fp8_blockscale_wave32.py
- create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/runtime.py
- create mode 100644 vllm/model_executor/kernels/linear/scaled_mm/rdna4.py
-
 diff --git a/benchmarks/kernels/benchmark_rdna4_fp8_block_scaled_mm.py b/benchmarks/kernels/benchmark_rdna4_fp8_block_scaled_mm.py
 new file mode 100644
 index 0000000..e548db9
@@ -197,7 +173,7 @@ index 0000000..e548db9
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/kernels/quantization/test_block_fp8.py b/tests/kernels/quantization/test_block_fp8.py
-index d02527a..d7b899e 100644
+index fe26226..2122dbd 100644
 --- a/tests/kernels/quantization/test_block_fp8.py
 +++ b/tests/kernels/quantization/test_block_fp8.py
 @@ -19,6 +19,9 @@ from vllm.model_executor.kernels.linear.scaled_mm.b12x import (
@@ -210,7 +186,7 @@ index d02527a..d7b899e 100644
  from vllm.model_executor.layers.quantization.utils.fp8_utils import (
      per_token_group_quant_fp8,
      w8a8_triton_block_scaled_mm,
-@@ -305,9 +308,10 @@ def test_w8a8_block_fp8_deep_gemm_matmul(M, N, K, block_size, out_dtype, seed):
+@@ -311,9 +314,10 @@ def test_w8a8_block_fp8_deep_gemm_matmul(M, N, K, block_size, out_dtype, seed):
  
      out = torch.zeros((M, N), device="cuda", dtype=out_dtype)
  
@@ -224,7 +200,7 @@ index d02527a..d7b899e 100644
  
      fp8_gemm_nt((A_fp8, As_fp8), (B_fp8, Bs_fp8), out)
  
-@@ -415,3 +419,296 @@ def test_w8a8_block_fp8_b12x_matmul(M, N, K):
+@@ -421,3 +425,296 @@ def test_w8a8_block_fp8_b12x_matmul(M, N, K):
      # ordering can flap an output between adjacent BF16 values one ULP apart.
      assert rel_diff < 0.003
      assert cosine >= 0.99999
@@ -522,10 +498,10 @@ index d02527a..d7b899e 100644
 +        with pytest.raises(ValueError, match="smaller than 4 GiB"):
 +            rdna4_fp8_blockscale.validate_tensors(a, weight, a_scale, weight_scale)
 diff --git a/vllm/model_executor/kernels/linear/__init__.py b/vllm/model_executor/kernels/linear/__init__.py
-index d3c41f9..37356b3 100644
+index 0ce22f4..1c407e7 100644
 --- a/vllm/model_executor/kernels/linear/__init__.py
 +++ b/vllm/model_executor/kernels/linear/__init__.py
-@@ -214,6 +214,9 @@ from vllm.model_executor.kernels.linear.scaled_mm.pytorch import (
+@@ -213,6 +213,9 @@ from vllm.model_executor.kernels.linear.scaled_mm.pytorch import (
      PerTensorTorchFP8ScaledMMLinearKernel,
      RowWiseTorchFP8ScaledMMLinearKernel,
  )
@@ -535,8 +511,7 @@ index d3c41f9..37356b3 100644
  from vllm.model_executor.kernels.linear.scaled_mm.rocm import (
      ROCmFP8ScaledMMLinearKernel,
  )
-@@ -465,8 +465,9 @@ _POSSIBLE_FP8_BLOCK_KERNELS: dict[
-         TritonFp8BlockScaledMMKernel,
+@@ -487,6 +490,7 @@ _POSSIBLE_FP8_BLOCK_KERNELS: dict[
          BlockWiseTorchFP8ScaledMMLinearKernel,
      ],
      PlatformEnum.ROCM: [
@@ -544,8 +519,7 @@ index d3c41f9..37356b3 100644
          AiterFp8BlockScaledMMKernel,
          TritonFp8BlockScaledMMKernel,
      ],
-     PlatformEnum.CPU: [
-@@ -1263,6 +1267,7 @@ __all__ = [
+@@ -1319,6 +1323,7 @@ __all__ = [
      "PerTensorTorchFP8ScaledMMLinearKernel",
      "RowWiseTorchFP8ScaledMMLinearKernel",
      "ROCmFP8ScaledMMLinearKernel",
@@ -554,10 +528,10 @@ index d3c41f9..37356b3 100644
      "ZentorchInt8ScaledMMLinearKernel",
      "ZentorchWNA16LinearKernel",
 diff --git a/vllm/model_executor/kernels/linear/scaled_mm/__init__.py b/vllm/model_executor/kernels/linear/scaled_mm/__init__.py
-index 39f9abd..4ef7e31 100644
+index ac096b4..d8174e9 100644
 --- a/vllm/model_executor/kernels/linear/scaled_mm/__init__.py
 +++ b/vllm/model_executor/kernels/linear/scaled_mm/__init__.py
-@@ -26,6 +26,9 @@ from vllm.model_executor.kernels.linear.scaled_mm.pytorch import (
+@@ -28,6 +28,9 @@ from vllm.model_executor.kernels.linear.scaled_mm.pytorch import (
      PerTensorTorchFP8ScaledMMLinearKernel,
      RowWiseTorchFP8ScaledMMLinearKernel,
  )
@@ -567,14 +541,14 @@ index 39f9abd..4ef7e31 100644
  from vllm.model_executor.kernels.linear.scaled_mm.rocm import (
      ROCmFP8ScaledMMLinearKernel,
  )
-@@ -62,6 +65,7 @@ __all__ = [
+@@ -65,6 +68,7 @@ __all__ = [
      "ChannelWiseTorchFP8ScaledMMLinearKernel",
      "PerTensorTorchFP8ScaledMMLinearKernel",
      "RowWiseTorchFP8ScaledMMLinearKernel",
 +    "RDNA4Fp8BlockScaledMMKernel",
      "ROCmFP8ScaledMMLinearKernel",
+     "TritonFP8ScaledMMLinearKernel",
      "TritonInt8ScaledMMLinearKernel",
-     "ZentorchInt8ScaledMMLinearKernel",
 diff --git a/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/__init__.py b/vllm/model_executor/kernels/linear/scaled_mm/flydsl_kernels/__init__.py
 new file mode 100644
 index 0000000..208f01a
@@ -2895,6 +2869,3 @@ index 0000000..84a2e56
 +        Bs: torch.Tensor,
 +    ) -> torch.Tensor:
 +        return torch.ops.vllm.rdna4_fp8_block_scaled_mm(A, B, As, Bs)
--- 
-2.53.0
-

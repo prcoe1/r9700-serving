@@ -1,22 +1,21 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: opencode <opencode@localhost>
-Date: Fri, 02 Oct 2026 00:00:00 +0000
+Date: Wed, 14 Oct 2026 00:00:00 +0000
 Subject: [PATCH] [Bugfix] Stop mamba align prefill at the replay boundary
  (upstream #50409)
 
-Version-locked to VLLM_REF=v0.31.0 (rebased; the final grew Marconi
-junction stops and a conditional tail_boundary entry since rc3 - pure
-context shift, pre-image blob unchanged. Logic identical to upstream:
-compute replay_boundary, add it as a mandatory chunk stop).
+Version-locked to VLLM_REF=v0.32.0rc0 (re-cut 2026-10-14: rc0 reworked
+the stops region — tail_boundary is now computed via
+get_mamba_prefill_checkpoint_position (upstream #60533) and the stops
+became a tuple with Marconi junction entries, so both hunks moved
+(480->514, 513->543) and hunk 2 targets the stops tuple instead of the
+min() chain. Logic identical to upstream: compute replay_boundary, add
+it as a mandatory chunk stop).
 Upstream PR #50409 (https://github.com/vllm-project/vllm/pull/50409)
 still open, in no tag. Drop when VLLM_REF contains the fix.
-Rebased 2026-10-09 onto the PRISTINE v0.31.0 tag when the 40707
-deadlock patch was dropped: hunk 1's old context line was the
-20-space-indented `end = aligned_end` inside the 40707 patch's else
-branch, so the patch hard-depended on 40707 being applied first. The
-context line is now pristine's 16-space `end = aligned_end` and the
-hunks shifted -11 lines (491->480, 524->513); final-state identity with
-the old ordered apply was verified by full-tree diff.
+History: first carried 2026-10-02 (rc3 stops-tuple port); rebased
+2026-10-09 onto pristine v0.31.0 when the 40707 patch dropped (final
+tree verified byte-identical to the old ordered apply).
 
 When the prompt length is an exact multiple of the scheduler block
 size, align prefill runs as one chunk and the only cached Mamba state
@@ -27,12 +26,12 @@ last_cache_position)) as a mandatory chunk stop materializes a state a
 later replay can resume from.
 ---
 diff --git a/vllm/v1/core/sched/scheduler.py b/vllm/v1/core/sched/scheduler.py
-index 8b188de..a81364a 100644
+index cec96d2..50159ab 100644
 --- a/vllm/v1/core/sched/scheduler.py
 +++ b/vllm/v1/core/sched/scheduler.py
-@@ -480,6 +480,16 @@ class Scheduler(SchedulerInterface):
+@@ -514,6 +514,16 @@ class Scheduler(SchedulerInterface):
                  end = aligned_end
- 
+
          next_block_boundary = (start // block_size + 1) * block_size
 +        # A later request replaying this prompt resumes at `num_tokens - 1`
 +        # at the latest (`get_computed_blocks` caps the hit there), so the
@@ -45,15 +44,15 @@ index 8b188de..a81364a 100644
 +            last_cache_position,
 +        )
          tail_boundary = (
-             request.num_prompt_tokens // self.hash_block_size * self.hash_block_size
-             if self.mamba_partial_cache_hit and not use_internal_checkpoint
-@@ -513,6 +523,9 @@ class Scheduler(SchedulerInterface):
+             get_mamba_prefill_checkpoint_position(
+                 request.num_prompt_tokens,
+@@ -543,6 +553,9 @@ class Scheduler(SchedulerInterface):
              else 0,
              # Never run past the last cacheable block boundary mid-chunk.
              last_cache_position,
 +            # Keep the boundary a replay of this prompt can resume from
 +            # (exact-multiple-of-block-size prefill; upstream #50409).
 +            replay_boundary if start < replay_boundary < end else 0,
-             # Fine-grained hits: the prompt's partial-tail entry can only be
-             # registered by a chunk ending exactly at its last hash boundary.
+             # Stop at the prompt checkpoint unless the backend saves it internally.
              tail_boundary
+             if last_cache_position < tail_boundary < request.num_prompt_tokens

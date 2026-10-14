@@ -1,42 +1,29 @@
 From 9c56230d4d703f80d518900cdedfae4a888d972c Mon Sep 17 00:00:00 2001
 From: opencode <opencode@localhost>
-Date: Thu, 24 Sep 2026 11:08:29 +0000
+Date: Wed, 14 Oct 2026 00:00:00 +0000
 Subject: [PATCH 4/5] [Perf][ROCm] Native HIP RDNA custom all-reduce for
  TP2/TP4 (upstream #57767)
 
-Version-locked to VLLM_REF=v0.30.0 (cherry-picked 2026-09-24;
-vllm/v1/worker/gpu/model_runner.py and the test_custom_all_reduce.py
-hunk ported/excluded in the companion 57767-v030-port patch). Upstream
-PR #57767 (open). Opt-in: VLLM_ROCM_USE_RDNA_ALL_REDUCE=1 (graph-only,
+Version-locked to VLLM_REF=v0.32.0rc0 (re-cut 2026-10-14: rc0 reworked
+cuda_communicator.py __init__ (cuMem/cumem-pool block, BATCH_INVARIANT
+gates, dp-dispatch AITER block), so the 3 __init__ hunks were re-cut
+with new context — rdna_ar_comm construction, skip_legacy_rdna gating
+of the CustomAllreduce and QuickAllReduce inits; all other hunks
+(import, dispatch, close, envs, rocm.py, cudagraph, cmake, csrc, docs,
+tests) applied with offset, new-file contents byte-identical).
+Upstream PR #57767 (open, verified 2026-10-14 — NOT merged upstream).
+Opt-in: VLLM_ROCM_USE_RDNA_ALL_REDUCE=1 (graph-only,
 BF16/FP16, decode-routing; no FlyDSL dependency). Adds
 csrc/rocm/rdna_custom_all_reduce.cu to the _rocm_C build.
-Re-verified `git apply` clean on VLLM_REF=v0.30.1rc0, 2026-09-28.
-Re-verified `git apply` clean on VLLM_REF=v0.31.0, 2026-10-06 (full ordered apply + py_compile in scratch clone).
+History: cherry-picked 2026-09-24 on v0.30.0 (model_runner hunk in
+companion 57767-v030-port patch); re-verified clean on v0.30.1rc0
+(09-28) and v0.31.0 (10-06, full ordered apply + py_compile).
 ---
- CMakeLists.txt                                |   19 +
- .../benchmark_rdna_custom_all_reduce.py       |  272 ++++
- csrc/rocm/rdna_custom_all_reduce.cu           | 1443 +++++++++++++++++
- docs/features/rdna_all_reduce.md              |  104 ++
- .../installation/gpu.rocm.inc.md              |    3 +
- tests/distributed/test_comm_ops.py            |    1 +
- .../test_flashinfer_pcie_ipc_all_reduce.py    |    1 +
- tests/v1/cudagraph/test_cudagraph_manager.py  |   63 +
- .../device_communicators/cuda_communicator.py |   57 +-
- .../rdna_custom_all_reduce.py                 |  238 +++
- vllm/envs.py                                  |    5 +
- vllm/platforms/rocm.py                        |    7 +-
- vllm/v1/worker/gpu/cudagraph_utils.py         |   43 +-
- 13 files changed, 2245 insertions(+), 11 deletions(-)
- create mode 100644 benchmarks/kernels/benchmark_rdna_custom_all_reduce.py
- create mode 100644 csrc/rocm/rdna_custom_all_reduce.cu
- create mode 100644 docs/features/rdna_all_reduce.md
- create mode 100644 vllm/distributed/device_communicators/rdna_custom_all_reduce.py
-
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index fbacfd9..c694127 100644
+index 3a71d7e..2af6818 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -1497,6 +1497,21 @@ if(VLLM_GPU_LANG STREQUAL "HIP")
+@@ -1487,6 +1487,21 @@ if(VLLM_GPU_LANG STREQUAL "HIP")
      "csrc/rocm/attention.cu")
    set(VLLM_ROCM_EXT_FLAGS ${VLLM_GPU_FLAGS})
  
@@ -58,7 +45,7 @@ index fbacfd9..c694127 100644
    # skinny_gemms*.cu are built on gfx9/gfx11 ISA (MFMA, dot2/dot4, legacy
    # s_waitcnt asm) that gfx1250 (gfx12) does not provide. Exclude them from the
    # gfx1250 build and disable their op registrations (VLLM_SKIP_SKINNY_GEMMS);
-@@ -1553,6 +1568,10 @@ if(VLLM_GPU_LANG STREQUAL "HIP")
+@@ -1543,6 +1558,10 @@ if(VLLM_GPU_LANG STREQUAL "HIP")
      target_compile_definitions(_rocm_C PRIVATE VLLM_SKIP_SKINNY_GEMMS)
    endif()
  
@@ -1907,7 +1894,7 @@ index 0000000..7066a6e
 +`benchmarks/kernels/benchmark_rdna_custom_all_reduce.py`; its measurements do
 +not include Python dispatch, model execution, or extra layout-staging copies.
 diff --git a/docs/getting_started/installation/gpu.rocm.inc.md b/docs/getting_started/installation/gpu.rocm.inc.md
-index ad5af79..7dd0f9d 100644
+index 28e74b6..334c7bb 100644
 --- a/docs/getting_started/installation/gpu.rocm.inc.md
 +++ b/docs/getting_started/installation/gpu.rocm.inc.md
 @@ -24,6 +24,9 @@ vLLM supports AMD GPUs with ROCm 6.3 or above. Pre-built wheels are available fo
@@ -1921,10 +1908,10 @@ index ad5af79..7dd0f9d 100644
  --8<-- [start:pre-built-wheels]
  
 diff --git a/tests/distributed/test_comm_ops.py b/tests/distributed/test_comm_ops.py
-index f35ba14..050ea8b 100644
+index 78aee1e..23d7fad 100644
 --- a/tests/distributed/test_comm_ops.py
 +++ b/tests/distributed/test_comm_ops.py
-@@ -396,6 +396,7 @@ def test_flashinfer_all_reduce_precedes_nccl(monkeypatch: pytest.MonkeyPatch) ->
+@@ -523,6 +523,7 @@ def test_flashinfer_all_reduce_precedes_nccl(monkeypatch: pytest.MonkeyPatch) ->
      fi_ar_comm.all_reduce.return_value = output
      communicator = CudaCommunicator.__new__(CudaCommunicator)
      communicator.fi_ar_comm = fi_ar_comm
@@ -1945,7 +1932,7 @@ index c1c62a8..13b339f 100644
      communicator.fi_pcie_ipc_ar_comm = Mock()
      communicator.fi_pcie_ipc_ar_comm.should_use.return_value = True
 diff --git a/tests/v1/cudagraph/test_cudagraph_manager.py b/tests/v1/cudagraph/test_cudagraph_manager.py
-index c907be3..4f4b973 100644
+index 1e4071b..b7f7bee 100644
 --- a/tests/v1/cudagraph/test_cudagraph_manager.py
 +++ b/tests/v1/cudagraph/test_cudagraph_manager.py
 @@ -17,6 +17,7 @@ from vllm.config import (
@@ -1956,7 +1943,7 @@ index c907be3..4f4b973 100644
  from vllm.v1.kv_cache_interface import KVCacheConfig
  from vllm.v1.worker.gpu import cudagraph_utils as gpu_cudagraph_utils
  from vllm.v1.worker.gpu.cudagraph_utils import BatchExecutionDescriptor
-@@ -50,6 +51,68 @@ def _create_vllm_config() -> MagicMock:
+@@ -58,6 +59,68 @@ def _create_vllm_config() -> MagicMock:
      return vllm_config
  
  
@@ -2026,10 +2013,10 @@ index c907be3..4f4b973 100644
      """FULL capture must set graph_pool_id before entering torch.cuda.graph().
  
 diff --git a/vllm/distributed/device_communicators/cuda_communicator.py b/vllm/distributed/device_communicators/cuda_communicator.py
-index 4afc28f..28213f0 100644
+index 1bc6182..4693fe0 100644
 --- a/vllm/distributed/device_communicators/cuda_communicator.py
 +++ b/vllm/distributed/device_communicators/cuda_communicator.py
-@@ -78,6 +78,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
+@@ -87,6 +87,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
          self.use_flashinfer_pcie_ipc_allreduce = use_flashinfer_pcie_ipc_allreduce
          self.use_aiter_allreduce = use_aiter_allreduce
  
@@ -2038,7 +2025,7 @@ index 4afc28f..28213f0 100644
          # lazy import to avoid documentation build error
          from vllm.distributed.device_communicators.custom_all_reduce import (
              CustomAllreduce,
-@@ -92,6 +94,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
+@@ -101,6 +103,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
          from vllm.distributed.device_communicators.quick_all_reduce import (
              QuickAllReduce,
          )
@@ -2048,7 +2035,7 @@ index 4afc28f..28213f0 100644
          from vllm.distributed.device_communicators.symm_mem import SymmMemCommunicator
  
          self.pynccl_comm: PyNcclCommunicator | None = None
-@@ -110,6 +115,33 @@ class CudaCommunicator(DeviceCommunicatorBase):
+@@ -119,6 +124,33 @@ class CudaCommunicator(DeviceCommunicatorBase):
          self.fi_pcie_ipc_ar_comm: FlashInferPcieIpcAllReduce | None = None
          self.aiter_ar_comm: AiterCustomAllreduce | None = None
          self.use_aiter_ag_rs: bool = False
@@ -2080,10 +2067,10 @@ index 4afc28f..28213f0 100644
 +        if skip_legacy_rdna:
 +            self.use_aiter_allreduce = False
  
-         if use_torch_symm_mem and current_platform.is_cuda():
-             self.symm_mem_comm = SymmMemCommunicator(
-@@ -140,7 +172,12 @@ class CudaCommunicator(DeviceCommunicatorBase):
-                 device=self.device,
+         # cuMem graph buffers cannot be IPC-registered; capture copies them instead.
+         config = get_current_vllm_config_or_none()
+@@ -154,7 +186,12 @@ class CudaCommunicator(DeviceCommunicatorBase):
+                 register_graph_buffers=register,
              )
  
 -        if use_custom_allreduce and self.aiter_ar_comm is None and self.world_size > 1:
@@ -2096,21 +2083,15 @@ index 4afc28f..28213f0 100644
              # Initialize a custom fast all-reduce implementation.
              self.ca_comm = CustomAllreduce(
                  group=self.cpu_group,
-@@ -166,7 +203,12 @@ class CudaCommunicator(DeviceCommunicatorBase):
-             else:
-                 self.use_aiter_ag_rs = True
+@@ -184,6 +221,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
  
--        if use_custom_allreduce and self.world_size > 1 and current_platform.is_rocm():
-+        if (
-+            use_custom_allreduce
+         if (
+             use_custom_allreduce
 +            and not skip_legacy_rdna
-+            and self.world_size > 1
-+            and current_platform.is_rocm()
-+        ):
-             # Initialize a custom quick all-reduce implementation for AMD.
-             # Quick reduce is designed as a complement to custom allreduce
-             # (vLLM's or AITER's), so it is initialized for either backend.
-@@ -259,6 +301,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
+             and self.world_size > 1
+             and current_platform.is_rocm()
+             and not envs.VLLM_BATCH_INVARIANT
+@@ -294,6 +332,7 @@ class CudaCommunicator(DeviceCommunicatorBase):
          depends on the input tensor.
          """
          all_potential_ar_backends = [
@@ -2118,7 +2099,7 @@ index 4afc28f..28213f0 100644
              "FLASHINFER_PCIE_IPC",
              "FLASHINFER",
              "NCCL_SYMM_MEM",
-@@ -269,6 +312,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
+@@ -304,6 +343,8 @@ class CudaCommunicator(DeviceCommunicatorBase):
              "PYNCCL",
          ]
          enabled_ar_backends: list[str] = []
@@ -2127,7 +2108,7 @@ index 4afc28f..28213f0 100644
          if (
              self.fi_pcie_ipc_ar_comm is not None
              and not self.fi_pcie_ipc_ar_comm.disabled
-@@ -325,6 +370,11 @@ class CudaCommunicator(DeviceCommunicatorBase):
+@@ -360,6 +401,11 @@ class CudaCommunicator(DeviceCommunicatorBase):
          )
  
      def all_reduce(self, input_):
@@ -2139,7 +2120,7 @@ index 4afc28f..28213f0 100644
          fi_ar_comm = self.fi_ar_comm
          use_fi_ar = (
              fi_ar_comm is not None
-@@ -651,6 +701,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
+@@ -804,6 +850,9 @@ class CudaCommunicator(DeviceCommunicatorBase):
              raise ValueError("No PyNCCL communicator found")
  
      def destroy(self):
@@ -2394,10 +2375,10 @@ index 0000000..0dae5a7
 +            self._rank_data = None
 +        self._closed = True
 diff --git a/vllm/envs.py b/vllm/envs.py
-index 727f6b5..95a0e6e 100755
+index a2b4603..ffde454 100755
 --- a/vllm/envs.py
 +++ b/vllm/envs.py
-@@ -267,6 +267,7 @@ if TYPE_CHECKING:
+@@ -277,6 +277,7 @@ if TYPE_CHECKING:
      VLLM_ALLREDUCE_USE_SYMM_MEM: bool = True
      VLLM_ALLREDUCE_USE_FLASHINFER: bool = True
      VLLM_ALLREDUCE_USE_FLASHINFER_PCIE_IPC: bool = False
@@ -2405,7 +2386,7 @@ index 727f6b5..95a0e6e 100755
      VLLM_TUNED_CONFIG_FOLDER: str | None = None
      VLLM_ENABLE_STARTUP_PLAN: bool = False
      VLLM_GPT_OSS_SYSTEM_TOOL_MCP_LABELS: set[str] = set()
-@@ -1859,6 +1860,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
+@@ -1963,6 +1964,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
          int(os.getenv("VLLM_ROCM_FP8_MFMA_PAGE_ATTN", "0"))
      ),
      # Whether to use pytorch symmetric memory for allreduce
@@ -2417,10 +2398,10 @@ index 727f6b5..95a0e6e 100755
          int(os.getenv("VLLM_ALLREDUCE_USE_SYMM_MEM", "1"))
      ),
 diff --git a/vllm/platforms/rocm.py b/vllm/platforms/rocm.py
-index b3b7fe8..2a799da 100644
+index 807e571..1c473f0 100644
 --- a/vllm/platforms/rocm.py
 +++ b/vllm/platforms/rocm.py
-@@ -1023,8 +1023,11 @@ class RocmPlatform(Platform):
+@@ -1198,8 +1198,11 @@ class RocmPlatform(Platform):
  
      @classmethod
      def use_custom_allreduce(cls) -> bool:
@@ -2435,10 +2416,10 @@ index b3b7fe8..2a799da 100644
      @classmethod
      def opaque_attention_op(cls) -> bool:
 diff --git a/vllm/v1/worker/gpu/cudagraph_utils.py b/vllm/v1/worker/gpu/cudagraph_utils.py
-index 9657c28..e863496 100644
+index 73be623..9013d13 100644
 --- a/vllm/v1/worker/gpu/cudagraph_utils.py
 +++ b/vllm/v1/worker/gpu/cudagraph_utils.py
-@@ -76,6 +76,33 @@ class BatchExecutionDescriptor:
+@@ -80,6 +80,33 @@ class BatchExecutionDescriptor:
      num_ubatches: int = 1
  
  
@@ -2472,7 +2453,7 @@ index 9657c28..e863496 100644
  def make_cudagraph_stats(
      batch_desc: BatchExecutionDescriptor, num_tokens: int
  ) -> CUDAGraphStat:
-@@ -711,13 +738,15 @@ class ModelCudaGraphManager(CudaGraphManager):
+@@ -732,13 +759,15 @@ class ModelCudaGraphManager(CudaGraphManager):
              input_buffers.is_padding.fill_(True)
  
              def forward_fn(cg_mode: CUDAGraphMode) -> None:
@@ -2495,6 +2476,3 @@ index 9657c28..e863496 100644
                  with set_forward_context(
                      attn_metadata,
                      self.vllm_config,
--- 
-2.53.0
-

@@ -1,10 +1,13 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: opencode <opencode@localhost>
-Date: Fri, 02 Oct 2026 00:00:00 +0000
+Date: Wed, 14 Oct 2026 00:00:00 +0000
 Subject: [PATCH] [Bugfix] Key the AOT compile cache on limit_mm_per_prompt
  (upstream #50891)
 
-Version-locked to VLLM_REF=v0.31.0. Upstream issue #50891 (open, no
+Version-locked to VLLM_REF=v0.32.0rc0 (re-cut 2026-10-14: pure context
+shift — rc0 added `skip_tokenizer_init` to ignored_factors and a
+Qwen3.5 M-RoPE `video_pruning` factor below the insertion point;
+pre-image logic unchanged). Upstream issue #50891 (open, no
 fix PR): ModelConfig.compute_hash() lists `limit_mm_per_prompt` in
 ignored_factors, so serving the same model with different image caps
 (e.g. image:0 vs image:99) collides on one torch-compile cache entry
@@ -30,10 +33,10 @@ an upstreamable fix. Drop when a pinned VLLM_REF keys the compile cache
 on the multimodal config.
 ---
 diff --git a/vllm/config/model.py b/vllm/config/model.py
-index 15d046de7..5ed25002b 100644
+index 87759f4..2b4a3a1 100644
 --- a/vllm/config/model.py
 +++ b/vllm/config/model.py
-@@ -456,7 +456,6 @@ class ModelConfig:
+@@ -486,7 +486,6 @@ class ModelConfig:
              "io_processor_plugin",
              "pooler_config",
              "multimodal_config",
@@ -41,20 +44,20 @@ index 15d046de7..5ed25002b 100644
              "media_io_kwargs",
              "mm_processor_kwargs",
              "mm_processor_cache_gb",
-@@ -468,7 +467,11 @@ class ModelConfig:
+@@ -498,7 +497,11 @@ class ModelConfig:
              "mm_ipc_gpu_memory_gb",
          }
-
+ 
 -        from vllm.config.utils import get_hash_factors, hash_factors
 +        from vllm.config.utils import (
 +            get_hash_factors,
 +            hash_factors,
 +            normalize_value,
 +        )
-
+ 
          factors = get_hash_factors(self, ignored_factors)
-
-@@ -477,6 +480,14 @@ class ModelConfig:
+ 
+@@ -507,6 +510,14 @@ class ModelConfig:
          # here early.
          if self.multimodal_config:
              factors["language_model_only"] = self.multimodal_config.language_model_only
@@ -66,6 +69,6 @@ index 15d046de7..5ed25002b 100644
 +            factors["limit_per_prompt"] = normalize_value(
 +                self.multimodal_config.limit_per_prompt
 +            )
-         return hash_factors(factors)
-
-     def _update_nested(
+             # Sizes Qwen3.5's M-RoPE cache.
+             factors["video_pruning"] = (
+                 self.multimodal_config.is_multimodal_pruning_enabled()
