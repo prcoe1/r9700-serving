@@ -319,6 +319,16 @@ AGENTS.md §4).
   carried (binds correctly either way). Drop when a pinned `VLLM_REF`
   contains the merge.
 
+- **Retain the Mamba prompt-boundary state until request end**
+  (`61282-mamba-boundary-state-retention.patch`, open + unmerged, in no tag):
+  the align boundary state sat at ref 0 in the free queue from prefill end
+  and was recycled by churn before the next turn (#61281); now held on the
+  request's behalf and freed last (attn-first/Mamba-last `_free_order`).
+  Retention-only — no new checkpoint values, so no new #55766-NaN class.
+  Guard: `benchmarks/mamba_boundary_lifetime_probe.py` (GPU-free,
+  manager-level; long prompts + churn: baseline MISS vs fixed full-boundary
+  HIT incl. 3-turn chains). Drop when a pinned `VLLM_REF` contains the merge.
+
 - **Key the AOT compile cache on `limit_mm_per_prompt`**
   (`50891-mm-cap-compile-cache-key.patch`, open issue, no upstream PR):
   `ModelConfig.compute_hash()` ignored the image caps, so runs with different

@@ -229,7 +229,7 @@ auto-apply fixes.
 # Pruned 2026-10-14 to stack-direct items only (gfx1201 + tracked Qwen models +
 # MTP + align prefix-cache + UA + build/parser path). Excluded items live in
 # git history; re-add if the stack changes (new model, drafter, backend, or cap).
-for n in 35288 48375 52872 47602 52520 45238 49125 53479 48815 61281 50551 51571 51599 54360 55495 55497 57707 50891 50409 55533 55894 55766 60008 55196 52817 48007 60911; do
+for n in 35288 48375 52872 47602 52520 45238 49125 53479 48815 61281 61282 50551 51571 51599 54360 55495 55497 57707 50891 50409 55533 55894 55766 60008 55196 52817 48007 60911; do
   gh issue view $n -R vllm-project/vllm --json state,title,updatedAt 2>/dev/null \
     | jq -r '"\(.state) | \(.updatedAt) | \(.title)"'
 done
@@ -345,10 +345,30 @@ touches one of:
     running-state swap, the CoW-copy free) and recycled by concurrent
     prefills before the next turn arrives, plus LRU-order eviction at
     request end — a registration fix alone (`#53479` family) will NOT
-    restore multi-turn hits until this eviction race is fixed; no fix PR
-    yet). **When a real fix
-    merges**: prefer the version bump; carry a local patch only if no
-    available release contains it. Related: `#52897` (priority-scheduling
+    restore multi-turn hits until this eviction race is fixed; fix PR
+    **`#61282`** (same author: `_retain_boundary_block` hold + attn-first/
+    Mamba-last `_free_order`; retention-only, no new checkpoint values so no
+    new #55766 class; open + unmerged, no reviews) **carried as a local patch
+    2026-10-15** (`patches/vllm/61282-mamba-boundary-state-retention.patch`,
+    production files only — upstream tests validated separately: 16/16 PASS
+    in throwaway container, FAIL unpatched). Drop when a pinned `VLLM_REF`
+    contains the merge; re-check for author updates on any bump).
+    2026-10-15 investigation (rc2, GDN geometry: attn 832 / mamba 16 / hash
+    GCD 16 / hit-alignment 832 / retention 0 / MTP eagle drop): the
+    registration half WORKS — scheduler chunk stops (`last_cache_position` +
+    replay boundary) end chunk 1 at the reusable boundary so it gets hashed;
+    live proof on identical 2883/4709-token prompts: 1664/3328-token hits with
+    ~2x prefill latency wins. The multi-turn probe's 0% is structural here
+    (prompts <500 tok: no full 832 attn block exists, Mamba boundary is 0
+    under MTP) — it cannot distinguish fixed/broken on this geometry; reuse
+    needs shared prefix >= ~2496 tok (one eagle back-off block). The binding
+    constraint under load is the lifetime half: the boundary block sits at
+    ref 0 in the free queue from prefill end and churn recycles it (manager-
+    level proof: baseline MISS vs #61282 fixed full-boundary HIT under
+    identical pressure, incl. 3-turn chains and 4160-token reuse; GPU-free
+    guard `benchmarks/mamba_boundary_lifetime_probe.py`). **When a
+    real fix merges**: prefer the version bump; carry a local patch only if
+    no available release contains it. Related: `#52897` (priority-scheduling
     variant — N/A, we don't use priority), `#53749` (same family on two more
     hybrids — reinforces the checkpoint fix is the binding constraint).
      - `#55766` (2026-09-07, open): Qwen3.8/3.5 hybrid GDN + mamba align +
@@ -760,6 +780,11 @@ applied at build time. Before bumping any pin:
    after any vLLM bump/restart and record whether
    `vllm:prefix_cache_hits_total` moves off 0% (see `#45238`). A non-zero hit
    rate on the multi-turn probe is the signal the align-mode checkpoint fix
-   landed and is worth carrying/keeping.
+   landed and is worth carrying/keeping. Caveat 2026-10-15: that probe's
+   prompts (<500 tok) are structurally unhittable on 832-block/MTP geometry
+   (no full attn block, boundary 0) — for a sensitive signal use long prompts
+   (shared prefix >= ~2496 tok) or the GPU-free
+   `benchmarks/mamba_boundary_lifetime_probe.py` (throwaway container; exits
+   nonzero on miss).
 8. Update `README.md` (patches, pins, bench tables) and commit to `origin`.
 
