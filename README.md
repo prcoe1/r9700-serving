@@ -475,9 +475,9 @@ stale triage snapshots live in
 
 Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.32.0rc0
 + local patches (rows before 2026-10-14: v0.31.0), torch 2.13 (ROCm 10.1), tuned MoE/dense GEMM configs. The
-live profile runs **MTP1** spec decode (bf16 KV since 2026-10-08, 131K context, cap 2 —
-4-wide hold verified 2026-10-06); MTP3/MTP1 experiment rows below are the
-10-01/10-02 trials (rollback: one line in `env/qwen3.8-27b.env`).
+live profile runs **MTP3** spec decode (bf16 KV since 2026-10-08, 131K context, cap 2 —
+re-verified 2026-10-15 on bf16/832: no acceptance decay through 100K,
+coherence PASS + needle recall exact at d100K; MTP1 ran 10-06–10-15).
 MTP profiles also pass `--no-async-scheduling` (vLLM turns async on by
 default for MTP — the open `#51571` accepted-count race, same combination
 as the `#54039`/`#32275` ROCm-CI question). Full methodology, per-run
@@ -489,14 +489,20 @@ files, and superseded rows: [`BENCHMARKS.md`](BENCHMARKS.md) and
 | Qwen3.8-27B (live, 2026-10-06) | **MTP1** | fp8 | ~3398–3426 | ~49.5 | ~52.6 |
 | Qwen3.8-27B (live, 2026-10-12, aiter v0.1.25) | **MTP1** | bf16 | ~3335 | ~52.9 | ~53.7 |
 | Qwen3.8-27B (live, 2026-10-14, v0.32.0rc0) | **MTP1** | bf16 | ~3278–3315 | ~51.8–54.7 | ~51.0–51.8 |
+| Qwen3.8-27B (live, 2026-10-15, v0.32.0rc0) | **MTP3** | bf16 | ~3251–3278 | ~68.3 | ~69.3 |
 | Qwen3.8-27B spec-off (2026-10-06) | **off** | fp8 | ~3486–3493 | ~34.1 | ~34.1 |
+| Qwen3.8-27B spec-off (2026-10-15, v0.32.0rc0) | **off** | bf16 | ~3441–3447 | ~34.0 | ~34.3 |
 | Qwen3.8-27B +MTP3 (2026-10-02) | **MTP3** | fp8 | ~3272–3348 | ~68.9 | ~71.1 |
 | Qwen3.8-27B +MTP1 (2026-10-02) | **MTP1** | fp8 | ~3478–3482 | ~52.5 | ~54.1 |
 | Qwen3.8-27B-AWQ-INT4 (trial, 2026-09-10) | **MTP3** | fp8 | ~2130–2310 | ~81–95 | ~85–87 |
 
 MTP3 ≈ 2× decode at ~−4% prefill (acceptance ~64%); MTP1's edge collapses
 past 65K (#47602 acceptance decay — parity at ~110K) while keeping +2–5%
-prefill. AWQ-INT4 is the decode-optimized alternative (prefill −26%,
+prefill. Concurrency note (2026-10-15 isolation): c2 per-request decode
+collapses with depth (0.8 t/s at d111K) identically with MTP3, spec-off,
+bf16, and fp8 KV — cause still open (#55533 family suspected); c2 wins
+aggregate shallow, serialize deep concurrent work. Full record:
+`benchmarks/2026-10-15_mtp3_c2_depth_isolation.md`. AWQ-INT4 is the decode-optimized alternative (prefill −26%,
 weights 10.3 GiB). Per-run records: `benchmarks/2026-10-01_*`,
 `benchmarks/2026-10-02_*`, `benchmarks/2026-09-10_qwen3.8-27b_awq_trial.md`;
 older rows in [`archive/BENCHMARKS.md`](archive/BENCHMARKS.md).
