@@ -10,6 +10,7 @@ __all__ hunk was re-cut with TritonFP8 context; all other hunks applied
 with offset, new-file contents byte-identical — regenerated diffstat
 matches the original: 14 files, 2717 insertions, 3 deletions).
 Re-verified `git apply` clean on VLLM_REF=v0.32.0rc0, 2026-10-14.
+Re-verified `git apply` clean on VLLM_REF=v0.32.0rc2, 2026-10-15 (full ordered apply + py_compile in scratch clone; rc1/rc2 deltas don't touch this patch's files).
 Upstream PR #56005 (open): 1.786x geomean vs Triton
 (min 1.257x, 18/18 shapes) on Radeon AI PRO R9700 with Qwen3.8-27B-FP8
 shapes, validated against FlyDSL main@65e5d8e (contained in flydsl

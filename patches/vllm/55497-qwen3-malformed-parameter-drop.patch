@@ -1,4 +1,5 @@
 # Version-locked to VLLM_REF=v0.31.0 (`git apply --check` clean).
+# Re-verified `git apply` clean on VLLM_REF=v0.32.0rc2, 2026-10-15 (full ordered apply + py_compile in scratch clone).
 # Qwen3 parser: a malformed <parameter> element no longer leaks into
 # streamed arguments (vLLM issue #55495, fix PR #55497 — OPEN + CONFLICTING,
 # in no release as of 2026-10-01; both upstream commits carried verbatim,

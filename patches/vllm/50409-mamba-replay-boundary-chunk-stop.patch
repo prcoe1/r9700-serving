@@ -11,6 +11,7 @@ became a tuple with Marconi junction entries, so both hunks moved
 (480->514, 513->543) and hunk 2 targets the stops tuple instead of the
 min() chain. Logic identical to upstream: compute replay_boundary, add
 it as a mandatory chunk stop).
+Re-verified `git apply` clean on VLLM_REF=v0.32.0rc2, 2026-10-15 (full ordered apply + py_compile in scratch clone; rc1/rc2 deltas don't touch this patch's files).
 Upstream PR #50409 (https://github.com/vllm-project/vllm/pull/50409)
 still open, in no tag. Drop when VLLM_REF contains the fix.
 History: first carried 2026-10-02 (rc3 stops-tuple port); rebased

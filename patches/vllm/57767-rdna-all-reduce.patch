@@ -11,6 +11,7 @@ with new context — rdna_ar_comm construction, skip_legacy_rdna gating
 of the CustomAllreduce and QuickAllReduce inits; all other hunks
 (import, dispatch, close, envs, rocm.py, cudagraph, cmake, csrc, docs,
 tests) applied with offset, new-file contents byte-identical).
+Re-verified `git apply` clean on VLLM_REF=v0.32.0rc2, 2026-10-15 (full ordered apply + py_compile in scratch clone; rc1/rc2 deltas don't touch this patch's files).
 Upstream PR #57767 (open, verified 2026-10-14 — NOT merged upstream).
 Opt-in: VLLM_ROCM_USE_RDNA_ALL_REDUCE=1 (graph-only,
 BF16/FP16, decode-routing; no FlyDSL dependency). Adds

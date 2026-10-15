@@ -15,6 +15,7 @@ and crashes in profile_run (`AttributeError: 'NoneType' object has no
 attribute 'size'`). The mismatch is bidirectional and guard checking is
 disabled on cache hit, so a poisoned artifact can break a previously
 working deployment in either direction.
+Re-verified `git apply` clean on VLLM_REF=v0.32.0rc2, 2026-10-15 (full ordered apply + py_compile in scratch clone; rc1/rc2 deltas don't touch this patch's files — #58918's compile-cache rework is main-only, not in rc2).
 
 Minimal variant: only the caps are keyed (as a structural
 MultiModalDummyOptions normalization — verified deterministic), leaving

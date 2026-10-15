@@ -77,7 +77,7 @@ host render group gid for `/dev/dri` access — check with `getent group render`
 |:-------------|:--------|
 | ROCm         | 10.1.0 (`rocm/dev-ubuntu-24.04:10.1.0-full`, Python 3.12) |
 | PyTorch      | 2.13.0+rocm10.1.0 (`stable.repo.amd.com/whl-next`, `torch[device-gfx1201]`) |
-| vLLM         | 0.32.0rc0 |
+| vLLM         | 0.32.0rc2 |
 | AITER        | v0.1.25 |
 | Flash Attention | @ 1cc7ff67 (source; official guide uses `flash-attn==2.8.3` wheel) |
 
@@ -85,7 +85,7 @@ ROCm 10.1 is the TheRock 10.1 stream (successor to the 10.0 / 7.9/7.13/7.14 prev
 production 7.2.x line lacks RDNA4/`gfx1201` support. AITER `v0.1.25` carries
 the RDNA unified-attention LDS guard (#4868), the UA config-tree
 tuning tables (incl. upstream's gfx1201 UA-2D tune #5790), and the #3698
-V-mask fix; vLLM 0.32.0rc0 carries the hybrid prefix-cache family
+V-mask fix; vLLM 0.32.0rc2 carries the hybrid prefix-cache family
 (#54713, #55450, #55390, #58368, #59146, #59175), the draft-backend override
 (#54826), the trailing-block-drop opt-out (#53388), the last-block replay
 (#53945), GDN warmup (#54251), W4A16 packed zero-points (#54965), multimodal
@@ -102,7 +102,9 @@ ROCM_SEGMENTED_ATTN backend (#59132), hybrid Mamba prefix-boundary fixes
 (#60533), the GDN spec-decode query-width bound (#55504), the 4x M-RoPE
 headroom drop (#59853), the MRV2 int64 row-offset fix (#60736), and the
 transformers 5.19 bump (#60381) — the three carried patches they replace
-(58021 + 55601 + 52619) were dropped on this bump.
+(58021 + 55601 + 52619) were dropped on that bump — plus the Mamba2
+prefill-checkpoint conv-tail fix (#60797), the only in-scope addition in
+v0.32.0rc1/rc2 (2026-10-14/15); no carried patch affected.
 Note rc0 runs transformers 5.19.0 (bound `< 5.20.0`); the v0.31.0 image ran
 5.17.x under the old `< 5.18.0` pin (#59614). Official vLLM-on-ROCm guide uses Python 3.14 + `torch[device-gfx1201]==2.13.0+rocm10.1.0`
 `torchvision[device-gfx1201]==0.28.0+rocm10.1.0` `torchaudio==2.11.0+rocm10.1.0` via
@@ -228,8 +230,8 @@ Version-locked patches applied at runtime by read-only bind-mounts in
 the pinned dependency.
 
 - **Tolerate empty `tools` arrays** (`patches/vllm/protocol.py`, overlay of
-  upstream at `VLLM_REF` v0.32.0rc0 — base is rc0's file plus the tolerance
-  hunk only (verified by diff); the v0.31.0 overlay broke on rc0 because rc0
+  upstream at `VLLM_REF` v0.32.0rc2 — base is rc2's file plus the tolerance
+  hunk only (verified by diff; file byte-identical rc0→rc2); the v0.31.0 overlay broke on rc0 because rc0
   removed `vllm/entrypoints/chat_utils.py`, which the old overlay imported —
   crash-loop at `import vllm` until refreshed (2026-10-14). Upstream reworked
   sampling-params resolution (user → server default → OpenAI default) and
@@ -240,7 +242,7 @@ the pinned dependency.
 
 ### Source-build patches (applied at image build time)
 
-Local backports of upstream fixes not in `VLLM_REF` v0.32.0rc0, applied by
+Local backports of upstream fixes not in `VLLM_REF` v0.32.0rc2, applied by
 `Dockerfile.fullbuild` from `patches/vllm/*.patch` (mirrors the aiter patch
 loop). Re-verify each patch applies cleanly on the new ref when bumping
 `VLLM_REF` — and drop any whose fix has since landed (see
@@ -251,17 +253,17 @@ AGENTS.md §4).
   prefix caching on hybrid GDN can leave the final matched page holding
   recurrent state written over rejected draft positions — silent corruption
   on every later request sharing the prefix (#43559, #50188). Lowers the
-  cache-hit search ceiling by one page. Version-locked to v0.32.0rc0.
+  cache-hit search ceiling by one page. Version-locked to v0.32.0rc2.
 
 - **Streaming/non-streaming tool-parser parity on truncated tool calls**
   (`47137-tool-truncation-parity.patch`; content half fixed upstream by
   #47562, args half still open as #48007): without it, a tool call cut short
   by `max_tokens`/`stop` returns dropped (`{}`) arguments non-streaming while
   streaming clients already received the partial args. Engine-parsers only
-  (`qwen3_coder`). Guard: `benchmarks/tool_truncation_probe.py`. Note: since
-  rc0, streaming truncated calls gate to `finish_reason='length'` while
+  (`qwen3_coder`). Guard: `benchmarks/tool_truncation_probe.py`. Note:
+  streaming truncated calls gate to `finish_reason='length'` while
   non-streaming still stamps `'tool_calls'` (upstream #46303 inconsistency —
-  first observed on the rc2 bump, not a regression). Drop when a pinned
+  present on v0.31.0rc3/v0.31.0 through rc2, not a regression). Drop when a pinned
   `VLLM_REF` contains the #48007 equivalent.
 
 - **Qwen3 parser drops malformed `<parameter>` elements instead of leaking
@@ -288,20 +290,20 @@ AGENTS.md §4).
   globally at `import vllm`, but TheRock's static LLVM then
   double-registers `cl::opt` options (`spirv-expand-step` → LLVM ERROR →
   abort, exit 139, crash-loop before logging). Costs only unused kineto
-  GPU-profiling. Version-locked to v0.32.0rc0. Drop when a pinned
+  GPU-profiling. Version-locked to v0.32.0rc2. Drop when a pinned
   `VLLM_REF` contains #60911 (or otherwise guards #56190). If startup
   crash-loops with no logs on any bump, check `import vllm` in a throwaway
   container first.
 
 - **RDNA4 FlyDSL block-FP8 GEMM** (`56005-rdna4-fp8-flydsl-gemm.patch`, not in
-  v0.32.0rc0): vLLM-owned FlyDSL WMMA kernel family replacing the Triton
+  v0.32.0rc2): vLLM-owned FlyDSL WMMA kernel family replacing the Triton
   block-scaled FP8 GEMM on gfx1200/gfx1201. Requires `flydsl 0.3.4.1` at
   runtime (`FLYDSL_VERSION` in `.env`). Live since 2026-09-24 — server log
   selects `RDNA4Fp8BlockScaledMMKernel`. Drop when a pinned `VLLM_REF`
   contains the merge (and still ships the gfx1201 variants).
 
 - **Native HIP RDNA custom all-reduce** (`57767-rdna-all-reduce.patch` +
-  `57767-v030-port.patch`, not in v0.32.0rc0): HIP/C++ custom all-reduce for
+  `57767-v030-port.patch`, not in v0.32.0rc2): HIP/C++ custom all-reduce for
   RDNA (gfx1100/1200/1201) with a `VLLM_ROCM_USE_RDNA_ALL_REDUCE` opt-in.
   **Compiled but dormant**: this board exposes no P2P, so it falls back to
   PYNCCL; the flag stays unset. Drop when a pinned `VLLM_REF` contains the
@@ -473,8 +475,8 @@ stale triage snapshots live in
 
 ## Performance
 
-Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.32.0rc0
-+ local patches (rows before 2026-10-14: v0.31.0), torch 2.13 (ROCm 10.1), tuned MoE/dense GEMM configs. The
+Measured on 2× R9700 (gfx1201), single request, thinking off, vLLM 0.32.0rc2
++ local patches (rows before 2026-10-15: v0.32.0rc0; before 2026-10-14: v0.31.0), torch 2.13 (ROCm 10.1), tuned MoE/dense GEMM configs. The
 live profile runs **MTP3** spec decode (bf16 KV since 2026-10-08, 131K context, cap 2 —
 re-verified 2026-10-15 on bf16/832: no acceptance decay through 100K,
 coherence PASS + needle recall exact at d100K; MTP1 ran 10-06–10-15).
@@ -490,6 +492,7 @@ files, and superseded rows: [`BENCHMARKS.md`](BENCHMARKS.md) and
 | Qwen3.8-27B (live, 2026-10-12, aiter v0.1.25) | **MTP1** | bf16 | ~3335 | ~52.9 | ~53.7 |
 | Qwen3.8-27B (live, 2026-10-14, v0.32.0rc0) | **MTP1** | bf16 | ~3278–3315 | ~51.8–54.7 | ~51.0–51.8 |
 | Qwen3.8-27B (live, 2026-10-15, v0.32.0rc0) | **MTP3** | bf16 | ~3251–3278 | ~68.3 | ~69.3 |
+| Qwen3.8-27B (live, 2026-10-15, v0.32.0rc2) | **MTP3** | bf16 | ~3301–3309 | ~70.8 | ~69.3 |
 | Qwen3.8-27B spec-off (2026-10-06) | **off** | fp8 | ~3486–3493 | ~34.1 | ~34.1 |
 | Qwen3.8-27B spec-off (2026-10-15, v0.32.0rc0) | **off** | bf16 | ~3441–3447 | ~34.0 | ~34.3 |
 | Qwen3.8-27B +MTP3 (2026-10-02) | **MTP3** | fp8 | ~3272–3348 | ~68.9 | ~71.1 |
