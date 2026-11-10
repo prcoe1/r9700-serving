@@ -4,7 +4,7 @@ Date: Wed, 14 Oct 2026 00:00:00 +0000
 Subject: [PATCH] [Bugfix] Stop mamba align prefill at the replay boundary
  (upstream #50409)
 
-Version-locked to VLLM_REF=v0.32.0rc0 (re-cut 2026-10-14: rc0 reworked
+Version-locked to VLLM_REF=v0.32.0 (re-cut 2026-10-14: rc0 reworked
 the stops region — tail_boundary is now computed via
 get_mamba_prefill_checkpoint_position (upstream #60533) and the stops
 became a tuple with Marconi junction entries, so both hunks moved

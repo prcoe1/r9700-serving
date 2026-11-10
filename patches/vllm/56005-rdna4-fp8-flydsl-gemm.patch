@@ -4,7 +4,7 @@ Date: Wed, 14 Oct 2026 00:00:00 +0000
 Subject: [PATCH 3/5] [Perf][ROCm] RDNA4 FP8 block-scale FlyDSL GEMM (upstream
  #56005)
 
-Version-locked to VLLM_REF=v0.32.0rc0 (re-cut 2026-10-14: rc0 grew the
+Version-locked to VLLM_REF=v0.32.0 (re-cut 2026-10-14: rc0 grew the
 scaled_mm __all__ list (Fp8BlockScaled/CPUFp8/XPUFp8 entries), so the
 __all__ hunk was re-cut with TritonFP8 context; all other hunks applied
 with offset, new-file contents byte-identical — regenerated diffstat

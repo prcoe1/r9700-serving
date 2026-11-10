@@ -1,4 +1,4 @@
-# Version-locked to VLLM_REF=v0.30.0 (anchor verified verbatim
+# Version-locked to VLLM_REF=v0.32.0 (anchor verified verbatim
 # against the v0.30.0 tag, 2026-09-22; `git apply --check` clean).
 # Re-verified `git apply` clean on VLLM_REF=v0.30.1rc0, 2026-09-28.
 Re-verified `git apply` clean on VLLM_REF=v0.31.0, 2026-10-06 (full ordered apply + py_compile in scratch clone).

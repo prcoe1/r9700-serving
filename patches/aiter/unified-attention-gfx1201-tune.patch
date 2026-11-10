@@ -4,7 +4,7 @@ Date: Sun, 27 Sep 2026 00:00:00 +0000
 Subject: [PATCH] gfx1201 unified-attention tuning + bf16 small-Q LDS guard
  (config-tree rebase)
 
-Version-locked to AITER_REF=v0.1.25 (verified `git apply --check`
+Version-locked to AITER_REF=v0.1.29 (verified `git apply --check`
 clean on v0.1.25, 2026-10-12; rebased from the v0.1.23/v0.1.24/post1
 variant, which additionally carried a 2D prefill key dropped here —
 see below). RDNA4-local launch-config tuning, not an

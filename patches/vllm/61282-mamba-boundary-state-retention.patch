@@ -4,7 +4,7 @@ Date: Thu, 15 Oct 2026 00:00:00 +0000
 Subject: [PATCH] [Bugfix] Keep the Mamba prompt-boundary state until request
  end and evict it after its attention blocks (upstream #61282)
 
-Version-locked to VLLM_REF=v0.32.0rc2 (upstream #61282 applies verbatim, no
+Version-locked to VLLM_REF=v0.32.0 (upstream #61282 applies verbatim, no
 re-cut; production files only — the upstream test file is validated
 separately, see below).
 Upstream PR #61282 by ruobing-wang (fix for #61281; OPEN + unmerged, single

@@ -4,7 +4,7 @@ Date: Wed, 14 Oct 2026 00:00:00 +0000
 Subject: [PATCH 4/5] [Perf][ROCm] Native HIP RDNA custom all-reduce for
  TP2/TP4 (upstream #57767)
 
-Version-locked to VLLM_REF=v0.32.0rc0 (re-cut 2026-10-14: rc0 reworked
+Version-locked to VLLM_REF=v0.32.0 (re-cut 2026-10-14: rc0 reworked
 cuda_communicator.py __init__ (cuMem/cumem-pool block, BATCH_INVARIANT
 gates, dp-dispatch AITER block), so the 3 __init__ hunks were re-cut
 with new context — rdna_ar_comm construction, skip_legacy_rdna gating
